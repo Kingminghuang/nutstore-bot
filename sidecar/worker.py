@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from python_runtime.runtime_service import (
+from runtime_service import (
     CodeAgentRuntimeService,
     RunMetadata,
     RuntimeProcessError,

@@ -13,6 +13,7 @@ class NativeCodeAgent(CodeAgent):
 
     def __init__(self, *args, context_prefix: str, **kwargs):
         self._context_prefix = context_prefix
+        kwargs.setdefault("add_base_tools", False)
         super().__init__(*args, **kwargs)
 
     def initialize_system_prompt(self) -> str:

@@ -9,14 +9,17 @@ from typing import Any
 from smolagents.memory import ActionStep, FinalAnswerStep, PlanningStep
 from smolagents.models import ChatMessageStreamDelta
 
-from .context_builder import ContextBuildError, ContextBuilder, ContextBuilderConfig, RuntimeInfo
-from .direct_model import DirectModel, DirectModelConfig, DirectModelError
-from .local_code_executor import LocalCodeExecutor
-from .memory import MemoryConsolidator, MemoryStore
-from .native_code_agent import NativeCodeAgent
-from .session_manager import SessionManager
-from .tools import build_workspace_tools, path_identity, resolve_path_arg
+from context_builder import ContextBuildError, ContextBuilder, ContextBuilderConfig, RuntimeInfo
+from direct_model import DirectModel, DirectModelConfig, DirectModelError
+from local_code_executor import LocalCodeExecutor
+from memory import MemoryConsolidator, MemoryStore
+from native_code_agent import NativeCodeAgent
+from provider_catalog import BUILTIN_PROVIDERS
+from session_manager import SessionManager
+from tools import build_workspace_tools, path_identity, resolve_path_arg
 
+
+WORKSPACE_BASED_INSTRUCTION = "DO NOT use any web search tool, you can only use the tools provided. Complete task based on the files on your workspace"
 
 class RuntimeProcessError(RuntimeError):
     def __init__(self, code: str, message: str):
@@ -73,10 +76,11 @@ class CodeAgentRuntimeService:
         session_key = self._resolve_session_key(metadata, workspace_path)
         session = self.sessions.get_or_create(session_key)
 
+        direct_provider = str(self.config.direct_provider or "custom").strip().lower()
         direct_base_url = str(self.config.direct_base_url or "").strip()
         direct_api_key = str(self.config.direct_api_key or "").strip()
         direct_model_id = str(self.config.direct_model_id or self.config.model_id).strip()
-        if direct_base_url == "":
+        if direct_provider not in BUILTIN_PROVIDERS and direct_base_url == "":
             raise RuntimeProcessError("invalid_base_url", "direct base url is missing")
         if direct_api_key == "":
             raise RuntimeProcessError("missing_api_key", "direct api key is missing")
@@ -164,6 +168,7 @@ class CodeAgentRuntimeService:
             tools=tools,
             model=model,
             context_prefix=context_prompt,
+            instructions=WORKSPACE_BASED_INSTRUCTION,
             stream_outputs=True,
             max_steps=self.config.max_steps,
             executor=executor,
