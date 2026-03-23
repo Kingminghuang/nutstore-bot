@@ -1,0 +1,113 @@
+结合当前项目 `app` 和 `components` 目录下的源码分析，当前项目实际的 UI 组件树结构如下：
+
+```text
+Home (Page)
+├── Sidebar (宽度可调 / resizable, 维护 sidebarWidth 状态)
+│   ├── AccentBar (顶部渐变条)
+│   ├── MenuItems
+│   │   └── MenuItem("New session", icon=SquarePen)
+│   ├── SessionsSection
+│   │   ├── SectionHeader("Sessions")
+│   │   │   └── Actions: IconButton("Add a new project", icon=FolderPlus)
+│   │   └── ScrollArea (垂直滚动条区域 / overflow-y-auto)
+│   │       ├── ProjectGroup ("Project 1")
+│   │       ├── ProjectGroup ("Project 2")
+│   │       ├── ProjectGroup ("Project 3")
+│   │       ├── ... (其他 Project)
+│   │       └── ProjectGroup ("Project N")
+│   │           ├── ProjectGroupHeader
+│   │           │   ├── ExpandButton(icon=Folder / Triangle)
+│   │           │   ├── ProjectLabel("Project N")
+│   │           │   └── ProjectActions (Hover时显示)
+│   │           │       ├── IconButton("More options", icon=MoreVertical)
+│   │           │       │   └── DropdownMenu (需处理层级/Portal，避免被 Sidebar 遮挡)
+│   │           │       │       ├── MenuItem("Edit name")
+│   │           │       │       └── MenuItem("Remove")
+│   │           │       └── IconButton("Start new session", icon=Edit)
+│   │           ├── SessionItem(label="Session 1", time="the period between now and the last update")
+│   │           ├── SessionItem(label="Session 2", time="the period between now and the last update")
+│   │           ├── SessionItem(label="Session 3", time="the period between now and the last update")
+│   │           ├── ... (其他 SessionItem)
+│   │           ├── SessionItem(label="Session N", time="the period between now and the last update")
+│   │           └── ToggleMoreButton("Show more" / "Show less", 基于内部 isExpanded 状态切换)
+│   ├── FooterNav
+│   │   └── NavItem("Settings", icon=Settings)
+│   └── ResizeHandle (右侧边界拖拽条, cursor-col-resize)
+│
+├── MainContent (flex-col, h-screen)
+│   ├── Header (顶部固定)
+│   │   └── Title({activeSessionLabel})
+│   ├── MainScrollArea (主内容滚动区 / flex-1, overflow-y-auto, relative 定位)
+│   │   ├── (条件渲染: 无对话记录时)
+│   │   │   └── EmptyStateHero
+│   │   │       ├── CodexLogo (SVG)
+│   │   │       ├── Heading("Let's start")
+│   │   │       └── SubHeading({activeProjectLabel})
+│   │   ├── (条件渲染: 有对话记录时)
+│   │   │   └── MessageList
+│   │   │       ├── UserMessageBubble ("User message")
+│   │   │       └── AgentMessageBubble (Markdown 渲染内容)
+│   │   └── ScrollToBottomButton (绝对定位 absolute bottom, icon=ArrowDown, 未到底部时显示)
+│   └── ComposerPanel (底部固定)
+│       ├── InputField(placeholder="Ask for follow-up changes")
+│       └── Toolbar
+│           ├── LeftActions
+│           │   ├── IconButton(icon=Plus, 支持从 activeProject 所在文件夹中选取文件)
+│           │   ├── ModelSelector({selectedModel}, icon=ChevronDown)
+│           │   │   └── DropdownMenu(List of Models)
+│           │   └── PermissionSelector(icon=ShieldCheck)
+│           │       └── DropdownMenu("Default permissions", "Full access")
+│           └── RightActions
+│               ├── IconButton(icon=Mic)
+│               └── SubmitAction (交互组件，依据输入与生成状态条件渲染，支持键盘"Enter"发送已有输入值)
+│                   ├── 状态: 默认且输入为空 -> IconButton(icon=ArrowUp, disabled=true)
+│                   ├── 状态: 默认且有输入值 -> IconButton(icon=ArrowUp, active=true)
+│                   └── 状态: 正在生成回复中 -> IconButton(icon=Square/Stop, active=true)
+│
+└── SettingsModal (条件渲染: isOpen)
+    ├── ModalHeader
+    │   ├── BackButton(icon=ArrowLeft) (按需显示)
+    │   ├── Title(当前页面名称)
+    │   └── CloseButton(icon=X)
+    └── ModalContent (基于 currentPage 状态)
+        ├── ProvidersPage ("providers")
+        │   ├── ConnectedProviders
+        │   │   ├── EmptyState("No connected providers")
+        │   │   └── ConnectedProviderItem("Provider N")
+        │   │       ├── ClickableBody (点击后进入 ProviderConfigPage)
+        │   │       │   ├── ProviderIcon
+        │   │       │   ├── ProviderName
+        │   │       │   ├── ProviderDescription
+        │   │       │   └── ModelCountBadge
+        │   │       └── DisconnectButton(icon=Trash2)
+        │   ├── PopularProviders
+        │   │   └── ProviderItem(name, description, btn="+ Connect" / "Edit")
+        │   └── CustomProviderSection ("Configure custom provider")
+        │
+        ├── CustomProviderPage ("custom-provider")
+        │   ├── ConfigurationInputs (Provider ID, Display Name, Base URL, API Key)
+        │   ├── ModelsListConfig
+        │   └── SubmitButton("Save and continue")
+        │
+        ├── ConnectProviderPage ("connect-provider")
+        │   ├── ProviderInfo (Icon & Description)
+        │   ├── Input(API key)
+        │   └── SubmitButton("Connect and continue")
+        │
+        └── ProviderConfigPage ("provider-config")
+            ├── ProviderMetaInputs
+            │   ├── Input(Provider ID, custom provider 可编辑 / built-in 只读)
+            │   ├── Input(Display name)
+            │   └── Input(Base URL)
+            ├── Input(API key)
+            ├── ModelsListConfig (带有增删功能)
+            ├── HeadersListConfig (带有增删功能)
+            └── SubmitButton("Save provider")
+```
+
+### 分析总结
+1. **外层布局**: 使用 `Home` 组件作为主视图。采用左右分栏的弹性布局（`flex h-screen`），左侧是**宽度可调**的 `Sidebar`（借助 ResizeHandle 拖拽更新宽度状态），右侧自适应撑满的是 `MainContent`，在需要时作为 Overlay 弹出 `SettingsModal`。
+2. **状态驱动的设置面板**: `SettingsModal` 没有采用跳转页面的方式，而是通过内部维护一个 `currentPage` 状态来实现不同配置项步骤（提供商列表、自定义提供商、连接提供商、已连接提供商编辑）间的切换。已连接 provider 列表已提升到 `Home` 页面级 state，通过 props 注入 `SettingsModal`，不再由 modal 内部独立持有。
+3. **复合交互的侧边栏**: 项目组通过 `hover` 状态挂载了比较多的隐藏交互（例如针对 "github" Project 的 "More options" 菜单和 "Start new session" 悬浮按钮）。**强调：类似 DropdownMenu 这样的弹出菜单需采用 Portal 等机制渲染脱离普通文档流，严格避免被 Sidebar 的边界或 `overflow` 属性遮挡。**
+4. **主内容区的滚动与状态流**: `MainContent` 内部采用纵向弹性（`flex-col`），首尾的 `Header` 和 `ComposerPanel` 空间固定，中间使用 `flex-1 overflow-y-auto` 划分出独立的一块主内容滚动区域。并利用这块滚动容器的相对定位能力，放置了一个通过滚动距离判定的绝对位置悬浮“到底部”快捷按钮。
+5. **Provider 管理流已闭环**: `ProvidersPage` 不再只是空状态展示，当前已支持“查看 Connected providers -> 点击进入 ProviderConfigPage 编辑 -> 断开删除”的完整管理流；`PopularProviders` 对已连接项会切换为 `Edit` 而非重复 `+ Connect`。但这一套仍然是页面级内存态，不代表已接入后端持久化。

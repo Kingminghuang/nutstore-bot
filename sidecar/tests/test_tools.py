@@ -1,0 +1,156 @@
+from __future__ import annotations
+
+import json
+import shutil
+import stat
+import tempfile
+import unittest
+from pathlib import Path
+
+from python_runtime.tools import ToolCall, ToolLayer, path_identity, resolve_path_arg, under_root
+
+
+class ToolLayerTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp_dir = Path(tempfile.mkdtemp(prefix="tool-layer-"))
+        self.workspace = self.temp_dir / "ws"
+        self.workspace.mkdir(parents=True, exist_ok=True)
+        (self.workspace / "nested").mkdir(parents=True, exist_ok=True)
+        (self.workspace / "nested" / "a.txt").write_text("alpha\nbeta\n", encoding="utf-8")
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def _make_script(self, name: str, body: str) -> str:
+        target = self.temp_dir / name
+        target.write_text(body, encoding="utf-8")
+        target.chmod(target.stat().st_mode | stat.S_IXUSR)
+        return str(target)
+
+    def test_unknown_tool_returns_invalid_args(self) -> None:
+        layer = ToolLayer(str(self.workspace))
+        result = layer.execute_tool(ToolCall(tool_name="http_request", args={}, call_id="1"))
+        self.assertTrue(result.is_error)
+        assert result.error is not None
+        self.assertEqual(result.error.code, "invalid_args")
+
+    def test_workspace_escape_denied(self) -> None:
+        layer = ToolLayer(str(self.workspace))
+        result = layer.execute_tool_dict("read", {"path": "../outside.txt"})
+        self.assertTrue(result["is_error"])
+        self.assertEqual(result["error"]["code"], "permission_denied")
+
+    def test_ls_empty_directory_message(self) -> None:
+        (self.workspace / "empty").mkdir(parents=True, exist_ok=True)
+        layer = ToolLayer(str(self.workspace))
+        result = layer.execute_tool_dict("ls", {"path": "empty"})
+        self.assertFalse(result["is_error"])
+        self.assertEqual(result["content"][0]["text"], "(empty directory)")
+
+    def test_write_and_read_with_continue_offset(self) -> None:
+        layer = ToolLayer(str(self.workspace))
+        wrote = layer.execute_tool_dict("write", {"path": "log.txt", "content": "l1\nl2\nl3\nl4\n"})
+        self.assertFalse(wrote["is_error"])
+        read = layer.execute_tool_dict("read", {"path": "log.txt", "offset": 1, "limit": 2})
+        self.assertFalse(read["is_error"])
+        self.assertIn("Use offset=3 to continue", read["content"][0]["text"])
+
+    def test_find_uses_fd_and_reports_result_limit(self) -> None:
+        fd_script = self._make_script(
+            "fake-fd.sh",
+            "#!/bin/sh\nprintf 'one.txt\\ntwo.txt\\nthree.txt\\n'\n",
+        )
+        layer = ToolLayer(str(self.workspace), fd_executable=fd_script)
+        result = layer.execute_tool_dict("find", {"pattern": "*.txt", "path": ".", "limit": 2})
+        self.assertFalse(result["is_error"])
+        self.assertEqual(result["details"]["resultLimitReached"], 2)
+        self.assertIn("2 results limit reached.", result["content"][0]["text"])
+
+    def test_grep_line_truncation_and_match_limit(self) -> None:
+        long_line = "x" * 700
+        event_1 = {
+            "type": "match",
+            "data": {
+                "path": {"text": "nested/a.txt"},
+                "line_number": 1,
+                "lines": {"text": long_line + "\n"},
+            },
+        }
+        event_2 = {
+            "type": "match",
+            "data": {
+                "path": {"text": "nested/a.txt"},
+                "line_number": 2,
+                "lines": {"text": "second\n"},
+            },
+        }
+        rg_script = self._make_script(
+            "fake-rg.sh",
+            "#!/bin/sh\n"
+            f"printf '%s\\n' '{json.dumps(event_1)}'\n"
+            f"printf '%s\\n' '{json.dumps(event_2)}'\n",
+        )
+        layer = ToolLayer(str(self.workspace), rg_executable=rg_script)
+        result = layer.execute_tool_dict(
+            "grep",
+            {
+                "pattern": "x",
+                "path": ".",
+                "limit": 1,
+            },
+        )
+        self.assertFalse(result["is_error"])
+        self.assertEqual(result["details"]["matchLimitReached"], 1)
+        self.assertTrue(result["details"]["linesTruncated"])
+        self.assertIn("[truncated]", result["content"][0]["text"])
+
+    def test_read_image_returns_text_and_image_payload(self) -> None:
+        png_bytes = (
+            b"\x89PNG\r\n\x1a\n"
+            b"\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89"
+            b"\x00\x00\x00\x0cIDATx\x9cc```\x00\x00\x00\x04\x00\x01\xf6\x17\x38U"
+            b"\x00\x00\x00\x00IEND\xaeB`\x82"
+        )
+        (self.workspace / "tiny.png").write_bytes(png_bytes)
+        layer = ToolLayer(str(self.workspace))
+        result = layer.execute_tool_dict("read", {"path": "tiny.png"})
+        self.assertFalse(result["is_error"])
+        self.assertEqual(result["content"][0]["type"], "text")
+        self.assertEqual(result["content"][1]["type"], "image")
+        self.assertEqual(result["content"][1]["mime_type"], "image/png")
+
+    def test_edit_returns_diff_and_first_changed_line(self) -> None:
+        path = self.workspace / "edit.txt"
+        path.write_text("line1\nline2\nline3\n", encoding="utf-8")
+        layer = ToolLayer(str(self.workspace))
+        result = layer.execute_tool_dict(
+            "edit",
+            {
+                "path": "edit.txt",
+                "old_text": "line2",
+                "new_text": "line2-updated",
+            },
+        )
+        self.assertFalse(result["is_error"])
+        self.assertIn("Successfully replaced text", result["content"][0]["text"])
+        self.assertEqual(result["details"]["firstChangedLine"], 2)
+        self.assertIn("-line2", result["details"]["diff"])
+        self.assertIn("+line2-updated", result["details"]["diff"])
+
+    def test_windows_path_normalization_helpers(self) -> None:
+        p1 = resolve_path_arg("C:\\workspace\\src\\..\\README.md", "C:\\workspace", "windows")
+        p2 = resolve_path_arg("C:/workspace/README.md", "C:\\workspace", "windows")
+        p3 = resolve_path_arg("/c/workspace/README.md", "C:\\workspace", "windows")
+        p4 = resolve_path_arg("/cygdrive/c/workspace/README.md", "C:\\workspace", "windows")
+        p5 = resolve_path_arg("/mnt/c/workspace/README.md", "C:\\workspace", "windows")
+        self.assertEqual(p1, "C:\\workspace\\README.md")
+        self.assertEqual(p1, p2)
+        self.assertEqual(p1, p3)
+        self.assertEqual(p1, p4)
+        self.assertEqual(p1, p5)
+        self.assertEqual(path_identity("C:\\Workspace\\A", "windows"), path_identity("c:\\workspace\\a", "windows"))
+        self.assertTrue(under_root("C:\\Workspace\\A", "c:\\workspace", "windows"))
+
+
+if __name__ == "__main__":
+    unittest.main()
