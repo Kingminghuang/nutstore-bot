@@ -1,0 +1,41 @@
+from __future__ import annotations
+
+import shutil
+import tempfile
+import unittest
+
+from python_runtime.storage import (
+    connect_database,
+    get_user_version,
+    list_tables,
+    prepare_storage,
+)
+
+
+class StorageTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.mkdtemp(prefix="sidecar-storage-")
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def test_prepare_storage_creates_expected_paths(self) -> None:
+        paths = prepare_storage(self.temp_dir)
+        self.assertTrue(paths.root.exists())
+        self.assertTrue(paths.secrets_dir.exists())
+        self.assertTrue(str(paths.database).endswith("sidecar.db"))
+
+    def test_connect_database_applies_migrations(self) -> None:
+        connection = connect_database(self.temp_dir)
+        try:
+            self.assertEqual(get_user_version(connection), 1)
+            tables = list_tables(connection)
+            self.assertIn("workspaces", tables)
+            self.assertIn("provider_connections", tables)
+            self.assertIn("provider_models", tables)
+            self.assertIn("provider_headers", tables)
+            self.assertIn("sessions", tables)
+            self.assertIn("messages", tables)
+            self.assertIn("runs", tables)
+        finally:
+            connection.close()

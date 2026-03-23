@@ -8,6 +8,15 @@ LITELLM_PROVIDERS = ("anthropic", "deepseek", "gemini")
 OPENAI_PROVIDERS = ("openai",)
 BUILTIN_PROVIDERS = LITELLM_PROVIDERS + OPENAI_PROVIDERS
 
+
+def base_url_policy(provider_id: str) -> str:
+    if provider_id in LITELLM_PROVIDERS:
+        return "hidden"
+    if provider_id in OPENAI_PROVIDERS:
+        return "optional"
+    return "required"
+
+
 try:
     from litellm.utils import supports_reasoning
 except ImportError:
@@ -118,6 +127,9 @@ def list_providers() -> list[dict[str, Any]]:
         {
             "id": "anthropic",
             "label": "Anthropic",
+            "kind": "builtin",
+            "runtimeProvider": "anthropic",
+            "baseUrlPolicy": base_url_policy("anthropic"),
             "models": build_models(
                 [
                     "claude-opus-4-6",
@@ -131,6 +143,9 @@ def list_providers() -> list[dict[str, Any]]:
         {
             "id": "deepseek",
             "label": "Deepseek",
+            "kind": "builtin",
+            "runtimeProvider": "deepseek",
+            "baseUrlPolicy": base_url_policy("deepseek"),
             "models": build_models(
                 [
                     "deepseek/deepseek-chat",
@@ -142,6 +157,9 @@ def list_providers() -> list[dict[str, Any]]:
         {
             "id": "gemini",
             "label": "Gemini",
+            "kind": "builtin",
+            "runtimeProvider": "gemini",
+            "baseUrlPolicy": base_url_policy("gemini"),
             "models": build_models(
                 [
                     "gemini/gemini-2.5-flash-lite",
@@ -157,6 +175,9 @@ def list_providers() -> list[dict[str, Any]]:
         {
             "id": "openai",
             "label": "OpenAI / Compatible",
+            "kind": "builtin",
+            "runtimeProvider": "openai",
+            "baseUrlPolicy": base_url_policy("openai"),
             "models": build_models(
                 [
                     "gpt-5.2",

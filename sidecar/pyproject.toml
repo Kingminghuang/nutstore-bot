@@ -4,9 +4,12 @@ version = "0.1.0"
 description = "Python runtime for the native code agent"
 requires-python = ">=3.11"
 dependencies = [
+  "cryptography>=45.0.0",
+  "fastapi>=0.115.0",
   "litellm>=1.51.0",
   "requests",
   "smolagents",
+  "uvicorn>=0.32.0",
 ]
 
 [dependency-groups]
