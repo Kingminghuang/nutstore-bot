@@ -54,7 +54,6 @@ def parse_request(raw: str) -> RuntimeRequest:
         run_id=str(data.get("run_id") or data.get("runId") or ""),
         user_input=str(data.get("user_input") or data.get("userInput") or ""),
         auth_context={
-            "gateway_token": _pick(auth_context_data, "gateway_token", "gatewayToken"),
             "uid": _pick(auth_context_data, "uid", "uid"),
             "tid": _pick(auth_context_data, "tid", "tid"),
             "exp_epoch": _pick(auth_context_data, "exp_epoch", "expEpoch"),
@@ -64,9 +63,7 @@ def parse_request(raw: str) -> RuntimeRequest:
             session_key=_pick(metadata_data, "session_key", "sessionKey"),
         ),
         config=RuntimeWorkerConfig(
-            gateway_base_url=str(_pick(config_data, "gateway_base_url", "gatewayBaseUrl") or ""),
             model_id=str(_pick(config_data, "model_id", "modelId") or "gpt-5.4"),
-            runtime_mode=str(_pick(config_data, "runtime_mode", "runtimeMode") or "gateway"),
             direct_provider=str(_pick(config_data, "direct_provider", "directProvider") or "").strip() or None,
             direct_base_url=str(_pick(config_data, "direct_base_url", "directBaseUrl") or "").strip() or None,
             direct_api_key=str(_pick(config_data, "direct_api_key", "directApiKey") or "").strip() or None,

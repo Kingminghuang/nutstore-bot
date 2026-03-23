@@ -11,7 +11,6 @@ from smolagents.models import ChatMessageStreamDelta
 
 from .context_builder import ContextBuildError, ContextBuilder, ContextBuilderConfig, RuntimeInfo
 from .direct_model import DirectModel, DirectModelConfig, DirectModelError
-from .gateway_model import GatewayAuthError, GatewayModel, GatewayModelConfig
 from .local_code_executor import LocalCodeExecutor
 from .memory import MemoryConsolidator, MemoryStore
 from .native_code_agent import NativeCodeAgent
@@ -28,11 +27,9 @@ class RuntimeProcessError(RuntimeError):
 
 @dataclass(frozen=True)
 class RuntimeWorkerConfig:
-    gateway_base_url: str
     model_id: str
     ns_bot_home: str
     workspace_path_default: str
-    runtime_mode: str = "gateway"
     direct_provider: str | None = None
     direct_base_url: str | None = None
     direct_api_key: str | None = None
@@ -72,45 +69,29 @@ class CodeAgentRuntimeService:
         auth_context: dict[str, Any],
         metadata: RunMetadata,
     ) -> dict[str, Any]:
-        runtime_mode = str(self.config.runtime_mode or "gateway").strip().lower()
-        is_direct_mode = runtime_mode == "direct"
-
-        gateway_token = str(auth_context.get("gateway_token") or auth_context.get("gatewayToken") or "").strip()
-        if not is_direct_mode and gateway_token == "":
-            raise RuntimeProcessError("unauthorized", "gateway token is missing")
-
         workspace_path = self._resolve_workspace_path(metadata)
         session_key = self._resolve_session_key(metadata, workspace_path)
         session = self.sessions.get_or_create(session_key)
 
-        if is_direct_mode:
-            direct_base_url = str(self.config.direct_base_url or "").strip()
-            direct_api_key = str(self.config.direct_api_key or "").strip()
-            direct_model_id = str(self.config.direct_model_id or self.config.model_id).strip()
-            if direct_base_url == "":
-                raise RuntimeProcessError("invalid_base_url", "direct base url is missing")
-            if direct_api_key == "":
-                raise RuntimeProcessError("missing_api_key", "direct api key is missing")
-            if direct_model_id == "":
-                raise RuntimeProcessError("missing_model_id", "direct model id is missing")
+        direct_base_url = str(self.config.direct_base_url or "").strip()
+        direct_api_key = str(self.config.direct_api_key or "").strip()
+        direct_model_id = str(self.config.direct_model_id or self.config.model_id).strip()
+        if direct_base_url == "":
+            raise RuntimeProcessError("invalid_base_url", "direct base url is missing")
+        if direct_api_key == "":
+            raise RuntimeProcessError("missing_api_key", "direct api key is missing")
+        if direct_model_id == "":
+            raise RuntimeProcessError("missing_model_id", "direct model id is missing")
 
-            selected_model = DirectModel(
-                DirectModelConfig(
-                    provider=str(self.config.direct_provider or "custom"),
-                    base_url=direct_base_url,
-                    api_key=direct_api_key,
-                    model_id=direct_model_id,
-                    timeout_seconds=max(1.0, float(self.config.direct_request_timeout_ms) / 1000.0),
-                )
+        selected_model = DirectModel(
+            DirectModelConfig(
+                provider=str(self.config.direct_provider or "custom"),
+                base_url=direct_base_url,
+                api_key=direct_api_key,
+                model_id=direct_model_id,
+                timeout_seconds=max(1.0, float(self.config.direct_request_timeout_ms) / 1000.0),
             )
-        else:
-            selected_model = GatewayModel(
-                GatewayModelConfig(
-                    gateway_base_url=self.config.gateway_base_url,
-                    model_id=self.config.model_id,
-                    gateway_token=gateway_token,
-                )
-            )
+        )
         consolidation_provider = selected_model
 
         if self.consolidator_factory:
@@ -159,11 +140,11 @@ class CodeAgentRuntimeService:
 
         try:
             model = (
-                self.model_factory(gateway_token)
+                self.model_factory()
                 if self.model_factory
                 else selected_model
             )
-        except (GatewayAuthError, DirectModelError) as exc:
+        except DirectModelError as exc:
             raise RuntimeProcessError(exc.code, exc.message) from exc
         except Exception as exc:
             raise RuntimeProcessError("runtime_error", str(exc)) from exc
@@ -260,13 +241,11 @@ class CodeAgentRuntimeService:
                 if isinstance(event, FinalAnswerStep):
                     final_answer = str(event.output)
                     continue
-        except (GatewayAuthError, DirectModelError) as exc:
+        except DirectModelError as exc:
             raise RuntimeProcessError(exc.code, exc.message) from exc
         except Exception as exc:
             text = str(exc)
             lowered = text.lower()
-            if "token_expired" in lowered or "token has expired" in lowered or "token expired" in lowered:
-                raise RuntimeProcessError("token_expired", text) from exc
             if "unauthorized" in lowered:
                 raise RuntimeProcessError("unauthorized", text) from exc
             raise RuntimeProcessError("runtime_error", text) from exc

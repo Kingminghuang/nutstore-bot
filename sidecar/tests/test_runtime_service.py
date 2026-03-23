@@ -9,7 +9,6 @@ from pathlib import Path
 from smolagents.models import ChatMessage, ChatMessageStreamDelta, MessageRole, Model
 from smolagents.monitoring import TokenUsage
 
-from python_runtime.gateway_model import GatewayAuthError
 from python_runtime.memory import MemoryConsolidator
 from python_runtime.native_code_agent import NativeCodeAgent
 from python_runtime.direct_model import DirectModelError
@@ -37,15 +36,7 @@ class FakeStreamingModel(Model):
         return ChatMessage(role=MessageRole.ASSISTANT, content="unused")
 
 
-class FakeAuthFailureModel(Model):
-    def __init__(self):
-        super().__init__(model_id="fake")
 
-    def generate_stream(self, messages, stop_sequences=None, response_format=None, tools_to_call_from=None, **kwargs):
-        raise GatewayAuthError("token_expired", "token has expired")
-
-    def generate(self, messages, stop_sequences=None, response_format=None, tools_to_call_from=None, **kwargs):
-        raise GatewayAuthError("token_expired", "token has expired")
 
 
 class FakeDirectFailureModel(Model):
@@ -82,7 +73,6 @@ class RuntimeServiceTests(unittest.TestCase):
 
     def _config(self) -> RuntimeWorkerConfig:
         return RuntimeWorkerConfig(
-            gateway_base_url="http://127.0.0.1:18000",
             model_id="gpt-5.4",
             ns_bot_home=str(self.temp_dir),
             workspace_path_default=str(self.workspace_a),
@@ -92,13 +82,13 @@ class RuntimeServiceTests(unittest.TestCase):
     def test_has_delta_and_step_normalization(self) -> None:
         service = CodeAgentRuntimeService(
             self._config(),
-            model_factory=lambda _token: FakeStreamingModel("ok"),
+            model_factory=lambda: FakeStreamingModel("ok"),
         )
 
         result = service.process(
             run_id="run-1",
             user_input="say ok",
-            auth_context={"gateway_token": "token"},
+            auth_context={},
             metadata=RunMetadata(workspace_path=str(self.workspace_a), session_key=None),
         )
 
@@ -108,41 +98,9 @@ class RuntimeServiceTests(unittest.TestCase):
         self.assertTrue(result["steps"][0]["has_delta"])
         self.assertEqual(result["steps"][0]["usage"]["reasoning_tokens"], 0)
 
-    def test_token_expired_passthrough(self) -> None:
-        service = CodeAgentRuntimeService(
-            self._config(),
-            model_factory=lambda _token: FakeAuthFailureModel(),
-        )
-
-        with self.assertRaises(RuntimeProcessError) as ctx:
-            service.process(
-                run_id="run-2",
-                user_input="task",
-                auth_context={"gateway_token": "token"},
-                metadata=RunMetadata(workspace_path=str(self.workspace_a), session_key=None),
-            )
-
-        self.assertEqual(ctx.exception.code, "token_expired")
-
-    def test_accepts_camel_case_auth_context(self) -> None:
-        service = CodeAgentRuntimeService(
-            self._config(),
-            model_factory=lambda _token: FakeStreamingModel("ok"),
-        )
-
-        result = service.process(
-            run_id="run-camel-auth",
-            user_input="task",
-            auth_context={"gatewayToken": "token"},
-            metadata=RunMetadata(workspace_path=str(self.workspace_a), session_key=None),
-        )
-
-        self.assertEqual(result["final_answer"], "ok")
-
-    def test_direct_mode_bypasses_gateway_token_requirement(self) -> None:
+    def test_direct_mode_execution(self) -> None:
         cfg = replace(
             self._config(),
-            runtime_mode="direct",
             direct_provider="openai",
             direct_base_url="https://api.openai.com/v1",
             direct_api_key="sk-test",
@@ -151,7 +109,7 @@ class RuntimeServiceTests(unittest.TestCase):
 
         service = CodeAgentRuntimeService(
             cfg,
-            model_factory=lambda _token: FakeStreamingModel("direct-ok"),
+            model_factory=lambda: FakeStreamingModel("direct-ok"),
         )
 
         result = service.process(
@@ -166,7 +124,6 @@ class RuntimeServiceTests(unittest.TestCase):
     def test_direct_mode_requires_api_key(self) -> None:
         cfg = replace(
             self._config(),
-            runtime_mode="direct",
             direct_provider="openai",
             direct_base_url="https://api.openai.com/v1",
             direct_api_key="",
@@ -188,14 +145,13 @@ class RuntimeServiceTests(unittest.TestCase):
     def test_direct_provider_error_passthrough(self) -> None:
         cfg = replace(
             self._config(),
-            runtime_mode="direct",
             direct_provider="openai",
             direct_base_url="https://api.openai.com/v1",
             direct_api_key="sk-test",
             direct_model_id="gpt-4.1",
         )
 
-        def direct_failure_factory(_token: str) -> Model:
+        def direct_failure_factory() -> Model:
             raise DirectModelError("provider_timeout", "provider timed out")
 
         service = CodeAgentRuntimeService(cfg, model_factory=direct_failure_factory)
@@ -213,7 +169,7 @@ class RuntimeServiceTests(unittest.TestCase):
     def test_consolidation_failure_is_best_effort(self) -> None:
         service = CodeAgentRuntimeService(
             self._config(),
-            model_factory=lambda _token: FakeStreamingModel("done"),
+            model_factory=lambda: FakeStreamingModel("done"),
             consolidator_factory=lambda sessions, store: MemoryConsolidator(
                 sessions,
                 store,
@@ -224,7 +180,7 @@ class RuntimeServiceTests(unittest.TestCase):
         result = service.process(
             run_id="run-3",
             user_input="continue",
-            auth_context={"gateway_token": "token"},
+            auth_context={},
             metadata=RunMetadata(workspace_path=str(self.workspace_a), session_key=None),
         )
 
@@ -233,19 +189,19 @@ class RuntimeServiceTests(unittest.TestCase):
     def test_workspace_session_isolation(self) -> None:
         service = CodeAgentRuntimeService(
             self._config(),
-            model_factory=lambda _token: FakeStreamingModel("ok"),
+            model_factory=lambda: FakeStreamingModel("ok"),
         )
 
         service.process(
             run_id="run-a",
             user_input="task-a",
-            auth_context={"gateway_token": "token"},
+            auth_context={},
             metadata=RunMetadata(workspace_path=str(self.workspace_a), session_key=None),
         )
         service.process(
             run_id="run-b",
             user_input="task-b",
-            auth_context={"gateway_token": "token"},
+            auth_context={},
             metadata=RunMetadata(workspace_path=str(self.workspace_b), session_key=None),
         )
 
@@ -257,25 +213,25 @@ class RuntimeServiceTests(unittest.TestCase):
         cfg = replace(self._config(), tool_os_type="windows")
         service = CodeAgentRuntimeService(
             cfg,
-            model_factory=lambda _token: FakeStreamingModel("ok"),
+            model_factory=lambda: FakeStreamingModel("ok"),
         )
 
         service.process(
             run_id="run-win-1",
             user_input="task-a",
-            auth_context={"gateway_token": "token"},
+            auth_context={},
             metadata=RunMetadata(workspace_path="C:/Workspace/Project", session_key=None),
         )
         service.process(
             run_id="run-win-2",
             user_input="task-b",
-            auth_context={"gateway_token": "token"},
+            auth_context={},
             metadata=RunMetadata(workspace_path="/mnt/c/workspace/project", session_key=None),
         )
         service.process(
             run_id="run-win-3",
             user_input="task-c",
-            auth_context={"gateway_token": "token"},
+            auth_context={},
             metadata=RunMetadata(workspace_path="/cygdrive/c/Workspace/Project", session_key=None),
         )
 

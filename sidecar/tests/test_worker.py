@@ -12,10 +12,9 @@ class WorkerRequestParsingTests(unittest.TestCase):
             {
                 "run_id": "run-1",
                 "user_input": "hello",
-                "auth_context": {"gateway_token": "token-1"},
+                "auth_context": {},
                 "metadata": {"workspace_path": "/tmp/ws", "session_key": "s1"},
                 "config": {
-                    "gateway_base_url": "http://127.0.0.1:18000",
                     "model_id": "gpt-5.4",
                     "ns_bot_home": "/tmp/.nsbot",
                     "workspace_path_default": "/tmp",
@@ -30,7 +29,6 @@ class WorkerRequestParsingTests(unittest.TestCase):
         req = parse_request(raw)
         self.assertEqual(req.run_id, "run-1")
         self.assertEqual(req.user_input, "hello")
-        self.assertEqual(req.auth_context["gateway_token"], "token-1")
         self.assertEqual(req.metadata.workspace_path, "/tmp/ws")
         self.assertEqual(req.metadata.session_key, "s1")
         self.assertEqual(req.config.fd_executable, "/opt/native/fd")
@@ -43,10 +41,9 @@ class WorkerRequestParsingTests(unittest.TestCase):
             {
                 "runId": "run-2",
                 "userInput": "world",
-                "authContext": {"gatewayToken": "token-2", "expEpoch": 123},
+                "authContext": {"expEpoch": 123},
                 "metadata": {"workspacePath": "/tmp/ws2", "sessionKey": "s2"},
                 "config": {
-                    "gatewayBaseUrl": "http://127.0.0.1:18000",
                     "modelId": "gpt-5.4",
                     "nsBotHome": "/tmp/.nsbot",
                     "workspacePathDefault": "/tmp",
@@ -61,7 +58,6 @@ class WorkerRequestParsingTests(unittest.TestCase):
         req = parse_request(raw)
         self.assertEqual(req.run_id, "run-2")
         self.assertEqual(req.user_input, "world")
-        self.assertEqual(req.auth_context["gateway_token"], "token-2")
         self.assertEqual(req.auth_context["exp_epoch"], 123)
         self.assertEqual(req.metadata.workspace_path, "/tmp/ws2")
         self.assertEqual(req.metadata.session_key, "s2")
@@ -78,9 +74,7 @@ class WorkerRequestParsingTests(unittest.TestCase):
                 "authContext": {},
                 "metadata": {"workspacePath": "/tmp/ws3", "sessionKey": "s3"},
                 "config": {
-                    "gatewayBaseUrl": "http://127.0.0.1:18000",
                     "modelId": "gpt-5.4",
-                    "runtimeMode": "direct",
                     "directProvider": "openai",
                     "directBaseUrl": "https://api.openai.com/v1",
                     "directApiKey": "sk-test",
@@ -94,7 +88,6 @@ class WorkerRequestParsingTests(unittest.TestCase):
         )
 
         req = parse_request(raw)
-        self.assertEqual(req.config.runtime_mode, "direct")
         self.assertEqual(req.config.direct_provider, "openai")
         self.assertEqual(req.config.direct_base_url, "https://api.openai.com/v1")
         self.assertEqual(req.config.direct_api_key, "sk-test")
