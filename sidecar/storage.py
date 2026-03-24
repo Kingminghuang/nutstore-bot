@@ -153,6 +153,14 @@ MIGRATIONS: tuple[Migration, ...] = (
         );
         """,
     ),
+    Migration(
+        version=2,
+        sql="""
+        ALTER TABLE provider_connections ADD COLUMN health_status TEXT NOT NULL DEFAULT 'unknown';
+        ALTER TABLE provider_connections ADD COLUMN health_message TEXT;
+        ALTER TABLE provider_connections ADD COLUMN last_validated_at TEXT;
+        """,
+    ),
 )
 
 

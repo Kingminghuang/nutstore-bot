@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sys
+from hashlib import sha256
 from typing import Any
 
 LITELLM_PROVIDERS = ("anthropic", "deepseek", "gemini")
@@ -195,9 +196,18 @@ def list_providers() -> list[dict[str, Any]]:
     ]
 
 
+def catalog_version(providers: list[dict[str, Any]] | None = None) -> str:
+    payload = providers if providers is not None else list_providers()
+    normalized = json.dumps(
+        payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")
+    )
+    return sha256(normalized.encode("utf-8")).hexdigest()[:12]
+
+
 def main() -> int:
     try:
-        payload = {"providers": list_providers()}
+        providers = list_providers()
+        payload = {"version": catalog_version(providers), "providers": providers}
         print(json.dumps(payload, ensure_ascii=True), flush=True)
         return 0
     except Exception as exc:  # noqa: BLE001

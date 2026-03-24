@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from python_runtime.provider_catalog import list_providers
+from python_runtime.provider_catalog import catalog_version, list_providers
 
 
 class ProviderCatalogTests(unittest.TestCase):
@@ -20,3 +20,7 @@ class ProviderCatalogTests(unittest.TestCase):
 
         openai = next(provider for provider in providers if provider["id"] == "openai")
         self.assertEqual(openai["baseUrlPolicy"], "optional")
+
+    def test_catalog_version_is_stable_for_same_payload(self) -> None:
+        providers = list_providers()
+        self.assertEqual(catalog_version(providers), catalog_version(list(providers)))

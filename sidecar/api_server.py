@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse, StreamingResponse
 
 from auth import (
     LocalAuthConfig,
@@ -17,7 +19,11 @@ from auth import (
 )
 from discovery import ServiceDiscovery, nsbot_home, write_service_discovery
 from provider_service import ProviderService
+from run_cancellation import RunCancellationRegistry
+from run_event_store import RunEventStore
+from run_service import RunRequestFailed, RunService
 from repositories import create_repositories
+from session_service import SessionService
 from secret_store import LocalSecretStore
 from storage import connect_database
 
@@ -51,6 +57,22 @@ def create_app(config: ApiServerConfig | None = None) -> FastAPI:
         repositories=repositories.providers,
         secret_store=LocalSecretStore(cfg.ns_bot_home),
     )
+    session_service = SessionService(
+        workspaces=repositories.workspaces,
+        sessions=repositories.sessions,
+        messages=repositories.messages,
+    )
+    run_service = RunService(
+        workspaces=repositories.workspaces,
+        sessions=repositories.sessions,
+        providers=repositories.providers,
+        runs=repositories.runs,
+        session_service=session_service,
+        secret_store=LocalSecretStore(cfg.ns_bot_home),
+        event_store=RunEventStore(),
+        cancellation_registry=RunCancellationRegistry(),
+        ns_bot_home=cfg.ns_bot_home,
+    )
 
     app = FastAPI(title="Nutstore Bot Sidecar", version=cfg.version)
     app.state.api_server_config = cfg
@@ -58,6 +80,8 @@ def create_app(config: ApiServerConfig | None = None) -> FastAPI:
     app.state.database = database
     app.state.repositories = repositories
     app.state.provider_service = provider_service
+    app.state.session_service = session_service
+    app.state.run_service = run_service
 
     @app.middleware("http")
     async def localhost_auth_middleware(request: Request, call_next):  # type: ignore[override]
@@ -86,12 +110,121 @@ def create_app(config: ApiServerConfig | None = None) -> FastAPI:
         return {"ok": True}
 
     @app.get("/provider-catalog")
-    def get_provider_catalog() -> dict[str, list[dict[str, object]]]:
+    def get_provider_catalog() -> dict[str, object]:
         return provider_service.catalog_payload()
 
     @app.get("/providers")
     def get_providers() -> dict[str, list[dict[str, object]]]:
         return provider_service.list_connections_payload()
+
+    @app.get("/model-options")
+    def get_model_options() -> dict[str, object]:
+        return provider_service.model_options_payload()
+
+    @app.get("/workspaces")
+    def get_workspaces() -> dict[str, list[dict[str, object]]]:
+        return session_service.list_workspaces_payload()
+
+    @app.post("/workspaces")
+    def create_workspace(payload: dict[str, object]) -> dict[str, object]:
+        return session_service.create_workspace(payload)
+
+    @app.patch("/workspaces/{workspace_id}")
+    def update_workspace(
+        workspace_id: str, payload: dict[str, object]
+    ) -> dict[str, object]:
+        return session_service.update_workspace(workspace_id, payload)
+
+    @app.delete("/workspaces/{workspace_id}", status_code=204)
+    def delete_workspace(workspace_id: str) -> None:
+        session_service.delete_workspace(workspace_id)
+
+    @app.get("/workspaces/{workspace_id}/sessions")
+    def get_workspace_sessions(workspace_id: str) -> dict[str, list[dict[str, object]]]:
+        return session_service.list_sessions_payload(workspace_id)
+
+    @app.post("/workspaces/{workspace_id}/sessions")
+    def create_workspace_session(
+        workspace_id: str, payload: dict[str, object]
+    ) -> dict[str, object]:
+        return session_service.create_session(workspace_id, payload)
+
+    @app.patch("/sessions/{session_id}")
+    def update_session(
+        session_id: str, payload: dict[str, object]
+    ) -> dict[str, object]:
+        return session_service.update_session(session_id, payload)
+
+    @app.get("/sessions/{session_id}/messages")
+    def get_session_messages(session_id: str) -> dict[str, list[dict[str, object]]]:
+        return session_service.list_messages_payload(session_id)
+
+    @app.post("/sessions/{session_id}/messages")
+    def create_session_message(
+        session_id: str,
+        payload: dict[str, object],
+        background_tasks: BackgroundTasks,
+    ) -> dict[str, object]:
+        return session_service.append_message(
+            session_id, payload, background_tasks=background_tasks
+        )
+
+    @app.post("/runs")
+    def create_run(
+        payload: dict[str, object], background_tasks: BackgroundTasks, request: Request
+    ) -> dict[str, object]:
+        service = request.app.state.run_service
+        try:
+            return service.create_run(payload, background_tasks=background_tasks)
+        except RunRequestFailed as exc:
+            return JSONResponse(status_code=exc.status_code, content=exc.payload)
+
+    @app.get("/runs/{run_id}/events")
+    def get_run_events(
+        run_id: str, request: Request, after: int = 0
+    ) -> StreamingResponse:
+        service = request.app.state.run_service
+        try:
+            service.runs.get_by_id(run_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail="Run not found") from exc
+
+        last_sequence = [after]
+
+        def wrapped_stream():
+            idle_cycles = 0
+            while True:
+                envelopes = service.list_run_events(run_id, last_sequence[0])
+                if envelopes:
+                    idle_cycles = 0
+                for envelope in envelopes:
+                    last_sequence[0] = int(envelope.data.get("sequence", 0))
+                    yield f"id: {envelope.id}\n"
+                    yield f"event: {envelope.event}\n"
+                    yield f"data: {json.dumps(envelope.data, ensure_ascii=False)}\n\n"
+
+                if service.is_run_event_stream_closed(run_id):
+                    break
+
+                idle_cycles += 1
+                if idle_cycles >= 20:
+                    yield ": keepalive\n\n"
+                    idle_cycles = 0
+                time.sleep(0.05)
+
+        return StreamingResponse(
+            wrapped_stream(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+            },
+        )
+
+    @app.post("/runs/{run_id}/cancel")
+    def cancel_run(run_id: str, request: Request) -> dict[str, object]:
+        service = request.app.state.run_service
+        return service.cancel_run(run_id)
 
     @app.post("/providers")
     def create_provider(payload: dict[str, object]) -> dict[str, object]:
@@ -106,6 +239,12 @@ def create_app(config: ApiServerConfig | None = None) -> FastAPI:
     @app.delete("/providers/{provider_id}", status_code=204)
     def delete_provider(provider_id: str) -> None:
         provider_service.delete_provider(provider_id)
+
+    @app.post("/providers/{provider_id}/validate")
+    def validate_provider(
+        provider_id: str, payload: dict[str, object] | None = None
+    ) -> dict[str, object]:
+        return provider_service.validate_provider(provider_id, payload)
 
     @app.on_event("shutdown")
     def close_database() -> None:

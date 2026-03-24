@@ -41,6 +41,9 @@ class ProviderConnectionRecord:
     base_url: str | None
     secret_ref: str
     api_key_configured: bool
+    health_status: str
+    health_message: str | None
+    last_validated_at: str | None
     model_policy: str
     preferred_model_id: str | None
     is_enabled: bool
@@ -163,6 +166,36 @@ class WorkspacesRepository:
         ).fetchall()
         return [_map_workspace(row) for row in rows]
 
+    def update(
+        self,
+        workspace_id: str,
+        *,
+        name: str | None = None,
+        path_label: str | None = None,
+        real_path: str | None = None,
+    ) -> WorkspaceRecord:
+        existing = self.get_by_id(workspace_id)
+        self.connection.execute(
+            """
+            UPDATE workspaces
+            SET name = ?, path_label = ?, real_path = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                name or existing.name,
+                path_label or existing.path_label,
+                real_path or existing.real_path,
+                now_iso_timestamp(),
+                workspace_id,
+            ),
+        )
+        self.connection.commit()
+        return self.get_by_id(workspace_id)
+
+    def delete_by_id(self, workspace_id: str) -> None:
+        self.connection.execute("DELETE FROM workspaces WHERE id = ?", (workspace_id,))
+        self.connection.commit()
+
 
 class ProviderConnectionsRepository:
     def __init__(self, connection: sqlite3.Connection):
@@ -196,9 +229,10 @@ class ProviderConnectionsRepository:
                 """
                 INSERT INTO provider_connections (
                     id, kind, runtime_provider, catalog_provider_id, custom_slug,
-                    display_name, base_url, secret_ref, api_key_configured, model_policy,
-                    preferred_model_id, is_enabled, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    display_name, base_url, secret_ref, api_key_configured,
+                    health_status, health_message, last_validated_at,
+                    model_policy, preferred_model_id, is_enabled, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     kind = excluded.kind,
                     runtime_provider = excluded.runtime_provider,
@@ -208,6 +242,9 @@ class ProviderConnectionsRepository:
                     base_url = excluded.base_url,
                     secret_ref = excluded.secret_ref,
                     api_key_configured = excluded.api_key_configured,
+                    health_status = excluded.health_status,
+                    health_message = excluded.health_message,
+                    last_validated_at = excluded.last_validated_at,
                     model_policy = excluded.model_policy,
                     preferred_model_id = excluded.preferred_model_id,
                     is_enabled = excluded.is_enabled,
@@ -223,6 +260,9 @@ class ProviderConnectionsRepository:
                     connection_data.get("base_url"),
                     secret_ref,
                     1 if bool(connection_data.get("api_key_configured", False)) else 0,
+                    str(connection_data.get("health_status") or "unknown"),
+                    connection_data.get("health_message"),
+                    connection_data.get("last_validated_at"),
                     str(connection_data.get("model_policy") or "all_catalog"),
                     connection_data.get("preferred_model_id"),
                     0 if connection_data.get("is_enabled") is False else 1,
@@ -636,6 +676,9 @@ def _map_provider_connection(row: sqlite3.Row) -> ProviderConnectionRecord:
         base_url=_nullable_str(row["base_url"]),
         secret_ref=str(row["secret_ref"]),
         api_key_configured=bool(row["api_key_configured"]),
+        health_status=str(row["health_status"]),
+        health_message=_nullable_str(row["health_message"]),
+        last_validated_at=_nullable_str(row["last_validated_at"]),
         model_policy=str(row["model_policy"]),
         preferred_model_id=_nullable_str(row["preferred_model_id"]),
         is_enabled=bool(row["is_enabled"]),

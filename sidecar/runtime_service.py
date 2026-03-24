@@ -4,12 +4,17 @@ import inspect
 import platform
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, cast
 
 from smolagents.memory import ActionStep, FinalAnswerStep, PlanningStep
 from smolagents.models import ChatMessageStreamDelta
 
-from context_builder import ContextBuildError, ContextBuilder, ContextBuilderConfig, RuntimeInfo
+from context_builder import (
+    ContextBuildError,
+    ContextBuilder,
+    ContextBuilderConfig,
+    RuntimeInfo,
+)
 from direct_model import DirectModel, DirectModelConfig, DirectModelError
 from local_code_executor import LocalCodeExecutor
 from memory import MemoryConsolidator, MemoryStore
@@ -21,11 +26,17 @@ from tools import build_workspace_tools, path_identity, resolve_path_arg
 
 WORKSPACE_BASED_INSTRUCTION = "DO NOT use any web search tool, you can only use the tools provided. Complete task based on the files on your workspace"
 
+
 class RuntimeProcessError(RuntimeError):
     def __init__(self, code: str, message: str):
         super().__init__(message)
         self.code = code
         self.message = message
+
+
+class RuntimeCancelledError(RuntimeProcessError):
+    def __init__(self, message: str = "Run cancelled"):
+        super().__init__("cancelled", message)
 
 
 @dataclass(frozen=True)
@@ -71,6 +82,8 @@ class CodeAgentRuntimeService:
         user_input: str,
         auth_context: dict[str, Any],
         metadata: RunMetadata,
+        event_callback: Callable[[dict[str, Any]], None] | None = None,
+        is_cancelled: Callable[[], bool] | None = None,
     ) -> dict[str, Any]:
         workspace_path = self._resolve_workspace_path(metadata)
         session_key = self._resolve_session_key(metadata, workspace_path)
@@ -79,23 +92,43 @@ class CodeAgentRuntimeService:
         direct_provider = str(self.config.direct_provider or "custom").strip().lower()
         direct_base_url = str(self.config.direct_base_url or "").strip()
         direct_api_key = str(self.config.direct_api_key or "").strip()
-        direct_model_id = str(self.config.direct_model_id or self.config.model_id).strip()
-        if direct_provider not in BUILTIN_PROVIDERS and direct_base_url == "":
-            raise RuntimeProcessError("invalid_base_url", "direct base url is missing")
-        if direct_api_key == "":
-            raise RuntimeProcessError("missing_api_key", "direct api key is missing")
-        if direct_model_id == "":
-            raise RuntimeProcessError("missing_model_id", "direct model id is missing")
-
-        selected_model = DirectModel(
-            DirectModelConfig(
-                provider=str(self.config.direct_provider or "custom"),
-                base_url=direct_base_url,
-                api_key=direct_api_key,
-                model_id=direct_model_id,
-                timeout_seconds=max(1.0, float(self.config.direct_request_timeout_ms) / 1000.0),
-            )
+        direct_model_id = str(
+            self.config.direct_model_id or self.config.model_id
+        ).strip()
+        use_direct_model = self.model_factory is None or any(
+            [
+                self.config.direct_provider,
+                self.config.direct_base_url,
+                self.config.direct_api_key,
+                self.config.direct_model_id,
+            ]
         )
+        selected_model = None
+        if use_direct_model:
+            if direct_provider not in BUILTIN_PROVIDERS and direct_base_url == "":
+                raise RuntimeProcessError(
+                    "invalid_base_url", "direct base url is missing"
+                )
+            if direct_api_key == "":
+                raise RuntimeProcessError(
+                    "missing_api_key", "direct api key is missing"
+                )
+            if direct_model_id == "":
+                raise RuntimeProcessError(
+                    "missing_model_id", "direct model id is missing"
+                )
+
+            selected_model = DirectModel(
+                DirectModelConfig(
+                    provider=str(self.config.direct_provider or "custom"),
+                    base_url=direct_base_url,
+                    api_key=direct_api_key,
+                    model_id=direct_model_id,
+                    timeout_seconds=max(
+                        1.0, float(self.config.direct_request_timeout_ms) / 1000.0
+                    ),
+                )
+            )
         consolidation_provider = selected_model
 
         if self.consolidator_factory:
@@ -112,7 +145,9 @@ class CodeAgentRuntimeService:
                     model=self.config.model_id,
                 )
             else:
-                consolidator = self.consolidator_factory(self.sessions, self.memory_store)
+                consolidator = self.consolidator_factory(
+                    self.sessions, self.memory_store
+                )
         else:
             consolidator = MemoryConsolidator(
                 self.sessions,
@@ -138,20 +173,19 @@ class CodeAgentRuntimeService:
         )
 
         try:
-            context_prompt = self.context_builder.build_system_prompt(context_cfg, runtime_info, self.memory_store)
+            context_prompt = self.context_builder.build_system_prompt(
+                context_cfg, runtime_info, self.memory_store
+            )
         except ContextBuildError as exc:
             raise RuntimeProcessError("context_build_failed", str(exc)) from exc
 
         try:
-            model = (
-                self.model_factory()
-                if self.model_factory
-                else selected_model
-            )
+            model = self.model_factory() if self.model_factory else selected_model
         except DirectModelError as exc:
             raise RuntimeProcessError(exc.code, exc.message) from exc
         except Exception as exc:
             raise RuntimeProcessError("runtime_error", str(exc)) from exc
+        consolidation_provider = selected_model or model
 
         tools = build_workspace_tools(
             workspace_path,
@@ -191,8 +225,10 @@ class CodeAgentRuntimeService:
         task = self._compose_task_with_history(user_input, session)
 
         try:
-            stream = agent.run(task, stream=True, reset=True)
+            stream: Any = agent.run(task, stream=True, reset=True)
             for event in stream:
+                if is_cancelled is not None and is_cancelled():
+                    raise RuntimeCancelledError()
                 if isinstance(event, ChatMessageStreamDelta):
                     if event.content is None or event.content == "":
                         continue
@@ -205,39 +241,60 @@ class CodeAgentRuntimeService:
                             "text": event.content,
                         }
                     )
+                    if event_callback is not None:
+                        event_callback(
+                            {
+                                "type": "delta",
+                                "payload": {
+                                    "step_id": current_step_id,
+                                    "text": event.content,
+                                },
+                            }
+                        )
                     continue
 
                 if isinstance(event, PlanningStep):
                     step_id = allocate_step_id(current_step_id)
-                    steps.append(
-                        {
-                            "step_id": step_id,
-                            "step_kind": "planning",
-                            "model_output": event.plan or "",
-                            "observations": [],
-                            "error": None,
-                            "usage": self._usage_dict(event.token_usage),
-                            "duration_ms": self._duration_ms(event),
-                            "has_delta": stream_buffer_by_step.get(step_id, "") != "",
-                        }
-                    )
-                    current_step_id = None
+                    step_payload = {
+                        "step_id": step_id,
+                        "step_kind": "planning",
+                        "model_output": event.plan or "",
+                        "observations": [],
+                        "error": None,
+                        "usage": self._usage_dict(event.token_usage),
+                        "duration_ms": self._duration_ms(event),
+                        "has_delta": stream_buffer_by_step.get(step_id, "") != "",
+                    }
+                    steps.append(step_payload)
+                    if event_callback is not None:
+                        event_callback(
+                            {
+                                "type": "step",
+                                "payload": step_payload,
+                            }
+                        )
                     continue
 
                 if isinstance(event, ActionStep):
                     step_id = allocate_step_id(current_step_id)
-                    steps.append(
-                        {
-                            "step_id": step_id,
-                            "step_kind": "action",
-                            "model_output": str(event.model_output or ""),
-                            "observations": self._observation_list(event.observations),
-                            "error": None if event.error is None else str(event.error),
-                            "usage": self._usage_dict(event.token_usage),
-                            "duration_ms": self._duration_ms(event),
-                            "has_delta": stream_buffer_by_step.get(step_id, "") != "",
-                        }
-                    )
+                    step_payload = {
+                        "step_id": step_id,
+                        "step_kind": "action",
+                        "model_output": str(event.model_output or ""),
+                        "observations": self._observation_list(event.observations),
+                        "error": None if event.error is None else str(event.error),
+                        "usage": self._usage_dict(event.token_usage),
+                        "duration_ms": self._duration_ms(event),
+                        "has_delta": stream_buffer_by_step.get(step_id, "") != "",
+                    }
+                    steps.append(step_payload)
+                    if event_callback is not None:
+                        event_callback(
+                            {
+                                "type": "step",
+                                "payload": step_payload,
+                            }
+                        )
                     if event.is_final_answer and event.action_output is not None:
                         final_answer = str(event.action_output)
                     current_step_id = None
@@ -274,7 +331,9 @@ class CodeAgentRuntimeService:
 
     def _resolve_workspace_path(self, metadata: RunMetadata) -> str:
         raw = metadata.workspace_path or self.config.workspace_path_default
-        if self.config.tool_os_type and str(self.config.tool_os_type).strip().lower().startswith("win"):
+        if self.config.tool_os_type and str(
+            self.config.tool_os_type
+        ).strip().lower().startswith("win"):
             return resolve_path_arg(raw, raw, self.config.tool_os_type)
         return str(Path(raw).expanduser().resolve())
 

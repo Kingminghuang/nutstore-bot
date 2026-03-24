@@ -1,0 +1,466 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+import logging
+from pathlib import Path
+import re
+from typing import Any, Callable
+
+from fastapi import BackgroundTasks, HTTPException, status
+
+from repositories import (
+    MessagesRepository,
+    SessionsRepository,
+    WorkspacesRepository,
+)
+
+
+ModelTitleGenerator = Callable[[str, str], str | None]
+
+
+LOGGER = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class SessionService:
+    workspaces: WorkspacesRepository
+    sessions: SessionsRepository
+    messages: MessagesRepository
+    model_title_generator: ModelTitleGenerator | None = None
+
+    def list_workspaces_payload(self) -> dict[str, list[dict[str, Any]]]:
+        return {
+            "workspaces": [
+                serialize_workspace(workspace) for workspace in self.workspaces.list()
+            ]
+        }
+
+    def create_workspace(self, payload: dict[str, Any]) -> dict[str, Any]:
+        name = _normalize_required_string(
+            payload.get("name"), detail="Workspace name is required"
+        )
+        real_path = _normalize_required_string(
+            payload.get("realPath", payload.get("real_path")),
+            detail="Workspace path is required",
+        )
+        path_label = _normalize_required_string(
+            payload.get("pathLabel", payload.get("path_label", real_path)),
+            detail="Workspace path label is required",
+        )
+
+        resolved_path = Path(real_path).expanduser().resolve()
+        if not resolved_path.exists() or not resolved_path.is_dir():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Workspace path must point to an existing directory",
+            )
+
+        try:
+            workspace = self.workspaces.create(
+                name=name,
+                path_label=path_label,
+                real_path=str(resolved_path),
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Workspace path is already registered",
+            ) from exc
+
+        return serialize_workspace(workspace)
+
+    def delete_workspace(self, workspace_id: str) -> None:
+        self._get_workspace_or_404(workspace_id)
+        self.workspaces.delete_by_id(workspace_id)
+
+    def update_workspace(
+        self, workspace_id: str, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        existing = self._get_workspace_or_404(workspace_id)
+        name = _normalize_optional_string(payload.get("name"))
+        path_label = _normalize_optional_string(
+            payload.get("pathLabel", payload.get("path_label"))
+        )
+        real_path = _normalize_optional_string(
+            payload.get("realPath", payload.get("real_path"))
+        )
+
+        resolved_real_path = existing.real_path
+        if real_path is not None:
+            resolved = Path(real_path).expanduser().resolve()
+            if not resolved.exists() or not resolved.is_dir():
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Workspace path must point to an existing directory",
+                )
+            resolved_real_path = str(resolved)
+
+        try:
+            workspace = self.workspaces.update(
+                workspace_id,
+                name=name,
+                path_label=path_label,
+                real_path=resolved_real_path if real_path is not None else None,
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Workspace path is already registered",
+            ) from exc
+
+        return serialize_workspace(workspace)
+
+    def list_sessions_payload(
+        self, workspace_id: str
+    ) -> dict[str, list[dict[str, Any]]]:
+        self._get_workspace_or_404(workspace_id)
+        sessions = self.sessions.list_by_workspace_id(workspace_id)
+        return {"sessions": [serialize_session(session) for session in sessions]}
+
+    def create_session(
+        self, workspace_id: str, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        self._get_workspace_or_404(workspace_id)
+        connection_id = _normalize_optional_string(
+            payload.get("connectionId", payload.get("connection_id"))
+        )
+        model_id = _normalize_optional_string(
+            payload.get("modelId", payload.get("model_id"))
+        )
+
+        session = self.sessions.create(
+            workspace_id=workspace_id,
+            active_connection_id=connection_id,
+            active_model_id=model_id,
+        )
+        return serialize_session(session)
+
+    def update_session(
+        self, session_id: str, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        session = self._get_session_or_404(session_id)
+        title = _normalize_required_string(
+            payload.get("title"), detail="Session title is required"
+        )
+
+        updated = self.sessions.touch(
+            session.id,
+            title=title,
+            title_source="manual",
+            title_status="idle",
+        )
+        LOGGER.info(
+            "Session renamed: session_id=%s workspace_id=%s title=%s",
+            updated.id,
+            updated.workspace_id,
+            updated.title,
+        )
+        return serialize_session(updated)
+
+    def list_messages_payload(self, session_id: str) -> dict[str, list[dict[str, Any]]]:
+        self._get_session_or_404(session_id)
+        messages = self.messages.list_by_session_id(session_id)
+        return {"messages": [serialize_message(message) for message in messages]}
+
+    def append_message(
+        self,
+        session_id: str,
+        payload: dict[str, Any],
+        background_tasks: BackgroundTasks | None = None,
+    ) -> dict[str, Any]:
+        session = self._get_session_or_404(session_id)
+        role = _normalize_required_string(
+            payload.get("role"), detail="Message role is required"
+        )
+        if role not in {"user", "assistant", "system"}:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid message role",
+            )
+
+        content = _normalize_required_string(
+            payload.get("content"), detail="Message content is required"
+        )
+        run_id = _normalize_optional_string(payload.get("runId", payload.get("run_id")))
+        step_id = _normalize_optional_string(
+            payload.get("stepId", payload.get("step_id"))
+        )
+        metadata_json = _normalize_optional_string(
+            payload.get("metadataJson", payload.get("metadata_json"))
+        )
+        connection_id = _normalize_optional_string(
+            payload.get("connectionId", payload.get("connection_id"))
+        )
+        model_id = _normalize_optional_string(
+            payload.get("modelId", payload.get("model_id"))
+        )
+
+        message = self.messages.append(
+            session_id=session_id,
+            role=role,
+            content=content,
+            run_id=run_id,
+            step_id=step_id,
+            metadata_json=metadata_json,
+        )
+
+        should_generate_model_title = (
+            role == "assistant"
+            and session.title_source == "heuristic"
+            and session.message_count == 1
+        )
+
+        if role == "user":
+            self.apply_first_user_message_title(
+                session_id,
+                content,
+                active_connection_id=connection_id,
+                active_model_id=model_id,
+            )
+
+        refreshed = self.sessions.get_by_id(session_id)
+        self.sessions.touch(
+            session_id,
+            message_count=refreshed.message_count + 1,
+            last_message_preview=content[:280],
+            last_message_at=message.created_at,
+            active_connection_id=connection_id or refreshed.active_connection_id,
+            active_model_id=model_id or refreshed.active_model_id,
+            title_status="pending"
+            if should_generate_model_title
+            else refreshed.title_status,
+            title_generation_attempts=(refreshed.title_generation_attempts + 1)
+            if should_generate_model_title
+            else refreshed.title_generation_attempts,
+        )
+
+        if should_generate_model_title:
+            if background_tasks is not None:
+                background_tasks.add_task(self.generate_model_title, session_id)
+            else:
+                self.generate_model_title(session_id)
+
+        return serialize_message(message)
+
+    def apply_first_user_message_title(
+        self,
+        session_id: str,
+        text: str,
+        *,
+        active_connection_id: str | None = None,
+        active_model_id: str | None = None,
+    ) -> None:
+        session = self._get_session_or_404(session_id)
+        if session.title_source == "manual" or session.message_count > 0:
+            return
+
+        heuristic_title = build_heuristic_title(text)
+        self.sessions.touch(
+            session_id,
+            title=heuristic_title,
+            title_source="heuristic",
+            active_connection_id=active_connection_id,
+            active_model_id=active_model_id,
+        )
+
+    def apply_model_generated_title(
+        self, session_id: str, title: str
+    ) -> dict[str, Any]:
+        session = self._get_session_or_404(session_id)
+        if session.title_source == "manual":
+            return serialize_session(session)
+
+        normalized_title = build_heuristic_title(title)
+        updated = self.sessions.touch(
+            session_id,
+            title=normalized_title,
+            title_source="model",
+            title_status="ready",
+        )
+        return serialize_session(updated)
+
+    def generate_model_title(self, session_id: str) -> dict[str, Any]:
+        session = self._get_session_or_404(session_id)
+        if session.title_source == "manual":
+            return serialize_session(session)
+
+        first_user_message, first_assistant_message = self._get_title_seed_messages(
+            session_id
+        )
+        if first_user_message is None or first_assistant_message is None:
+            updated = self.sessions.touch(session_id, title_status="failed")
+            return serialize_session(updated)
+
+        generator = self.model_title_generator or build_model_title
+        try:
+            generated_title = generator(
+                first_user_message.content, first_assistant_message.content
+            )
+        except Exception:  # noqa: BLE001
+            updated = self.sessions.touch(session_id, title_status="failed")
+            return serialize_session(updated)
+
+        normalized_title = _normalize_optional_string(generated_title)
+        if normalized_title is None:
+            updated = self.sessions.touch(session_id, title_status="failed")
+            return serialize_session(updated)
+
+        return self.apply_model_generated_title(session_id, normalized_title)
+
+    def _get_title_seed_messages(self, session_id: str):
+        first_user_message = None
+        first_assistant_message = None
+        for message in self.messages.list_by_session_id(session_id):
+            if first_user_message is None and message.role == "user":
+                first_user_message = message
+                continue
+            if (
+                first_user_message is not None
+                and first_assistant_message is None
+                and message.role == "assistant"
+            ):
+                first_assistant_message = message
+                break
+        return first_user_message, first_assistant_message
+
+    def _get_workspace_or_404(self, workspace_id: str):
+        try:
+            return self.workspaces.get_by_id(workspace_id)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Workspace not found",
+            ) from exc
+
+    def _get_session_or_404(self, session_id: str):
+        try:
+            return self.sessions.get_by_id(session_id)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Session not found",
+            ) from exc
+
+
+def serialize_workspace(workspace) -> dict[str, Any]:
+    return {
+        "id": workspace.id,
+        "name": workspace.name,
+        "pathLabel": workspace.path_label,
+        "realPath": workspace.real_path,
+        "createdAt": workspace.created_at,
+        "updatedAt": workspace.updated_at,
+    }
+
+
+def serialize_session(session) -> dict[str, Any]:
+    return {
+        "id": session.id,
+        "workspaceId": session.workspace_id,
+        "title": session.title,
+        "titleSource": session.title_source,
+        "createdAt": session.created_at,
+        "updatedAt": session.updated_at,
+        "lastMessageAt": session.last_message_at,
+        "messageCount": session.message_count,
+        "lastMessagePreview": session.last_message_preview,
+        "activeConnectionId": session.active_connection_id,
+        "activeModelId": session.active_model_id,
+    }
+
+
+def serialize_message(message) -> dict[str, Any]:
+    return {
+        "id": message.id,
+        "sessionId": message.session_id,
+        "runId": message.run_id,
+        "role": message.role,
+        "content": message.content,
+        "stepId": message.step_id,
+        "sequenceNo": message.sequence_no,
+        "createdAt": message.created_at,
+        "metadataJson": message.metadata_json,
+    }
+
+
+def build_heuristic_title(text: str) -> str:
+    words = text.strip().split()
+    if not words:
+        return "New session"
+    title = " ".join(words[:8]).strip()
+    if len(title) > 60:
+        title = title[:57].rstrip() + "..."
+    return title or "New session"
+
+
+def build_model_title(user_text: str, assistant_text: str) -> str:
+    candidate_words = _title_words(_strip_title_prefixes(user_text))
+    while candidate_words and candidate_words[-1].lower() in _TITLE_TRAILING_FILLERS:
+        candidate_words.pop()
+
+    if len(candidate_words) < 4:
+        existing_words = {word.lower() for word in candidate_words}
+        for word in _title_words(assistant_text):
+            lowered = word.lower()
+            if lowered in existing_words:
+                continue
+            candidate_words.append(word)
+            existing_words.add(lowered)
+            if len(candidate_words) >= 8:
+                break
+
+    if not candidate_words:
+        return build_heuristic_title(user_text)
+
+    title = " ".join(candidate_words[:8]).strip()
+    if not title:
+        return build_heuristic_title(user_text)
+    title = title[:1].upper() + title[1:]
+    if len(title) > 60:
+        title = title[:57].rstrip() + "..."
+    return title
+
+
+def _strip_title_prefixes(text: str) -> str:
+    normalized = text.strip()
+    if not normalized:
+        return normalized
+
+    previous = None
+    while normalized != previous:
+        previous = normalized
+        for pattern in _TITLE_PREFIX_PATTERNS:
+            normalized = pattern.sub("", normalized, count=1).strip()
+    return normalized
+
+
+def _title_words(text: str) -> list[str]:
+    return _TITLE_WORD_PATTERN.findall(text)
+
+
+def _normalize_required_string(value: Any, *, detail: str) -> str:
+    normalized = _normalize_optional_string(value)
+    if normalized is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=detail)
+    return normalized
+
+
+def _normalize_optional_string(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+_TITLE_PREFIX_PATTERNS = (
+    re.compile(r"^(?:can|could|would)\s+you\s+", re.IGNORECASE),
+    re.compile(r"^please\s+", re.IGNORECASE),
+    re.compile(r"^help\s+me\s+(?:with\s+)?", re.IGNORECASE),
+    re.compile(r"^i\s+need\s+to\s+", re.IGNORECASE),
+    re.compile(r"^i\s+want\s+to\s+", re.IGNORECASE),
+    re.compile(r"^lets?\s+", re.IGNORECASE),
+    re.compile(r"^how\s+do\s+i\s+", re.IGNORECASE),
+    re.compile(r"^how\s+to\s+", re.IGNORECASE),
+)
+_TITLE_WORD_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/-]*")
+_TITLE_TRAILING_FILLERS = {"please", "thanks", "thank", "carefully"}

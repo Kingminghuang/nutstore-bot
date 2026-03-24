@@ -95,3 +95,64 @@ class RepositoriesTests(unittest.TestCase):
         self.assertTrue(provider.connection.secret_ref.startswith("sec_"))
         self.assertEqual(updated_run.status, "completed")
         self.assertEqual(updated_run.final_answer, "Done")
+
+    def test_session_list_survives_reopening_database(self) -> None:
+        workspace = self.repositories.workspaces.create(
+            name="nutstore-bot",
+            path_label="C:/repo/nutstore-bot",
+            real_path="C:/repo/nutstore-bot",
+        )
+
+        session = self.repositories.sessions.create(
+            workspace_id=workspace.id,
+            active_connection_id=None,
+            active_model_id=None,
+        )
+        self.repositories.sessions.touch(
+            session.id,
+            title="Persisted session title",
+            title_source="manual",
+        )
+
+        self.connection.close()
+        reopened_connection = connect_database(self.temp_dir)
+        self.addCleanup(reopened_connection.close)
+        reopened = create_repositories(reopened_connection)
+
+        sessions = reopened.sessions.list_by_workspace_id(workspace.id)
+        self.assertEqual(len(sessions), 1)
+        self.assertEqual(sessions[0].id, session.id)
+        self.assertEqual(sessions[0].title, "Persisted session title")
+        self.assertEqual(sessions[0].title_source, "manual")
+
+    def test_provider_health_fields_survive_reopening_database(self) -> None:
+        provider = self.repositories.providers.save_bundle(
+            connection_data={
+                "kind": "builtin",
+                "runtime_provider": "openai",
+                "catalog_provider_id": "openai",
+                "display_name": "OpenAI",
+                "api_key_configured": True,
+                "health_status": "connected",
+                "health_message": "Validation succeeded",
+                "last_validated_at": "2026-03-24T12:00:00Z",
+                "preferred_model_id": "gpt-5.4",
+            },
+            models=[{"source": "catalog", "model_id": "gpt-5.4"}],
+        )
+
+        self.connection.close()
+        reopened_connection = connect_database(self.temp_dir)
+        self.addCleanup(reopened_connection.close)
+        reopened = create_repositories(reopened_connection)
+
+        reopened_provider = reopened.providers.get_bundle_by_id_or_raise(
+            provider.connection.id
+        )
+        self.assertEqual(reopened_provider.connection.health_status, "connected")
+        self.assertEqual(
+            reopened_provider.connection.health_message, "Validation succeeded"
+        )
+        self.assertEqual(
+            reopened_provider.connection.last_validated_at, "2026-03-24T12:00:00Z"
+        )

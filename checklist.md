@@ -543,6 +543,45 @@ Internal sidecar runtime request mapping:
 
 Reserved for later SSE streaming.
 
+Proposed SSE event envelope:
+
+```json
+{
+  "id": "run_001:7",
+  "event": "run.step",
+  "data": {
+    "type": "run.step",
+    "runId": "run_001",
+    "sessionId": "sess_001",
+    "sequence": 7,
+    "createdAt": "2026-03-24T12:00:05Z",
+    "stepId": "step-2",
+    "stepKind": "action",
+    "modelOutput": "Searching workspace",
+    "observations": ["Found 6 matches"],
+    "error": null,
+    "usage": {
+      "inputTokens": 120,
+      "outputTokens": 48,
+      "reasoningTokens": 0
+    },
+    "durationMs": 320,
+    "hasDelta": true
+  }
+}
+```
+
+Planned event types:
+
+- `run.status` for queued/running/completed/failed/cancelled transitions
+- `run.delta` for token/text chunks tied to a `stepId`
+- `run.step` for normalized planning/action step snapshots
+- `run.message` for persisted user/assistant/system messages
+- `run.completed` for final answer completion
+- `run.failed` for terminal failures
+- `run.keepalive` for idle heartbeat frames
+- `run.replay-ready` when persisted replay state is fully catch-up ready
+
 ### `POST /runs/{id}/cancel`
 
 Reserved for later cooperative cancellation.
@@ -827,95 +866,95 @@ uv run python api_server.py
 
 ### Phase 4: ModelSelector
 
-- [ ] Implement `GET /model-options`
-- [ ] Filter out provider connections without configured keys
-- [ ] Use sidecar catalog for built-in provider model groups
-- [ ] Use persisted custom models for custom provider model groups
-- [ ] Replace hardcoded provider list in `frontend/components/settings-modal.tsx`
-- [ ] Replace hardcoded model list in `frontend/components/main-content.tsx`
-- [ ] Replace the `google` frontend alias with `gemini`
-- [ ] Refactor `selectedModel` from `string` to `{ connectionId, modelId }`
-- [ ] Disable `ModelSelector` and submit when no configured providers exist
-- [ ] Add frontend tests for grouped selector rendering and default selection
+- [x] Implement `GET /model-options`
+- [x] Filter out provider connections without configured keys
+- [x] Use sidecar catalog for built-in provider model groups
+- [x] Use persisted custom models for custom provider model groups
+- [x] Replace hardcoded provider list in `frontend/components/settings-modal.tsx`
+- [x] Replace hardcoded model list in `frontend/components/main-content.tsx`
+- [x] Replace the `google` frontend alias with `gemini`
+- [x] Refactor `selectedModel` from `string` to `{ connectionId, modelId }`
+- [x] Disable `ModelSelector` and submit when no configured providers exist
+- [x] Add frontend tests for grouped selector rendering and default selection
 
 ### Phase 5: Workspaces, Sessions, and Titles
 
-- [ ] Implement `GET /workspaces`
-- [ ] Implement `POST /workspaces`
-- [ ] Add trusted workspace path registration rules
-- [ ] Add session repository methods for create/list/update/title state
-- [ ] Use `session.id` as `session_key` when calling runtime service
-- [ ] Implement `GET /workspaces/{workspaceId}/sessions`
-- [ ] Implement `POST /workspaces/{workspaceId}/sessions`
-- [ ] Implement `PATCH /sessions/{id}` for manual renaming
-- [ ] Implement `GET /sessions/{id}/messages`
-- [ ] Replace frontend placeholder `time` strings with persisted timestamps
-- [ ] Replace frontend placeholder session titles with backend-driven titles
-- [ ] Add heuristic title generation after the first user message
-- [ ] Add async model title generation after the first completed run
-- [ ] Ensure manual titles are never overwritten
-- [ ] Add tests for placeholder -> heuristic -> model title transitions
+- [x] Implement `GET /workspaces`
+- [x] Implement `POST /workspaces`
+- [x] Add trusted workspace path registration rules
+- [x] Add session repository methods for create/list/update/title state
+- [x] Use `session.id` as `session_key` when calling runtime service
+- [x] Implement `GET /workspaces/{workspaceId}/sessions`
+- [x] Implement `POST /workspaces/{workspaceId}/sessions`
+- [x] Implement `PATCH /sessions/{id}` for manual renaming
+- [x] Implement `GET /sessions/{id}/messages`
+- [x] Replace frontend placeholder `time` strings with persisted timestamps
+- [x] Replace frontend placeholder session titles with backend-driven titles
+- [x] Add heuristic title generation after the first user message
+- [x] Add async model title generation after the first completed run
+- [x] Ensure manual titles are never overwritten
+- [x] Add tests for placeholder -> heuristic -> model title transitions
 
 ### Phase 6: Run Orchestration
 
-- [ ] Implement `POST /runs`
-- [ ] Resolve workspace path from `workspaceId`
-- [ ] Resolve provider connection and decrypt provider secrets
-- [ ] Build runtime request payload from `connectionId + modelId`
-- [ ] Call `runtime_service.py` directly from sidecar services
-- [ ] Persist user and assistant messages into sidecar tables
-- [ ] Persist run status and final answer
-- [ ] Replace `MOCK_RESPONSES` in `frontend/app/page.tsx`
-- [ ] Replace frontend in-memory provider/session truth with API-driven state
-- [ ] Add integration tests for sidecar run request mapping
+- [x] Implement `POST /runs`
+- [x] Resolve workspace path from `workspaceId`
+- [x] Resolve provider connection and decrypt provider secrets
+- [x] Build runtime request payload from `connectionId + modelId`
+- [x] Call `runtime_service.py` directly from sidecar services
+- [x] Persist user and assistant messages into sidecar tables
+- [x] Persist run status and final answer
+- [x] Replace `MOCK_RESPONSES` in `frontend/app/page.tsx`
+- [x] Replace frontend in-memory provider/session truth with API-driven state
+- [x] Add integration tests for sidecar run request mapping
 
 ### Phase 7: Frontend Refactor
 
-- [ ] Replace `frontend/lib/provider-settings.ts` with the new split type model
-- [ ] Refactor `frontend/components/settings-modal.tsx` to use sidecar APIs
-- [ ] Refactor `frontend/components/main-content.tsx` to use grouped model options
-- [ ] Refactor `frontend/app/page.tsx` to fetch providers, sessions, and model options from sidecar
-- [ ] Replace local `ConnectedProvider[]` state with API-driven provider connection state
-- [ ] Replace local session summary state with API-driven session summary state
-- [ ] Keep transient UI-only state local: modal open state, dropdown open state, input text, drag state
+- [x] Replace `frontend/lib/provider-settings.ts` with the new split type model
+- [x] Refactor `frontend/components/settings-modal.tsx` to use sidecar APIs
+- [x] Refactor `frontend/components/main-content.tsx` to use grouped model options
+- [x] Refactor `frontend/app/page.tsx` to fetch providers, sessions, and model options from sidecar
+- [x] Replace local `ConnectedProvider[]` state with API-driven provider connection state
+- [x] Replace local session summary state with API-driven session summary state
+- [x] Keep transient UI-only state local: modal open state, dropdown open state, input text, drag state
 
 ### Phase 8: Local Product Integration
 
-- [ ] Decide how frontend starts sidecar locally
-- [ ] Decide how frontend reads sidecar discovery info
-- [ ] Decide how trusted local workspace selection works in the product shell
-- [ ] Verify frontend can reach sidecar on localhost with auth token
-- [ ] Verify sidecar lifecycle works across app restart
+- [x] Decide how frontend starts sidecar locally
+- [x] Decide how frontend reads sidecar discovery info
+- [x] Decide how trusted local workspace selection works in the product shell
+- [x] Verify frontend can reach sidecar on localhost with auth token
+- [x] Verify sidecar lifecycle works across app restart
 
 ### Phase 9: Streaming and Cancellation
 
-- [ ] Design SSE event protocol for run updates
-- [ ] Implement `GET /runs/{id}/events` or equivalent SSE endpoint
-- [ ] Stream deltas, steps, and final completion events to frontend
-- [ ] Implement `POST /runs/{id}/cancel`
-- [ ] Add cooperative cancellation from API layer to runtime execution
-- [ ] Add tests for streaming and cancellation behavior
+- [x] Design SSE event protocol for run updates
+- [x] Implement `GET /runs/{id}/events` or equivalent SSE endpoint
+- [x] Stream deltas, steps, and final completion events to frontend
+- [x] Implement `POST /runs/{id}/cancel`
+- [x] Add cooperative cancellation from API layer to runtime execution
+- [x] Add tests for streaming and cancellation behavior
 
 ### Phase 10: Verification
 
-- [ ] Verify a built-in OpenAI connection can be saved without `baseUrl`
-- [ ] Verify a Gemini connection does not show `baseUrl` in the UI
-- [ ] Verify a custom provider requires `baseUrl`
-- [ ] Verify only providers with configured keys appear in `ModelSelector`
-- [ ] Verify model groups match provider connections, not frontend hardcoded arrays
-- [ ] Verify session list survives refresh/restart
-- [ ] Verify session title becomes heuristic after the first user message
-- [ ] Verify session title can upgrade to a model-generated title asynchronously
-- [ ] Verify manual title edits are preserved
-- [ ] Verify sidecar builds a valid runtime request for built-in and custom providers
-- [ ] Verify localhost auth blocks unauthorized requests
+- [x] Verify a built-in OpenAI connection can be saved without `baseUrl`
+- [x] Verify a Gemini connection does not show `baseUrl` in the UI
+- [x] Verify a custom provider requires `baseUrl`
+- [x] Verify only providers with configured keys appear in `ModelSelector`
+- [x] Verify model groups match provider connections, not frontend hardcoded arrays
+- [x] Verify session list survives refresh/restart
+- [x] Verify session title becomes heuristic after the first user message
+- [x] Verify session title can upgrade to a model-generated title asynchronously
+- [x] Verify manual title edits are preserved
+- [x] Verify sidecar builds a valid runtime request for built-in and custom providers
+- [x] Verify localhost auth blocks unauthorized requests
 
 ### Phase 11: Post-MVP Enhancements
 
-- [ ] Add `POST /providers/{id}/validate` to test provider config and selected model before saving or enabling
-- [ ] Add provider health/status fields so the UI can show `connected`, `invalid key`, `timeout`, or `model unavailable`
-- [ ] Add secret rotation flows for API keys and secret headers, including stale secret cleanup when connections are deleted or downgraded
-- [ ] Add catalog refresh/versioning so sidecar can reconcile stored preferred models after catalog updates
+- [x] Add `POST /providers/{id}/validate` to test provider config and selected model before saving or enabling
+- [x] Add provider health/status fields so the UI can show `connected`, `invalid key`, `timeout`, or `model unavailable`
+- [x] Add secret rotation flows for API keys and secret headers, including stale secret cleanup when connections are deleted or downgraded
+- [x] Add catalog refresh/versioning so sidecar can reconcile stored preferred models after catalog updates
 - [ ] Add support for multiple saved connections for the same built-in provider if users need separate accounts or environments
 - [ ] Add end-to-end `reasoningEffort` support through frontend, API models, runtime config, and direct model plumbing
 - [ ] Add richer run event persistence so steps, observations, and deltas can be replayed in the UI after refresh
@@ -924,7 +963,7 @@ uv run python api_server.py
 - [ ] Add session summary or memory metadata in sidecar to complement runtime session history for faster sidebar rendering
 - [ ] Add attachment persistence and upload lifecycle if the composer's file picker should survive refreshes
 - [ ] Add import/export tooling for provider connections, ideally without exporting plaintext secrets by default
-- [ ] Add audit logging for provider updates, session renames, and run failures to simplify debugging
+- [x] Add audit logging for provider updates, session renames, and run failures to simplify debugging
 - [ ] Add recovery tooling for corrupted SQLite rows or missing encrypted secret files
 
 ## Current Frontend Hardcoded Data To Replace

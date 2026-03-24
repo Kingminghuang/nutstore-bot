@@ -1,29 +1,71 @@
 "use client"
 
-import { useRef, useState } from "react"
-import { SquarePen, Settings, Folder, FolderPlus, MoreVertical, Edit, ChevronRight, ChevronDown, ChevronUp } from "lucide-react"
+import { useEffect, useRef, useState } from "react"
 import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu"
-import { cn } from "@/lib/utils"
+  ChevronDown,
+  ChevronRight,
+  ChevronUp,
+  Edit,
+  Folder,
+  FolderPlus,
+  PencilLine,
+  Settings,
+  SquarePen,
+  Trash2,
+} from "lucide-react"
+
 import type { Project, Session } from "@/app/page"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
+import { Button } from "@/components/ui/button"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
+import { cn } from "@/lib/utils"
 
 interface SidebarProps {
   projects: Project[]
-  activeProjectId: number | null
-  activeSessionId: number | null
+  activeProjectId: string | null
+  activeSessionId: string | null
   width: number
-  onAddProject: (name: string, path: string) => void
-  onNewSession: (projectId?: number) => void
-  onSessionChange: (sessionId: number, projectId: number) => void
-  onRemoveProject: (projectId: number) => void
+  onAddProject: (name: string, path: string) => void | Promise<void>
+  onRenameProject: (projectId: string, name: string, pathLabel?: string) => void | Promise<void>
+  onNewSession: (projectId?: string) => void | Promise<void>
+  onSessionChange: (sessionId: string, projectId: string) => void
+  onRemoveProject: (projectId: string) => void | Promise<void>
   onSettingsOpen?: () => void
   onResizeStart: (e: React.MouseEvent) => void
 }
+
+type WorkspaceDraft = {
+  name: string
+  path: string
+}
+
+type ProductShellWorkspaceSelection = {
+  name?: string
+  realPath: string
+  pathLabel?: string
+}
+
+type ProductShellBridge = {
+  pickWorkspaceDirectory?: () => Promise<ProductShellWorkspaceSelection>
+}
+
+const SESSION_LIMIT = 5
 
 export function Sidebar({
   projects,
@@ -31,6 +73,7 @@ export function Sidebar({
   activeSessionId,
   width,
   onAddProject,
+  onRenameProject,
   onNewSession,
   onSessionChange,
   onRemoveProject,
@@ -38,137 +81,225 @@ export function Sidebar({
   onResizeStart,
 }: SidebarProps) {
   const [hoveringAddBtn, setHoveringAddBtn] = useState(false)
-  const folderInputRef = useRef<HTMLInputElement>(null)
+  const [workspaceDialogOpen, setWorkspaceDialogOpen] = useState(false)
+  const [workspaceDialogError, setWorkspaceDialogError] = useState<string | null>(null)
+  const [workspaceDialogSubmitting, setWorkspaceDialogSubmitting] = useState(false)
+  const [workspaceDraft, setWorkspaceDraft] = useState<WorkspaceDraft>({ name: "", path: "" })
+
+  const productShellBridge =
+    typeof window === "undefined"
+      ? null
+      : ((window as Window & { __NSBOT_SHELL__?: ProductShellBridge }).__NSBOT_SHELL__ ?? null)
+  const canUseProductShellPicker =
+    typeof productShellBridge?.pickWorkspaceDirectory === "function"
 
   const handleAddProjectClick = () => {
-    folderInputRef.current?.click()
+    setWorkspaceDialogError(null)
+    setWorkspaceDialogOpen(true)
   }
 
-  const handleFolderSelected = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files
-    if (!files || files.length === 0) return
-    // The webkitRelativePath gives "folderName/file.ext", take the first segment
-    const firstFile = files[0]
-    const parts = firstFile.webkitRelativePath.split("/")
-    const folderName = parts[0] || firstFile.name
-    onAddProject(folderName, folderName)
-    // Reset so the same folder can be re-selected
-    e.target.value = ""
+  const handleDirectoryPicker = async () => {
+    const picker = productShellBridge?.pickWorkspaceDirectory
+    if (!picker) {
+      setWorkspaceDialogError(
+        "Folder picking is available in the product shell. Paste a trusted local path here while running in the browser."
+      )
+      return
+    }
+
+    try {
+      const selection = await picker()
+      const path = selection.pathLabel?.trim() || selection.realPath.trim()
+      const name = selection.name?.trim() || basename(selection.realPath) || "Workspace"
+      setWorkspaceDialogError(null)
+      setWorkspaceDraft({ name, path })
+    } catch {
+      // User cancelled.
+    }
   }
 
-  const handleNewSessionClick = () => {
-    onNewSession()
+  const submitWorkspace = async () => {
+    if (!workspaceDraft.name.trim() || !workspaceDraft.path.trim()) {
+      setWorkspaceDialogError("Workspace name and path are required.")
+      return
+    }
+
+    setWorkspaceDialogSubmitting(true)
+    setWorkspaceDialogError(null)
+    try {
+      await onAddProject(workspaceDraft.name.trim(), workspaceDraft.path.trim())
+      setWorkspaceDraft({ name: "", path: "" })
+      setWorkspaceDialogOpen(false)
+    } catch (error) {
+      setWorkspaceDialogError(
+        error instanceof Error ? error.message : "Failed to add workspace"
+      )
+    } finally {
+      setWorkspaceDialogSubmitting(false)
+    }
   }
 
   return (
-    <aside
-      className="relative h-screen bg-[#f9f5f1] border-r border-[#e8e4e0] flex flex-col flex-shrink-0"
-      style={{ width }}
-    >
-      {/* Top accent bar */}
-      <div className="h-1 bg-gradient-to-r from-[#e87b5f] via-[#f5a76c] to-[#8bc28f]" />
+    <>
+      <aside
+        className="relative h-screen bg-[#f9f5f1] border-r border-[#e8e4e0] flex flex-col flex-shrink-0"
+        style={{ width }}
+      >
+        <div className="h-1 bg-gradient-to-r from-[#e87b5f] via-[#f5a76c] to-[#8bc28f]" />
 
-      {/* Menu items */}
-      <div className="p-2 space-y-0.5">
-        <button
-          onClick={handleNewSessionClick}
-          className="w-full flex items-center gap-3 px-3 py-2 text-sm text-foreground/80 hover:bg-[#efe9e4] rounded-lg transition-colors font-medium"
-        >
-          <SquarePen className="w-4 h-4" />
-          New session
-        </button>
-      </div>
+        <div className="p-2 space-y-0.5">
+          <button
+            onClick={() => void onNewSession()}
+            className="w-full flex items-center gap-3 px-3 py-2 text-sm text-foreground/80 hover:bg-[#efe9e4] rounded-lg transition-colors font-medium"
+          >
+            <SquarePen className="w-4 h-4" />
+            New session
+          </button>
+        </div>
 
-      {/* Sessions section */}
-      <div className="flex-1 px-2 mt-4 overflow-y-auto overflow-x-visible">
-        {/* Section header */}
-        <div className="flex items-center justify-between px-3 mb-2">
-          <span className="text-xs font-medium text-muted-foreground">Sessions</span>
-          <div className="relative">
-            <button
-              className="p-1 hover:bg-[#efe9e4] rounded"
-              onClick={handleAddProjectClick}
-              onMouseEnter={() => setHoveringAddBtn(true)}
-              onMouseLeave={() => setHoveringAddBtn(false)}
-              aria-label="Add a new project"
-            >
-              <FolderPlus className="w-3.5 h-3.5 text-muted-foreground" />
-            </button>
-            {hoveringAddBtn && (
-              <div className="absolute right-0 bottom-full mb-1 px-2 py-1 bg-foreground text-background text-xs rounded whitespace-nowrap pointer-events-none z-50">
-                Add a new project
-              </div>
+        <div className="flex-1 px-2 mt-4 overflow-y-auto overflow-x-visible">
+          <div className="flex items-center justify-between px-3 mb-2">
+            <span className="text-xs font-medium text-muted-foreground">Sessions</span>
+            <div className="relative">
+              <button
+                className="p-1 hover:bg-[#efe9e4] rounded"
+                onClick={handleAddProjectClick}
+                onMouseEnter={() => setHoveringAddBtn(true)}
+                onMouseLeave={() => setHoveringAddBtn(false)}
+                aria-label="Add a new project"
+              >
+                <FolderPlus className="w-3.5 h-3.5 text-muted-foreground" />
+              </button>
+              {hoveringAddBtn && (
+                <div className="absolute right-0 bottom-full mb-1 px-2 py-1 bg-foreground text-background text-xs rounded whitespace-nowrap pointer-events-none z-50">
+                  Add a new project
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="space-y-1">
+            {projects.length === 0 && (
+              <p className="px-3 py-4 text-xs text-muted-foreground text-center">
+                No projects yet. Click <FolderPlus className="inline w-3 h-3 mx-0.5" /> to add one.
+              </p>
             )}
+            {projects.map((project) => (
+              <ProjectGroup
+                key={project.id}
+                project={project}
+                activeSessionId={activeSessionId}
+                isActiveProject={activeProjectId === project.id}
+                onNewSession={() => onNewSession(project.id)}
+                onSessionChange={(sid) => onSessionChange(sid, project.id)}
+                onRename={(name, pathLabel) => onRenameProject(project.id, name, pathLabel)}
+                onRemove={() => onRemoveProject(project.id)}
+              />
+            ))}
           </div>
         </div>
 
-        {/* Hidden folder input */}
-        <input
-          ref={folderInputRef}
-          type="file"
-          // @ts-expect-error — webkitdirectory is non-standard but well-supported
-          webkitdirectory=""
-          multiple
-          className="hidden"
-          onChange={handleFolderSelected}
-        />
-
-        {/* Project list */}
-        <div className="space-y-1">
-          {projects.length === 0 && (
-            <p className="px-3 py-4 text-xs text-muted-foreground text-center">
-              No projects yet. Click <FolderPlus className="inline w-3 h-3 mx-0.5" /> to add one.
-            </p>
-          )}
-          {projects.map((project) => (
-            <ProjectGroup
-              key={project.id}
-              project={project}
-              activeSessionId={activeSessionId}
-              isActiveProject={activeProjectId === project.id}
-              onNewSession={() => onNewSession(project.id)}
-              onSessionChange={(sid) => onSessionChange(sid, project.id)}
-              onRemove={() => onRemoveProject(project.id)}
-            />
-          ))}
+        <div className="p-2 border-t border-[#e8e4e0]">
+          <button
+            onClick={onSettingsOpen}
+            className="w-full flex items-center gap-3 px-3 py-2 text-sm text-foreground/80 hover:bg-[#efe9e4] rounded-lg transition-colors"
+          >
+            <Settings className="w-4 h-4" />
+            Settings
+          </button>
         </div>
-      </div>
 
-      {/* Settings */}
-      <div className="p-2 border-t border-[#e8e4e0]">
-        <button
-          onClick={onSettingsOpen}
-          className="w-full flex items-center gap-3 px-3 py-2 text-sm text-foreground/80 hover:bg-[#efe9e4] rounded-lg transition-colors"
+        <div
+          onMouseDown={onResizeStart}
+          className="absolute top-0 right-0 h-full w-1.5 cursor-col-resize group z-30"
+          title="Drag to resize"
         >
-          <Settings className="w-4 h-4" />
-          Settings
-        </button>
-      </div>
+          <div className="h-full w-0.5 ml-auto opacity-0 group-hover:opacity-100 transition-opacity bg-[#e87b5f]/60 rounded-full" />
+        </div>
+      </aside>
 
-      {/* ResizeHandle */}
-      <div
-        onMouseDown={onResizeStart}
-        className="absolute top-0 right-0 h-full w-1.5 cursor-col-resize group z-30"
-        title="Drag to resize"
-      >
-        <div className="h-full w-0.5 ml-auto opacity-0 group-hover:opacity-100 transition-opacity bg-[#e87b5f]/60 rounded-full" />
-      </div>
-    </aside>
+      <Dialog open={workspaceDialogOpen} onOpenChange={setWorkspaceDialogOpen}>
+        <DialogContent className="sm:max-w-md" showCloseButton={!workspaceDialogSubmitting}>
+          <DialogHeader>
+            <DialogTitle>Add workspace</DialogTitle>
+            <DialogDescription>
+              Register a trusted local workspace for sessions and runs.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <label className="text-sm font-medium" htmlFor="workspace-name-input">Workspace name</label>
+              <input
+                id="workspace-name-input"
+                value={workspaceDraft.name}
+                onChange={(event) =>
+                  setWorkspaceDraft((prev) => ({ ...prev, name: event.target.value }))
+                }
+                className="w-full rounded-lg border border-[#e8e4e0] bg-background px-3 py-2 text-sm"
+                placeholder="nutstore-bot"
+              />
+            </div>
+            <div className="space-y-2">
+              <div className="flex items-center justify-between gap-3">
+                <label className="text-sm font-medium" htmlFor="workspace-path-input">Workspace path</label>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => void handleDirectoryPicker()}
+                >
+                  {canUseProductShellPicker ? "Pick folder" : "Use product shell"}
+                </Button>
+              </div>
+              <input
+                id="workspace-path-input"
+                value={workspaceDraft.path}
+                onChange={(event) =>
+                  setWorkspaceDraft((prev) => ({ ...prev, path: event.target.value }))
+                }
+                className="w-full rounded-lg border border-[#e8e4e0] bg-background px-3 py-2 text-sm"
+                placeholder="/path/to/workspace"
+              />
+              <p className="text-xs text-muted-foreground">
+                {canUseProductShellPicker
+                  ? "Use the product shell picker to populate a trusted local path automatically."
+                  : "Product shell builds should provide a native folder picker. In the browser, paste a trusted local path manually."}
+              </p>
+            </div>
+            {workspaceDialogError && (
+              <p className="text-sm text-destructive">{workspaceDialogError}</p>
+            )}
+          </div>
+
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              disabled={workspaceDialogSubmitting}
+              onClick={() => setWorkspaceDialogOpen(false)}
+            >
+              Cancel
+            </Button>
+            <Button type="button" disabled={workspaceDialogSubmitting} onClick={() => void submitWorkspace()}>
+              {workspaceDialogSubmitting ? "Adding..." : "Add workspace"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
   )
 }
-
-// ─── ProjectGroup ─────────────────────────────────────────────────────────────
 
 interface ProjectGroupProps {
   project: Project
   isActiveProject: boolean
-  activeSessionId: number | null
-  onNewSession: () => void
-  onSessionChange: (sessionId: number) => void
-  onRemove: () => void
+  activeSessionId: string | null
+  onNewSession: () => void | Promise<void>
+  onSessionChange: (sessionId: string) => void
+  onRename: (name: string, pathLabel?: string) => void | Promise<void>
+  onRemove: () => void | Promise<void>
 }
-
-const SESSION_LIMIT = 5
 
 function ProjectGroup({
   project,
@@ -176,156 +307,242 @@ function ProjectGroup({
   activeSessionId,
   onNewSession,
   onSessionChange,
+  onRename,
   onRemove,
 }: ProjectGroupProps) {
   const [expanded, setExpanded] = useState(true)
   const [hovering, setHovering] = useState(false)
   const [hoveringFolder, setHoveringFolder] = useState(false)
-  const [dropdownOpen, setDropdownOpen] = useState(false)
-  const [hoveringEditBtn, setHoveringEditBtn] = useState(false)
-  const [editingName, setEditingName] = useState(false)
+  const [renameOpen, setRenameOpen] = useState(false)
+  const [deleteOpen, setDeleteOpen] = useState(false)
   const [projectName, setProjectName] = useState(project.name)
+  const [pathLabel, setPathLabel] = useState(project.path)
   const [showAllSessions, setShowAllSessions] = useState(false)
+  const [actionError, setActionError] = useState<string | null>(null)
+  const [isSubmitting, setIsSubmitting] = useState(false)
+
+  useEffect(() => {
+    setProjectName(project.name)
+    setPathLabel(project.path)
+  }, [project.name, project.path])
 
   const visibleSessions = showAllSessions
     ? project.sessions
     : project.sessions.slice(0, SESSION_LIMIT)
 
-  return (
-    <div className="space-y-0.5">
-      {/* Project row */}
-      <div
-        className={cn(
-          "flex items-center gap-1 px-1 py-1.5 rounded-lg hover:bg-[#efe9e4] transition-colors group",
-          isActiveProject && "bg-[#efe9e4]/60"
-        )}
-        onMouseEnter={() => setHovering(true)}
-        onMouseLeave={() => {
-          if (!dropdownOpen) setHovering(false)
-        }}
-      >
-        {/* Expand button */}
-        <button
-          onClick={() => setExpanded((v) => !v)}
-          onMouseEnter={() => setHoveringFolder(true)}
-          onMouseLeave={() => setHoveringFolder(false)}
-          className="w-5 h-5 flex items-center justify-center flex-shrink-0 rounded transition-colors hover:bg-[#e0d9d3]"
-          aria-label={expanded ? "Collapse" : "Expand"}
-        >
-          {hoveringFolder ? (
-            expanded ? (
-              <ChevronDown className="w-3.5 h-3.5 text-foreground/70" />
-            ) : (
-              <ChevronRight className="w-3.5 h-3.5 text-foreground/70" />
-            )
-          ) : (
-            <Folder className="w-4 h-4 text-muted-foreground" />
-          )}
-        </button>
+  const submitRename = async () => {
+    if (!projectName.trim()) {
+      setActionError("Workspace name is required.")
+      return
+    }
+    setIsSubmitting(true)
+    setActionError(null)
+    try {
+      await onRename(projectName.trim(), pathLabel.trim() || project.path)
+      setRenameOpen(false)
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : "Failed to rename workspace")
+    } finally {
+      setIsSubmitting(false)
+    }
+  }
 
-        {/* Project name */}
-        {editingName ? (
-          <input
-            autoFocus
-            value={projectName}
-            onChange={(e) => setProjectName(e.target.value)}
-            onBlur={() => setEditingName(false)}
-            onKeyDown={(e) => e.key === "Enter" && setEditingName(false)}
-            className="flex-1 text-sm bg-transparent border-b border-foreground/30 focus:outline-none px-1"
-          />
-        ) : (
+  const submitDelete = async () => {
+    setIsSubmitting(true)
+    setActionError(null)
+    try {
+      await onRemove()
+      setDeleteOpen(false)
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : "Failed to remove workspace")
+    } finally {
+      setIsSubmitting(false)
+    }
+  }
+
+  return (
+    <>
+      <div className="space-y-0.5">
+        <div
+          className={cn(
+            "flex items-center gap-1 px-1 py-1.5 rounded-lg hover:bg-[#efe9e4] transition-colors group",
+            isActiveProject && "bg-[#efe9e4]/60"
+          )}
+          onMouseEnter={() => setHovering(true)}
+          onMouseLeave={() => setHovering(false)}
+        >
+          <button
+            onClick={() => setExpanded((value) => !value)}
+            onMouseEnter={() => setHoveringFolder(true)}
+            onMouseLeave={() => setHoveringFolder(false)}
+            className="w-5 h-5 flex items-center justify-center flex-shrink-0 rounded transition-colors hover:bg-[#e0d9d3]"
+            aria-label={expanded ? "Collapse" : "Expand"}
+          >
+            {hoveringFolder ? (
+              expanded ? (
+                <ChevronDown className="w-3.5 h-3.5 text-foreground/70" />
+              ) : (
+                <ChevronRight className="w-3.5 h-3.5 text-foreground/70" />
+              )
+            ) : (
+              <Folder className="w-4 h-4 text-muted-foreground" />
+            )}
+          </button>
+
           <button
             className="flex-1 text-sm text-foreground/80 text-left truncate"
-            onClick={() => setExpanded((v) => !v)}
+            onClick={() => setExpanded((value) => !value)}
+            title={project.path}
           >
-            {projectName}
+            {project.name}
           </button>
-        )}
 
-        {/* Hover actions */}
-        {(hovering || dropdownOpen) && !editingName && (
-          <div className="flex items-center gap-0.5 flex-shrink-0">
-            {/* More options — uses Radix UI Portal to escape sidebar overflow */}
-            <DropdownMenu
-              open={dropdownOpen}
-              onOpenChange={(open) => {
-                setDropdownOpen(open)
-                if (!open) setHovering(false)
-              }}
-            >
-              <DropdownMenuTrigger asChild>
-                <button
-                  className="p-1 hover:bg-[#e0d9d3] rounded transition-colors"
-                  aria-label="More options"
-                >
-                  <MoreVertical className="w-4 h-4 text-muted-foreground" />
-                </button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="start" className="min-w-[130px]">
-                <DropdownMenuItem
-                  onSelect={() => { setEditingName(true); setDropdownOpen(false) }}
-                >
-                  Edit name
-                </DropdownMenuItem>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem
-                  variant="destructive"
-                  onSelect={() => { onRemove(); setDropdownOpen(false) }}
-                >
-                  Remove
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
-
-            {/* Start new session */}
-            <div className="relative">
+          {hovering && (
+            <div className="flex items-center gap-0.5 flex-shrink-0">
               <button
-                onClick={onNewSession}
-                onMouseEnter={() => setHoveringEditBtn(true)}
-                onMouseLeave={() => setHoveringEditBtn(false)}
+                type="button"
+                onClick={() => {
+                  setActionError(null)
+                  setRenameOpen(true)
+                }}
                 className="p-1 hover:bg-[#e0d9d3] rounded transition-colors"
-                aria-label="Start new session"
+                aria-label={`Rename workspace ${project.name}`}
+                title="Rename workspace"
+              >
+                <PencilLine className="w-4 h-4 text-muted-foreground" />
+              </button>
+
+              <button
+                type="button"
+                onClick={() => void onNewSession()}
+                className="p-1 hover:bg-[#e0d9d3] rounded transition-colors"
+                aria-label={`Start new session in ${project.name}`}
+                title="Start new session"
               >
                 <Edit className="w-4 h-4 text-muted-foreground" />
               </button>
-              {hoveringEditBtn && (
-                <div className="absolute right-0 bottom-full mb-1 px-2 py-1 bg-foreground text-background text-xs rounded whitespace-nowrap pointer-events-none z-10">
-                  New session in {projectName}
-                </div>
-              )}
+
+              <button
+                type="button"
+                onClick={() => {
+                  setActionError(null)
+                  setDeleteOpen(true)
+                }}
+                className="p-1 hover:bg-[#e0d9d3] rounded transition-colors"
+                aria-label={`Remove workspace ${project.name}`}
+                title="Remove workspace"
+              >
+                <Trash2 className="w-4 h-4 text-muted-foreground" />
+              </button>
             </div>
-          </div>
+          )}
+        </div>
+
+        {expanded && visibleSessions.map((session) => (
+          <SessionItem
+            key={session.id}
+            session={session}
+            isActive={activeSessionId === session.id}
+            onClick={() => onSessionChange(session.id)}
+          />
+        ))}
+
+        {expanded && project.sessions.length > SESSION_LIMIT && (
+          <button
+            onClick={() => setShowAllSessions((value) => !value)}
+            className="w-full flex items-center gap-1.5 pl-7 pr-3 py-1 text-xs text-muted-foreground hover:text-foreground hover:bg-[#efe9e4] rounded-lg transition-colors"
+          >
+            {showAllSessions ? (
+              <>
+                <ChevronUp className="w-3 h-3" /> Show less
+              </>
+            ) : (
+              <>
+                <ChevronDown className="w-3 h-3" /> Show {project.sessions.length - SESSION_LIMIT} more
+              </>
+            )}
+          </button>
         )}
       </div>
 
-      {/* Session list */}
-      {expanded && visibleSessions.map((session) => (
-        <SessionItem
-          key={session.id}
-          session={session}
-          isActive={activeSessionId === session.id}
-          onClick={() => onSessionChange(session.id)}
-        />
-      ))}
+      <Dialog
+        open={renameOpen}
+        onOpenChange={(open) => {
+          setRenameOpen(open)
+          if (!open) {
+            setActionError(null)
+            setProjectName(project.name)
+            setPathLabel(project.path)
+          }
+        }}
+      >
+        <DialogContent className="sm:max-w-md" showCloseButton={!isSubmitting}>
+          <DialogHeader>
+            <DialogTitle>Edit workspace</DialogTitle>
+            <DialogDescription>
+              Update the display name or path label shown in the sidebar.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <label className="text-sm font-medium" htmlFor={`rename-workspace-name-${project.id}`}>Workspace name</label>
+              <input
+                id={`rename-workspace-name-${project.id}`}
+                value={projectName}
+                onChange={(event) => setProjectName(event.target.value)}
+                className="w-full rounded-lg border border-[#e8e4e0] bg-background px-3 py-2 text-sm"
+              />
+            </div>
+            <div className="space-y-2">
+              <label className="text-sm font-medium" htmlFor={`rename-workspace-path-${project.id}`}>Path label</label>
+              <input
+                id={`rename-workspace-path-${project.id}`}
+                value={pathLabel}
+                onChange={(event) => setPathLabel(event.target.value)}
+                className="w-full rounded-lg border border-[#e8e4e0] bg-background px-3 py-2 text-sm"
+              />
+            </div>
+            {actionError && <p className="text-sm text-destructive">{actionError}</p>}
+          </div>
+          <DialogFooter>
+            <Button type="button" variant="outline" disabled={isSubmitting} onClick={() => setRenameOpen(false)}>
+              Cancel
+            </Button>
+            <Button type="button" disabled={isSubmitting} onClick={() => void submitRename()}>
+              {isSubmitting ? "Saving..." : "Save changes"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
-      {/* Toggle more sessions */}
-      {expanded && project.sessions.length > SESSION_LIMIT && (
-        <button
-          onClick={() => setShowAllSessions((v) => !v)}
-          className="w-full flex items-center gap-1.5 pl-7 pr-3 py-1 text-xs text-muted-foreground hover:text-foreground hover:bg-[#efe9e4] rounded-lg transition-colors"
-        >
-          {showAllSessions ? (
-            <><ChevronUp className="w-3 h-3" /> Show less</>
-          ) : (
-            <><ChevronDown className="w-3 h-3" /> Show {project.sessions.length - SESSION_LIMIT} more</>
-          )}
-        </button>
-      )}
-    </div>
+      <AlertDialog
+        open={deleteOpen}
+        onOpenChange={(open) => {
+          setDeleteOpen(open)
+          if (!open) {
+            setActionError(null)
+          }
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Remove workspace?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This removes the workspace and all persisted sessions under it from the local sidecar database.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          {actionError && <p className="text-sm text-destructive">{actionError}</p>}
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={isSubmitting}>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={() => void submitDelete()} disabled={isSubmitting}>
+              {isSubmitting ? "Removing..." : "Remove workspace"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </>
   )
 }
-
-// ─── SessionItem ──────────────────────────────────────────────────────────────
 
 interface SessionItemProps {
   session: Session
@@ -342,8 +559,50 @@ function SessionItem({ session, isActive, onClick }: SessionItemProps) {
         isActive && "bg-[#efe9e4]"
       )}
     >
-      <span className="flex-1 text-left truncate">{session.label}</span>
-      <span className="text-xs text-muted-foreground flex-shrink-0">{session.time}</span>
+      <span className="flex-1 text-left truncate">{session.title}</span>
+      <span className="text-xs text-muted-foreground flex-shrink-0">
+        {formatRelativeTime(session.lastMessageAt ?? session.updatedAt)}
+      </span>
     </button>
   )
+}
+
+function formatRelativeTime(value: string): string {
+  const timestamp = new Date(value).getTime()
+  if (Number.isNaN(timestamp)) {
+    return ""
+  }
+
+  const diffMs = Date.now() - timestamp
+  const diffMinutes = Math.max(0, Math.floor(diffMs / 60000))
+  if (diffMinutes < 1) {
+    return "just now"
+  }
+  if (diffMinutes < 60) {
+    return `${diffMinutes}m`
+  }
+
+  const diffHours = Math.floor(diffMinutes / 60)
+  if (diffHours < 24) {
+    return `${diffHours}h`
+  }
+
+  const diffDays = Math.floor(diffHours / 24)
+  if (diffDays < 7) {
+    return `${diffDays}d`
+  }
+
+  return new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+  }).format(new Date(timestamp))
+}
+
+function basename(value: string): string {
+  const normalized = value.trim().replace(/[\\/]+$/, "")
+  if (normalized === "") {
+    return ""
+  }
+  const parts = normalized.split(/[\\/]/)
+  return parts[parts.length - 1] ?? ""
 }
