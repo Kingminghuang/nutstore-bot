@@ -45,7 +45,11 @@ class RunEventTests(unittest.TestCase):
             created_at="2026-03-24T12:00:02Z",
             step_id="step-1",
             step_kind="action",
+            step_number=1,
+            plan=None,
             model_output="tool call",
+            code_action="print('hello')",
+            action_output={"status": "ok"},
             observations=["changed file"],
             error=None,
             usage=usage,
@@ -73,6 +77,9 @@ class RunEventTests(unittest.TestCase):
             step.data["usage"],
             {"inputTokens": 10, "outputTokens": 20, "reasoningTokens": 3},
         )
+        self.assertEqual(step.data["stepNumber"], 1)
+        self.assertEqual(step.data["codeAction"], "print('hello')")
+        self.assertEqual(step.data["actionOutput"], {"status": "ok"})
         self.assertEqual(completed.data["finalAnswer"], "Done")
         self.assertEqual(failed.data["errorCode"], "provider_timeout")
 

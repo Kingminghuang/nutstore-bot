@@ -161,6 +161,38 @@ MIGRATIONS: tuple[Migration, ...] = (
         ALTER TABLE provider_connections ADD COLUMN last_validated_at TEXT;
         """,
     ),
+    Migration(
+        version=3,
+        sql="""
+        CREATE TABLE IF NOT EXISTS run_steps (
+          id TEXT PRIMARY KEY,
+          run_id TEXT NOT NULL,
+          session_id TEXT NOT NULL,
+          sequence_no INTEGER NOT NULL,
+          step_id TEXT NOT NULL,
+          step_kind TEXT NOT NULL CHECK (step_kind IN ('planning', 'action')),
+          step_number INTEGER,
+          plan_text TEXT,
+          code_action TEXT,
+          action_output_json TEXT,
+          observations_json TEXT NOT NULL DEFAULT '[]',
+          error_text TEXT,
+          usage_json TEXT NOT NULL DEFAULT '{"inputTokens":0,"outputTokens":0,"reasoningTokens":0}',
+          duration_ms INTEGER NOT NULL DEFAULT 0,
+          has_delta INTEGER NOT NULL DEFAULT 0,
+          raw_model_output TEXT,
+          created_at TEXT NOT NULL,
+          FOREIGN KEY (run_id) REFERENCES runs(id) ON DELETE CASCADE,
+          FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+        );
+
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_run_steps_run_sequence
+        ON run_steps(run_id, sequence_no);
+
+        CREATE INDEX IF NOT EXISTS idx_run_steps_run_created
+        ON run_steps(run_id, created_at, sequence_no);
+        """,
+    ),
 )
 
 

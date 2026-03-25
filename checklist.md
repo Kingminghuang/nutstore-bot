@@ -955,10 +955,10 @@ uv run python api_server.py
 - [x] Add provider health/status fields so the UI can show `connected`, `invalid key`, `timeout`, or `model unavailable`
 - [x] Add secret rotation flows for API keys and secret headers, including stale secret cleanup when connections are deleted or downgraded
 - [x] Add catalog refresh/versioning so sidecar can reconcile stored preferred models after catalog updates
-- [ ] Add support for multiple saved connections for the same built-in provider if users need separate accounts or environments
-- [ ] Add end-to-end `reasoningEffort` support through frontend, API models, runtime config, and direct model plumbing
-- [ ] Add richer run event persistence so steps, observations, and deltas can be replayed in the UI after refresh
-- [ ] Add background job handling for model title generation retries and failure backoff
+- [x] Keep one saved connection per built-in provider; do not add multiple saved connections because the current product does not need multi-account or multi-environment coexistence
+- [x] Add end-to-end `reasoningEffort` support through frontend, API models, runtime config, and direct model plumbing
+- [x] Add persisted run step history so complete planning/action steps can be replayed in the UI after refresh, without restoring delta streaming
+- [x] Add title-generation failure fallback that uses the first user message snippet (up to 50 chars)
 - [ ] Add session history pagination and lazy message loading for large conversations
 - [ ] Add session summary or memory metadata in sidecar to complement runtime session history for faster sidebar rendering
 - [ ] Add attachment persistence and upload lifecycle if the composer's file picker should survive refreshes

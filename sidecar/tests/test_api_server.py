@@ -5,8 +5,10 @@ import logging
 import tempfile
 import unittest
 from pathlib import Path
+from typing import cast
 
 from fastapi.testclient import TestClient
+from fastapi import FastAPI
 
 from python_runtime.api_server import (
     ApiServerConfig,
@@ -15,7 +17,11 @@ from python_runtime.api_server import (
 )
 from python_runtime.discovery import read_service_discovery
 from python_runtime.local_paths import nsbot_home
-from python_runtime.runtime_service import RuntimeProcessError
+from python_runtime.runtime_service import (
+    RunMetadata,
+    RuntimeProcessError,
+    RuntimeWorkerConfig,
+)
 
 
 class ApiServerTests(unittest.TestCase):
@@ -29,9 +35,13 @@ class ApiServerTests(unittest.TestCase):
         )
         self.client = TestClient(create_app(self.config))
 
+    @property
+    def app(self) -> FastAPI:
+        return cast(FastAPI, self.client.app)
+
     def _set_sync_run_launcher(self) -> None:
-        self.client.app.state.run_service = replace(
-            self.client.app.state.run_service,
+        self.app.state.run_service = replace(
+            self.app.state.run_service,
             run_launcher=lambda task: task(),
         )
 
@@ -616,7 +626,7 @@ class ApiServerTests(unittest.TestCase):
         self.assertEqual(session_response.json()["title"], "New session")
         self.assertEqual(session_response.json()["titleSource"], "placeholder")
 
-        database = self.client.app.state.database
+        database = self.app.state.database
         database.execute(
             "INSERT INTO messages (id, session_id, run_id, role, content, step_id, sequence_no, created_at, metadata_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
@@ -910,6 +920,58 @@ class ApiServerTests(unittest.TestCase):
         )
         self.assertEqual(after_assistant["messageCount"], 2)
 
+    def test_post_run_falls_back_to_first_user_message_title_when_model_title_generation_fails(
+        self,
+    ) -> None:
+        workspace = self._create_workspace("workspace-title-fallback")
+        provider = self._create_provider()
+        session = self._create_session(workspace["id"], str(provider["id"]))
+        self._set_sync_run_launcher()
+
+        def failing_title_generator(user_text: str, assistant_text: str) -> str:
+            del user_text, assistant_text
+            raise RuntimeError("Title generation failed")
+
+        def fake_runtime_executor(config, run_id, user_input, auth_context, metadata):
+            del config, run_id, user_input, auth_context, metadata
+            return {
+                "deltas": [],
+                "steps": [],
+                "final_answer": "Fallback title flow complete.",
+            }
+
+        self.app.state.run_service = replace(
+            self.app.state.run_service,
+            session_service=replace(
+                self.app.state.run_service.session_service,
+                model_title_generator=failing_title_generator,
+            ),
+            runtime_executor=fake_runtime_executor,
+        )
+
+        response = self.client.post(
+            "/runs",
+            headers={"Authorization": "Bearer test-token"},
+            json={
+                "sessionId": session["id"],
+                "workspaceId": workspace["id"],
+                "connectionId": provider["id"],
+                "modelId": "gpt-5.4",
+                "input": "Please help me integrate frontend and sidecar local service with robust auth and persistence",
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+
+        listed = self.client.get(
+            f"/workspaces/{workspace['id']}/sessions",
+            headers={"Authorization": "Bearer test-token"},
+        ).json()["sessions"][0]
+        self.assertEqual(listed["titleSource"], "heuristic")
+        self.assertEqual(
+            listed["title"],
+            "Please help me integrate frontend and sidecar loca",
+        )
+
     def test_update_and_delete_provider(self) -> None:
         created = self.client.post(
             "/providers",
@@ -983,8 +1045,8 @@ class ApiServerTests(unittest.TestCase):
                 "final_answer": "Implemented sidecar run orchestration.",
             }
 
-        self.client.app.state.run_service = replace(
-            self.client.app.state.run_service,
+        self.app.state.run_service = replace(
+            self.app.state.run_service,
             runtime_executor=fake_runtime_executor,
         )
 
@@ -1012,14 +1074,15 @@ class ApiServerTests(unittest.TestCase):
             body["messages"][-1]["content"], "Implemented sidecar run orchestration."
         )
 
-        metadata = captured["metadata"]
+        metadata = cast(RunMetadata, captured["metadata"])
         self.assertEqual(metadata.session_key, session["id"])
         self.assertEqual(metadata.workspace_path, workspace["realPath"])
 
-        config = captured["config"]
+        config = cast(RuntimeWorkerConfig, captured["config"])
         self.assertEqual(config.direct_provider, "openai")
         self.assertEqual(config.direct_model_id, "gpt-5.4")
         self.assertEqual(config.direct_api_key, "sk-test")
+        self.assertEqual(config.direct_reasoning_effort, "medium")
 
         messages_response = self.client.get(
             f"/sessions/{session['id']}/messages",
@@ -1069,6 +1132,70 @@ class ApiServerTests(unittest.TestCase):
             "Run failed: Model is not available for this provider connection",
         )
 
+    def test_post_run_accepts_explicit_reasoning_effort(self) -> None:
+        workspace = self._create_workspace("workspace-run-reasoning")
+        provider = self._create_provider()
+        session = self._create_session(workspace["id"], str(provider["id"]))
+        self._set_sync_run_launcher()
+
+        captured: dict[str, object] = {}
+
+        def fake_runtime_executor(config, run_id, user_input, auth_context, metadata):
+            captured["config"] = config
+            return {
+                "deltas": [],
+                "steps": [],
+                "final_answer": "Reasoning set explicitly.",
+            }
+
+        self.app.state.run_service = replace(
+            self.app.state.run_service,
+            runtime_executor=fake_runtime_executor,
+        )
+
+        response = self.client.post(
+            "/runs",
+            headers={"Authorization": "Bearer test-token"},
+            json={
+                "sessionId": session["id"],
+                "workspaceId": workspace["id"],
+                "connectionId": provider["id"],
+                "modelId": "gpt-5.4",
+                "reasoningEffort": "xhigh",
+                "input": "Please think harder",
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        config = cast(RuntimeWorkerConfig, captured["config"])
+        self.assertEqual(config.direct_reasoning_effort, "xhigh")
+
+    def test_post_run_rejects_invalid_reasoning_effort_for_model(self) -> None:
+        workspace = self._create_workspace("workspace-run-invalid-reasoning")
+        provider = self._create_provider()
+        session = self._create_session(workspace["id"], str(provider["id"]))
+        self._set_sync_run_launcher()
+
+        response = self.client.post(
+            "/runs",
+            headers={"Authorization": "Bearer test-token"},
+            json={
+                "sessionId": session["id"],
+                "workspaceId": workspace["id"],
+                "connectionId": provider["id"],
+                "modelId": "gpt-5.4-mini",
+                "reasoningEffort": "xhigh",
+                "input": "Use unsupported effort",
+            },
+        )
+        self.assertEqual(response.status_code, 400)
+        body = response.json()
+        self.assertEqual(body["run"]["status"], "failed")
+        self.assertEqual(body["run"]["errorCode"], "invalid_reasoning_effort")
+        self.assertEqual(
+            body["messages"][-1]["content"],
+            "Run failed: Reasoning effort is not supported for this model",
+        )
+
     def test_post_run_persists_system_message_for_runtime_failure(self) -> None:
         workspace = self._create_workspace("workspace-run-runtime-failure")
         provider = self._create_provider()
@@ -1078,8 +1205,8 @@ class ApiServerTests(unittest.TestCase):
         def fake_runtime_executor(config, run_id, user_input, auth_context, metadata):
             raise RuntimeProcessError("provider_error", "Upstream model request failed")
 
-        self.client.app.state.run_service = replace(
-            self.client.app.state.run_service,
+        self.app.state.run_service = replace(
+            self.app.state.run_service,
             runtime_executor=fake_runtime_executor,
         )
 
@@ -1157,8 +1284,8 @@ class ApiServerTests(unittest.TestCase):
                 "final_answer": "Custom gateway run complete.",
             }
 
-        self.client.app.state.run_service = replace(
-            self.client.app.state.run_service,
+        self.app.state.run_service = replace(
+            self.app.state.run_service,
             runtime_executor=fake_runtime_executor,
         )
 
@@ -1175,7 +1302,7 @@ class ApiServerTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 200)
 
-        config = captured["config"]
+        config = cast(RuntimeWorkerConfig, captured["config"])
         self.assertEqual(config.direct_provider, "custom")
         self.assertEqual(config.direct_base_url, "https://llm.example.com/v1")
         self.assertEqual(config.direct_api_key, "sk-custom-test")
@@ -1183,7 +1310,7 @@ class ApiServerTests(unittest.TestCase):
         self.assertEqual(config.workspace_path_default, workspace["realPath"])
         self.assertEqual(config.ns_bot_home, str(nsbot_home(str(self.temp_dir))))
 
-        metadata = captured["metadata"]
+        metadata = cast(RunMetadata, captured["metadata"])
         self.assertEqual(metadata.session_key, session["id"])
         self.assertEqual(metadata.workspace_path, workspace["realPath"])
 
@@ -1210,8 +1337,8 @@ class ApiServerTests(unittest.TestCase):
                 "final_answer": "Queued run completed later.",
             }
 
-        self.client.app.state.run_service = replace(
-            self.client.app.state.run_service,
+        self.app.state.run_service = replace(
+            self.app.state.run_service,
             runtime_executor=fake_runtime_executor,
             run_launcher=lambda task: launched_tasks.append(task),
         )
@@ -1276,8 +1403,8 @@ class ApiServerTests(unittest.TestCase):
                 "final_answer": "Completed with SSE events.",
             }
 
-        self.client.app.state.run_service = replace(
-            self.client.app.state.run_service,
+        self.app.state.run_service = replace(
+            self.app.state.run_service,
             runtime_executor=fake_runtime_executor,
         )
 
@@ -1355,6 +1482,92 @@ class ApiServerTests(unittest.TestCase):
         )
         self.assertIn("event: run.replay-ready", payload)
 
+    def test_get_run_steps_returns_persisted_planning_and_action_steps(self) -> None:
+        workspace = self._create_workspace("workspace-run-steps")
+        provider = self._create_provider()
+        session = self._create_session(workspace["id"], str(provider["id"]))
+        self._set_sync_run_launcher()
+
+        def fake_runtime_executor(config, run_id, user_input, auth_context, metadata):
+            return {
+                "deltas": [],
+                "steps": [
+                    {
+                        "step_id": "step-1",
+                        "step_number": None,
+                        "step_kind": "planning",
+                        "plan": "Inspect the workspace and outline the approach.",
+                        "model_output": "Inspect the workspace and outline the approach.",
+                        "code_action": None,
+                        "action_output": None,
+                        "observations": [],
+                        "error": None,
+                        "usage": {
+                            "input_tokens": 11,
+                            "output_tokens": 4,
+                            "reasoning_tokens": 0,
+                        },
+                        "duration_ms": 120,
+                        "has_delta": True,
+                    },
+                    {
+                        "step_id": "step-2",
+                        "step_number": 1,
+                        "step_kind": "action",
+                        "plan": None,
+                        "model_output": "Ignored model output",
+                        "code_action": 'print("done")',
+                        "action_output": {"result": "done"},
+                        "observations": ["Execution logs:", "done"],
+                        "error": None,
+                        "usage": {
+                            "input_tokens": 9,
+                            "output_tokens": 3,
+                            "reasoning_tokens": 0,
+                        },
+                        "duration_ms": 180,
+                        "has_delta": False,
+                    },
+                ],
+                "final_answer": "Done.",
+            }
+
+        self.app.state.run_service = replace(
+            self.app.state.run_service,
+            runtime_executor=fake_runtime_executor,
+        )
+
+        run_response = self.client.post(
+            "/runs",
+            headers={"Authorization": "Bearer test-token"},
+            json={
+                "sessionId": session["id"],
+                "workspaceId": workspace["id"],
+                "connectionId": provider["id"],
+                "modelId": "gpt-5.4",
+                "input": "Persist the run steps",
+            },
+        )
+        self.assertEqual(run_response.status_code, 200)
+        run_id = run_response.json()["run"]["id"]
+
+        steps_response = self.client.get(
+            f"/runs/{run_id}/steps",
+            headers={"Authorization": "Bearer test-token"},
+        )
+        self.assertEqual(steps_response.status_code, 200)
+
+        body = steps_response.json()
+        self.assertEqual(len(body["steps"]), 2)
+        self.assertEqual(body["steps"][0]["stepKind"], "planning")
+        self.assertEqual(
+            body["steps"][0]["plan"], "Inspect the workspace and outline the approach."
+        )
+        self.assertEqual(body["steps"][1]["stepKind"], "action")
+        self.assertEqual(body["steps"][1]["stepNumber"], 1)
+        self.assertEqual(body["steps"][1]["codeAction"], 'print("done")')
+        self.assertEqual(body["steps"][1]["actionOutput"], {"result": "done"})
+
     def test_cancel_run_marks_run_cancelled_and_emits_terminal_events(self) -> None:
         workspace = self._create_workspace("workspace-run-cancel")
         provider = self._create_provider()
@@ -1379,8 +1592,8 @@ class ApiServerTests(unittest.TestCase):
                 "final_answer": "Should not complete",
             }
 
-        self.client.app.state.run_service = replace(
-            self.client.app.state.run_service,
+        self.app.state.run_service = replace(
+            self.app.state.run_service,
             runtime_executor=fake_runtime_executor,
             run_launcher=lambda task: launched_tasks.append(task),
         )

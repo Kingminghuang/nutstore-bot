@@ -6,13 +6,24 @@ import unittest
 from dataclasses import replace
 from pathlib import Path
 
-from smolagents.models import ChatMessage, ChatMessageStreamDelta, MessageRole, Model
+from smolagents.models import (
+    ChatMessage,
+    ChatMessageStreamDelta,
+    MessageRole,
+    Model,
+)
 from smolagents.monitoring import TokenUsage
 
 from python_runtime.memory import MemoryConsolidator
+from python_runtime.direct_model import DirectModelConfig
 from python_runtime.native_code_agent import NativeCodeAgent
 from python_runtime.direct_model import DirectModelError
-from python_runtime.runtime_service import CodeAgentRuntimeService, RunMetadata, RuntimeProcessError, RuntimeWorkerConfig
+from python_runtime.runtime_service import (
+    CodeAgentRuntimeService,
+    RunMetadata,
+    RuntimeProcessError,
+    RuntimeWorkerConfig,
+)
 
 
 class FakeStreamingModel(Model):
@@ -20,33 +31,55 @@ class FakeStreamingModel(Model):
         super().__init__(model_id="fake")
         self.answer = answer
 
-    def generate_stream(self, messages, stop_sequences=None, response_format=None, tools_to_call_from=None, **kwargs):
+    def generate_stream(
+        self,
+        messages,
+        stop_sequences=None,
+        response_format=None,
+        tools_to_call_from=None,
+        **kwargs,
+    ):
         payload = (
-            "Thought: solve quickly\n"
-            "<code>\n"
-            f"final_answer('{self.answer}')\n"
-            "</code>"
+            f"Thought: solve quickly\n<code>\nfinal_answer('{self.answer}')\n</code>"
         )
         yield ChatMessageStreamDelta(
             content=payload,
             token_usage=TokenUsage(input_tokens=10, output_tokens=12),
         )
 
-    def generate(self, messages, stop_sequences=None, response_format=None, tools_to_call_from=None, **kwargs):
+    def generate(
+        self,
+        messages,
+        stop_sequences=None,
+        response_format=None,
+        tools_to_call_from=None,
+        **kwargs,
+    ):
         return ChatMessage(role=MessageRole.ASSISTANT, content="unused")
-
-
-
 
 
 class FakeDirectFailureModel(Model):
     def __init__(self):
         super().__init__(model_id="fake")
 
-    def generate_stream(self, messages, stop_sequences=None, response_format=None, tools_to_call_from=None, **kwargs):
+    def generate_stream(
+        self,
+        messages,
+        stop_sequences=None,
+        response_format=None,
+        tools_to_call_from=None,
+        **kwargs,
+    ):
         raise DirectModelError("provider_timeout", "provider timed out")
 
-    def generate(self, messages, stop_sequences=None, response_format=None, tools_to_call_from=None, **kwargs):
+    def generate(
+        self,
+        messages,
+        stop_sequences=None,
+        response_format=None,
+        tools_to_call_from=None,
+        **kwargs,
+    ):
         raise DirectModelError("provider_timeout", "provider timed out")
 
 
@@ -89,7 +122,9 @@ class RuntimeServiceTests(unittest.TestCase):
             run_id="run-1",
             user_input="say ok",
             auth_context={},
-            metadata=RunMetadata(workspace_path=str(self.workspace_a), session_key=None),
+            metadata=RunMetadata(
+                workspace_path=str(self.workspace_a), session_key=None
+            ),
         )
 
         self.assertEqual(result["final_answer"], "ok")
@@ -116,10 +151,42 @@ class RuntimeServiceTests(unittest.TestCase):
             run_id="run-direct",
             user_input="task",
             auth_context={},
-            metadata=RunMetadata(workspace_path=str(self.workspace_a), session_key=None),
+            metadata=RunMetadata(
+                workspace_path=str(self.workspace_a), session_key=None
+            ),
         )
 
         self.assertEqual(result["final_answer"], "direct-ok")
+
+    def test_direct_mode_passes_reasoning_effort_to_model_factory(self) -> None:
+        captured: dict[str, object] = {}
+
+        cfg = replace(
+            self._config(),
+            direct_provider="openai",
+            direct_base_url="https://api.openai.com/v1",
+            direct_api_key="sk-test",
+            direct_model_id="gpt-4.1",
+            direct_reasoning_effort="high",
+        )
+
+        def fake_model_factory(config: DirectModelConfig):
+            captured["reasoning_effort"] = config.reasoning_effort
+            return FakeStreamingModel("direct-ok")
+
+        service = CodeAgentRuntimeService(cfg, model_factory=fake_model_factory)
+
+        result = service.process(
+            run_id="run-direct-reasoning",
+            user_input="task",
+            auth_context={},
+            metadata=RunMetadata(
+                workspace_path=str(self.workspace_a), session_key=None
+            ),
+        )
+
+        self.assertEqual(result["final_answer"], "direct-ok")
+        self.assertEqual(captured["reasoning_effort"], "high")
 
     def test_direct_mode_requires_api_key(self) -> None:
         cfg = replace(
@@ -137,7 +204,9 @@ class RuntimeServiceTests(unittest.TestCase):
                 run_id="run-direct-no-key",
                 user_input="task",
                 auth_context={},
-                metadata=RunMetadata(workspace_path=str(self.workspace_a), session_key=None),
+                metadata=RunMetadata(
+                    workspace_path=str(self.workspace_a), session_key=None
+                ),
             )
 
         self.assertEqual(ctx.exception.code, "missing_api_key")
@@ -161,7 +230,9 @@ class RuntimeServiceTests(unittest.TestCase):
                 run_id="run-direct-provider-failure",
                 user_input="task",
                 auth_context={},
-                metadata=RunMetadata(workspace_path=str(self.workspace_a), session_key=None),
+                metadata=RunMetadata(
+                    workspace_path=str(self.workspace_a), session_key=None
+                ),
             )
 
         self.assertEqual(ctx.exception.code, "provider_timeout")
@@ -181,7 +252,9 @@ class RuntimeServiceTests(unittest.TestCase):
             run_id="run-3",
             user_input="continue",
             auth_context={},
-            metadata=RunMetadata(workspace_path=str(self.workspace_a), session_key=None),
+            metadata=RunMetadata(
+                workspace_path=str(self.workspace_a), session_key=None
+            ),
         )
 
         self.assertEqual(result["final_answer"], "done")
@@ -196,13 +269,17 @@ class RuntimeServiceTests(unittest.TestCase):
             run_id="run-a",
             user_input="task-a",
             auth_context={},
-            metadata=RunMetadata(workspace_path=str(self.workspace_a), session_key=None),
+            metadata=RunMetadata(
+                workspace_path=str(self.workspace_a), session_key=None
+            ),
         )
         service.process(
             run_id="run-b",
             user_input="task-b",
             auth_context={},
-            metadata=RunMetadata(workspace_path=str(self.workspace_b), session_key=None),
+            metadata=RunMetadata(
+                workspace_path=str(self.workspace_b), session_key=None
+            ),
         )
 
         self.assertEqual(len(service.sessions.cache), 2)
@@ -220,23 +297,32 @@ class RuntimeServiceTests(unittest.TestCase):
             run_id="run-win-1",
             user_input="task-a",
             auth_context={},
-            metadata=RunMetadata(workspace_path="C:/Workspace/Project", session_key=None),
+            metadata=RunMetadata(
+                workspace_path="C:/Workspace/Project", session_key=None
+            ),
         )
         service.process(
             run_id="run-win-2",
             user_input="task-b",
             auth_context={},
-            metadata=RunMetadata(workspace_path="/mnt/c/workspace/project", session_key=None),
+            metadata=RunMetadata(
+                workspace_path="/mnt/c/workspace/project", session_key=None
+            ),
         )
         service.process(
             run_id="run-win-3",
             user_input="task-c",
             auth_context={},
-            metadata=RunMetadata(workspace_path="/cygdrive/c/Workspace/Project", session_key=None),
+            metadata=RunMetadata(
+                workspace_path="/cygdrive/c/Workspace/Project", session_key=None
+            ),
         )
 
         self.assertEqual(len(service.sessions.cache), 1)
-        self.assertEqual(next(iter(service.sessions.cache.keys())), "workspace:c:\\workspace\\project")
+        self.assertEqual(
+            next(iter(service.sessions.cache.keys())),
+            "workspace:c:\\workspace\\project",
+        )
 
     def test_native_code_agent_system_prompt_uses_context_prefix(self) -> None:
         context_prefix = "# Identity\n\n## TOOLS.md\nls/read/write"
@@ -252,7 +338,9 @@ class RuntimeServiceTests(unittest.TestCase):
         self.assertIn("## TOOLS.md", prompt)
         self.assertIn("Thought:", prompt)
         self.assertIn("final_answer", prompt)
-        self.assertIn("Here are the rules you should always follow to solve your task", prompt)
+        self.assertIn(
+            "Here are the rules you should always follow to solve your task", prompt
+        )
         self.assertNotIn("Above examples were using notional tools", prompt)
 
 

@@ -83,6 +83,8 @@ export type SelectedModelRef = {
   modelId: string
 }
 
+export type SelectedReasoningEffort = string | null
+
 export type ProviderCatalogResponse = {
   providers: ProviderCatalogEntry[]
 }
@@ -211,6 +213,19 @@ export const getModelOptionLabel = (
   selection: SelectedModelRef | null,
   groups: ModelOptionGroup[]
 ): string | null => {
+  const match = getSelectedModelOption(selection, groups)
+  if (!match) {
+    return null
+  }
+
+  const { group, model } = match
+  return `${group.providerLabel} - ${model.label}`
+}
+
+export const getSelectedModelOption = (
+  selection: SelectedModelRef | null,
+  groups: ModelOptionGroup[]
+): { group: ModelOptionGroup; model: ModelOption } | null => {
   if (!selection) {
     return null
   }
@@ -221,7 +236,27 @@ export const getModelOptionLabel = (
     return null
   }
 
-  return `${group.providerLabel} - ${model.label}`
+  return { group, model }
+}
+
+export const getReasoningEffortOptions = (
+  selection: SelectedModelRef | null,
+  groups: ModelOptionGroup[]
+): string[] => {
+  const match = getSelectedModelOption(selection, groups)
+  return match?.model.reasoningEffortValues ?? []
+}
+
+export const normalizeSelectedReasoningEffort = (
+  selection: SelectedModelRef | null,
+  groups: ModelOptionGroup[],
+  current: SelectedReasoningEffort
+): SelectedReasoningEffort => {
+  if (!current) {
+    return null
+  }
+
+  return getReasoningEffortOptions(selection, groups).includes(current) ? current : null
 }
 
 export const createLocalId = (prefix: string): string => {

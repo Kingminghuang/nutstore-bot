@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import inspect
+import json
 import logging
 import threading
 from typing import Any, Callable, Literal, cast
@@ -24,6 +25,7 @@ from local_paths import nsbot_home
 from provider_catalog import list_providers
 from repositories import (
     ProviderConnectionsRepository,
+    RunStepsRepository,
     RunsRepository,
     SessionsRepository,
     WorkspacesRepository,
@@ -66,6 +68,7 @@ class RunService:
     sessions: SessionsRepository
     providers: ProviderConnectionsRepository
     runs: RunsRepository
+    run_steps: RunStepsRepository
     session_service: SessionService
     secret_store: LocalSecretStore
     event_store: RunEventStore | None = None
@@ -92,6 +95,9 @@ class RunService:
         model_id = _normalize_required_string(
             payload.get("modelId", payload.get("model_id")),
             detail="Model id is required",
+        )
+        reasoning_effort = _normalize_optional_string(
+            payload.get("reasoningEffort", payload.get("reasoning_effort"))
         )
         input_text = _normalize_required_string(
             payload.get("input", payload.get("inputText", payload.get("input_text"))),
@@ -164,6 +170,9 @@ class RunService:
                 )
 
             self._ensure_model_allowed(bundle, model_id)
+            resolved_reasoning_effort = self._resolve_reasoning_effort(
+                bundle, model_id, reasoning_effort
+            )
 
             secret_payload = self.secret_store.load_provider_secret(
                 bundle.connection.secret_ref
@@ -183,6 +192,7 @@ class RunService:
                 direct_base_url=bundle.connection.base_url,
                 direct_api_key=api_key,
                 direct_model_id=model_id,
+                direct_reasoning_effort=resolved_reasoning_effort,
             )
             metadata = RunMetadata(
                 workspace_path=workspace.real_path,
@@ -508,6 +518,15 @@ class RunService:
         )
         return {"run": serialize_run(updated_run), "cancelled": True}
 
+    def list_run_steps_payload(self, run_id: str) -> dict[str, Any]:
+        self.runs.get_by_id(run_id)
+        serialize_step = _serialize_run_step_payload
+        return {
+            "steps": [
+                serialize_step(step) for step in self.run_steps.list_by_run_id(run_id)
+            ]
+        }
+
     def _ensure_model_allowed(self, bundle, model_id: str) -> None:
         connection = bundle.connection
         if connection.kind == "custom":
@@ -541,6 +560,48 @@ class RunService:
             code="invalid_model",
             detail="Model is not available for this provider connection",
         )
+
+    def _resolve_reasoning_effort(
+        self, bundle, model_id: str, requested_reasoning_effort: str | None
+    ) -> str | None:
+        allowed_values = self._allowed_reasoning_effort_values(bundle, model_id)
+        if not allowed_values:
+            if requested_reasoning_effort is not None:
+                raise RunValidationError(
+                    code="invalid_reasoning_effort",
+                    detail="Selected model does not support reasoning effort",
+                )
+            return None
+
+        if requested_reasoning_effort is None:
+            return _default_reasoning_effort(allowed_values)
+
+        if requested_reasoning_effort not in allowed_values:
+            raise RunValidationError(
+                code="invalid_reasoning_effort",
+                detail="Reasoning effort is not supported for this model",
+            )
+        return requested_reasoning_effort
+
+    def _allowed_reasoning_effort_values(self, bundle, model_id: str) -> list[str]:
+        connection = bundle.connection
+        if connection.kind == "custom":
+            return []
+
+        catalog_by_id = {provider["id"]: provider for provider in list_providers()}
+        provider_id = connection.catalog_provider_id or ""
+        catalog_entry = catalog_by_id.get(provider_id)
+        if not catalog_entry:
+            return []
+
+        for model in catalog_entry.get("models", []):
+            if str(model.get("id") or "") != model_id:
+                continue
+            values = model.get("reasoningEffortValues")
+            if not isinstance(values, list):
+                return []
+            return [str(value) for value in values if str(value)]
+        return []
 
     def _record_failed_run(
         self,
@@ -741,30 +802,8 @@ class RunService:
             )
 
         for step in result.get("steps", []):
-            usage = step.get("usage") or {}
-            self._append_event(
-                run_id,
-                step_event(
-                    run_id=run_id,
-                    session_id=session_id,
-                    sequence=self._next_sequence(run_id),
-                    created_at=created_at,
-                    step_id=str(step.get("step_id") or "step-unknown"),
-                    step_kind=_normalize_step_kind(step.get("step_kind")),
-                    model_output=str(step.get("model_output") or ""),
-                    observations=[
-                        str(item) for item in (step.get("observations") or [])
-                    ],
-                    error=None if step.get("error") is None else str(step.get("error")),
-                    usage=RunUsage(
-                        input_tokens=_to_int(usage.get("input_tokens", 0)),
-                        output_tokens=_to_int(usage.get("output_tokens", 0)),
-                        reasoning_tokens=_to_int(usage.get("reasoning_tokens", 0)),
-                    ),
-                    duration_ms=_to_int(step.get("duration_ms", 0)),
-                    has_delta=bool(step.get("has_delta")),
-                ),
-            )
+            self._persist_run_step(run_id, session_id, created_at, step)
+            self._append_runtime_step_event(run_id, session_id, created_at, step)
 
     def _handle_runtime_event(
         self,
@@ -790,32 +829,49 @@ class RunService:
             return
 
         if event_type == "step":
-            usage = payload.get("usage") or {}
-            self._append_event(
-                run_id,
-                step_event(
-                    run_id=run_id,
-                    session_id=session_id,
-                    sequence=self._next_sequence(run_id),
-                    created_at=created_at,
-                    step_id=str(payload.get("step_id") or "step-unknown"),
-                    step_kind=_normalize_step_kind(payload.get("step_kind")),
-                    model_output=str(payload.get("model_output") or ""),
-                    observations=[
-                        str(item) for item in (payload.get("observations") or [])
-                    ],
-                    error=None
-                    if payload.get("error") is None
-                    else str(payload.get("error")),
-                    usage=RunUsage(
-                        input_tokens=_to_int(usage.get("input_tokens", 0)),
-                        output_tokens=_to_int(usage.get("output_tokens", 0)),
-                        reasoning_tokens=_to_int(usage.get("reasoning_tokens", 0)),
-                    ),
-                    duration_ms=_to_int(payload.get("duration_ms", 0)),
-                    has_delta=bool(payload.get("has_delta")),
-                ),
-            )
+            self._persist_run_step(run_id, session_id, created_at, payload)
+            self._append_runtime_step_event(run_id, session_id, created_at, payload)
+
+    def _append_runtime_step_event(
+        self, run_id: str, session_id: str, created_at: str, payload: dict[str, Any]
+    ) -> None:
+        self._append_event(
+            run_id,
+            _build_step_event_envelope(
+                run_id=run_id,
+                session_id=session_id,
+                sequence=self._next_sequence(run_id),
+                created_at=created_at,
+                payload=payload,
+            ),
+        )
+
+    def _persist_run_step(
+        self, run_id: str, session_id: str, created_at: str, payload: dict[str, Any]
+    ) -> None:
+        self.run_steps.create(
+            run_id=run_id,
+            session_id=session_id,
+            step_id=str(payload.get("step_id") or "step-unknown"),
+            step_kind=_normalize_step_kind(payload.get("step_kind")),
+            step_number=_normalize_optional_int(payload.get("step_number")),
+            plan_text=_normalize_optional_string(payload.get("plan")),
+            code_action=_normalize_optional_string(payload.get("code_action")),
+            action_output_json=_json_dumps_or_none(payload.get("action_output")),
+            observations_json=json.dumps(
+                _normalize_step_observations(payload.get("observations")),
+                ensure_ascii=False,
+            ),
+            error_text=_normalize_optional_string(payload.get("error")),
+            usage_json=json.dumps(
+                _normalize_step_usage_dict(payload.get("usage")),
+                ensure_ascii=False,
+            ),
+            duration_ms=_normalize_step_duration_ms(payload),
+            has_delta=_normalize_step_has_delta(payload),
+            raw_model_output=_normalize_optional_string(payload.get("model_output")),
+            created_at=created_at,
+        )
 
     def _append_event(self, run_id: str, envelope, *, terminal: bool = False) -> None:
         if self.event_store is None:
@@ -891,6 +947,81 @@ def execute_runtime_run(
     )
 
 
+def _serialize_run_step_payload(step) -> dict[str, Any]:
+    usage = _json_loads_dict(
+        step.usage_json,
+        fallback={
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "reasoningTokens": 0,
+        },
+    )
+    observations = _json_loads_list(step.observations_json)
+    action_output = _json_loads_value(step.action_output_json)
+
+    if step.step_kind == "planning":
+        return {
+            "id": step.id,
+            "runId": step.run_id,
+            "sessionId": step.session_id,
+            "sequenceNo": step.sequence_no,
+            "stepId": step.step_id,
+            "stepKind": "planning",
+            "stepNumber": None,
+            "plan": step.plan_text or "",
+            "usage": usage,
+            "durationMs": step.duration_ms,
+            "hasDelta": step.has_delta,
+            "createdAt": step.created_at,
+        }
+
+    return {
+        "id": step.id,
+        "runId": step.run_id,
+        "sessionId": step.session_id,
+        "sequenceNo": step.sequence_no,
+        "stepId": step.step_id,
+        "stepKind": "action",
+        "stepNumber": step.step_number,
+        "codeAction": step.code_action,
+        "actionOutput": action_output,
+        "observations": observations,
+        "error": step.error_text,
+        "usage": usage,
+        "durationMs": step.duration_ms,
+        "hasDelta": step.has_delta,
+        "createdAt": step.created_at,
+    }
+
+
+def _build_step_event_envelope(
+    *,
+    run_id: str,
+    session_id: str,
+    sequence: int,
+    created_at: str,
+    payload: dict[str, Any],
+):
+    return step_event(
+        run_id=run_id,
+        session_id=session_id,
+        sequence=sequence,
+        created_at=created_at,
+        step_id=str(payload.get("step_id") or "step-unknown"),
+        step_kind=_normalize_step_kind(payload.get("step_kind")),
+        step_number=_normalize_optional_int(payload.get("step_number")),
+        plan=_normalize_optional_string(payload.get("plan")),
+        model_output=str(payload.get("model_output") or ""),
+        code_action=_normalize_optional_string(payload.get("code_action")),
+        action_output=payload.get("action_output"),
+        observations=_normalize_step_observations(payload.get("observations")),
+        error=None if payload.get("error") is None else str(payload.get("error")),
+        usage=_normalize_step_usage(payload.get("usage")),
+        duration_ms=_normalize_step_duration_ms(payload),
+        has_delta=_normalize_step_has_delta(payload),
+    )
+
+
 def serialize_run(run) -> dict[str, Any]:
     return {
         "id": run.id,
@@ -917,9 +1048,105 @@ def _normalize_required_string(value: Any, *, detail: str) -> str:
     return text
 
 
+def _normalize_optional_string(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _normalize_optional_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    return _to_int(value)
+
+
+def _json_dumps_or_none(value: Any) -> str | None:
+    if value is None:
+        return None
+    try:
+        return json.dumps(value, ensure_ascii=False)
+    except TypeError:
+        return json.dumps(str(value), ensure_ascii=False)
+
+
+def _json_loads_dict(raw: str | None, fallback: dict[str, Any]) -> dict[str, Any]:
+    if raw is None:
+        return fallback
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError:
+        return fallback
+    return value if isinstance(value, dict) else fallback
+
+
+def _json_loads_list(raw: str | None) -> list[str]:
+    if raw is None:
+        return []
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value]
+
+
+def _json_loads_value(raw: str | None) -> Any:
+    if raw is None:
+        return None
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        return raw
+
+
+def _default_reasoning_effort(values: list[str]) -> str | None:
+    if not values:
+        return None
+    for candidate in ("medium", "low", "high", "none", "minimal", "xhigh"):
+        if candidate in values:
+            return candidate
+    return values[0]
+
+
 def _normalize_step_kind(value: object) -> Literal["planning", "action"]:
     text = str(value or "action").strip().lower()
     return "planning" if text == "planning" else "action"
+
+
+def _normalize_step_observations(value: Any) -> list[str]:
+    return [str(item) for item in (value or [])]
+
+
+def _normalize_step_usage_dict(value: Any) -> dict[str, int]:
+    usage = value if isinstance(value, dict) else {}
+    return {
+        "inputTokens": _to_int(usage.get("input_tokens", usage.get("inputTokens", 0))),
+        "outputTokens": _to_int(
+            usage.get("output_tokens", usage.get("outputTokens", 0))
+        ),
+        "reasoningTokens": _to_int(
+            usage.get("reasoning_tokens", usage.get("reasoningTokens", 0))
+        ),
+    }
+
+
+def _normalize_step_usage(value: Any) -> RunUsage:
+    usage = _normalize_step_usage_dict(value)
+    return RunUsage(
+        input_tokens=usage["inputTokens"],
+        output_tokens=usage["outputTokens"],
+        reasoning_tokens=usage["reasoningTokens"],
+    )
+
+
+def _normalize_step_duration_ms(payload: dict[str, Any]) -> int:
+    return _to_int(payload.get("duration_ms", payload.get("durationMs", 0)))
+
+
+def _normalize_step_has_delta(payload: dict[str, Any]) -> bool:
+    return bool(payload.get("has_delta", payload.get("hasDelta")))
 
 
 def _to_int(value: object) -> int:

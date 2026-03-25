@@ -1,6 +1,9 @@
 import {
   getModelOptionLabel,
+  getReasoningEffortOptions,
+  getSelectedModelOption,
   isSelectedModelAvailable,
+  normalizeSelectedReasoningEffort,
   type ModelOptionGroup,
 } from "@/lib/provider-settings"
 
@@ -17,6 +20,7 @@ const groups: ModelOptionGroup[] = [
         modelId: "gpt-5.4",
         label: "gpt-5.4",
         supportsReasoningTokens: true,
+        reasoningEffortValues: ["none", "low", "medium", "high"],
       },
     ],
   },
@@ -61,5 +65,46 @@ describe("provider-settings helpers", () => {
         groups
       )
     ).toBe("Team Gateway - Team GPT")
+  })
+
+  it("returns the selected model option details", () => {
+    expect(
+      getSelectedModelOption(
+        { connectionId: "prov_openai", modelId: "gpt-5.4" },
+        groups
+      )?.model.reasoningEffortValues
+    ).toEqual(["none", "low", "medium", "high"])
+  })
+
+  it("returns reasoning effort options for the selected model", () => {
+    expect(
+      getReasoningEffortOptions(
+        { connectionId: "prov_openai", modelId: "gpt-5.4" },
+        groups
+      )
+    ).toEqual(["none", "low", "medium", "high"])
+    expect(
+      getReasoningEffortOptions(
+        { connectionId: "prov_custom", modelId: "gpt-5.4" },
+        groups
+      )
+    ).toEqual([])
+  })
+
+  it("normalizes reasoning effort against model availability", () => {
+    expect(
+      normalizeSelectedReasoningEffort(
+        { connectionId: "prov_openai", modelId: "gpt-5.4" },
+        groups,
+        "medium"
+      )
+    ).toBe("medium")
+    expect(
+      normalizeSelectedReasoningEffort(
+        { connectionId: "prov_openai", modelId: "gpt-5.4" },
+        groups,
+        "xhigh"
+      )
+    ).toBeNull()
   })
 })

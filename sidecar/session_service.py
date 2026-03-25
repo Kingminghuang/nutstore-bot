@@ -288,6 +288,10 @@ class SessionService:
             session_id
         )
         if first_user_message is None or first_assistant_message is None:
+            if first_user_message is not None:
+                return self._apply_title_generation_fallback(
+                    session_id, first_user_message.content
+                )
             updated = self.sessions.touch(session_id, title_status="failed")
             return serialize_session(updated)
 
@@ -297,15 +301,31 @@ class SessionService:
                 first_user_message.content, first_assistant_message.content
             )
         except Exception:  # noqa: BLE001
-            updated = self.sessions.touch(session_id, title_status="failed")
-            return serialize_session(updated)
+            return self._apply_title_generation_fallback(
+                session_id, first_user_message.content
+            )
 
         normalized_title = _normalize_optional_string(generated_title)
         if normalized_title is None:
-            updated = self.sessions.touch(session_id, title_status="failed")
-            return serialize_session(updated)
+            return self._apply_title_generation_fallback(
+                session_id, first_user_message.content
+            )
 
         return self.apply_model_generated_title(session_id, normalized_title)
+
+    def _apply_title_generation_fallback(
+        self, session_id: str, first_user_message_content: str
+    ) -> dict[str, Any]:
+        fallback_title = build_first_user_message_fallback_title(
+            first_user_message_content
+        )
+        updated = self.sessions.touch(
+            session_id,
+            title=fallback_title,
+            title_source="heuristic",
+            title_status="failed",
+        )
+        return serialize_session(updated)
 
     def _get_title_seed_messages(self, session_id: str):
         first_user_message = None
@@ -419,6 +439,16 @@ def build_model_title(user_text: str, assistant_text: str) -> str:
     if len(title) > 60:
         title = title[:57].rstrip() + "..."
     return title
+
+
+def build_first_user_message_fallback_title(text: str, *, max_chars: int = 50) -> str:
+    if max_chars <= 0:
+        return "New session"
+
+    normalized = " ".join(text.split())
+    if not normalized:
+        return "New session"
+    return normalized[:max_chars].strip() or "New session"
 
 
 def _strip_title_prefixes(text: str) -> str:

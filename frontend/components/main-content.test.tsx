@@ -1,6 +1,7 @@
 import { fireEvent, render, screen } from "@testing-library/react"
 
 import { MainContent } from "@/components/main-content"
+import type { RunHistoryStep } from "@/lib/sidecar-client"
 import type { ModelOptionGroup, SelectedModelRef } from "@/lib/provider-settings"
 
 const groups: ModelOptionGroup[] = [
@@ -16,6 +17,7 @@ const groups: ModelOptionGroup[] = [
         modelId: "gpt-5.4",
         label: "gpt-5.4",
         supportsReasoningTokens: true,
+        reasoningEffortValues: ["none", "low", "medium", "high"],
       },
     ],
   },
@@ -36,7 +38,7 @@ const groups: ModelOptionGroup[] = [
   },
 ]
 
-function renderMainContent(selection: SelectedModelRef | null) {
+function renderMainContent(selection: SelectedModelRef | null, runStepsByRunId: Record<string, RunHistoryStep[]> = {}) {
   const onSelectedModelChange = vi.fn()
 
   render(
@@ -54,12 +56,26 @@ function renderMainContent(selection: SelectedModelRef | null) {
         lastMessagePreview: null,
         activeConnectionId: null,
         activeModelId: null,
-        messages: [],
+        messages: runStepsByRunId.run_1
+          ? [
+              {
+                id: "msg_1",
+                role: "user",
+                content: "Inspect the workspace",
+                createdAt: "2026-03-24T12:00:00Z",
+                runId: "run_1",
+                stepId: null,
+              },
+            ]
+          : [],
       }}
+      runStepsByRunId={runStepsByRunId}
       onSendMessage={vi.fn()}
       modelOptionGroups={groups}
       selectedModel={selection}
+      selectedReasoningEffort={null}
       onSelectedModelChange={onSelectedModelChange}
+      onSelectedReasoningEffortChange={vi.fn()}
       isLoadingModels={false}
       providerError={null}
       runError={null}
@@ -112,10 +128,13 @@ describe("MainContent model selector", () => {
           activeModelId: null,
           messages: [],
         }}
+        runStepsByRunId={{}}
         onSendMessage={vi.fn()}
         modelOptionGroups={[]}
         selectedModel={null}
+        selectedReasoningEffort={null}
         onSelectedModelChange={vi.fn()}
+        onSelectedReasoningEffortChange={vi.fn()}
         isLoadingModels={false}
         providerError={null}
         runError={null}
@@ -124,5 +143,61 @@ describe("MainContent model selector", () => {
 
     expect(screen.getByText("No configured providers").closest("button")).toBeDisabled()
     expect(screen.getByLabelText("Send")).toBeDisabled()
+  })
+
+  it("shows reasoning effort selector when the selected model supports it", () => {
+    renderMainContent({ connectionId: "prov_openai", modelId: "gpt-5.4" })
+
+    expect(screen.getByLabelText("Reasoning effort")).toBeInTheDocument()
+    expect(screen.getByRole("option", { name: "Auto" })).toBeInTheDocument()
+  })
+
+  it("renders persisted planning and action steps with action display priority", () => {
+    renderMainContent(
+      { connectionId: "prov_openai", modelId: "gpt-5.4" },
+      {
+        run_1: [
+          {
+            id: "step_plan",
+            runId: "run_1",
+            sessionId: "sess_1",
+            sequenceNo: 1,
+            stepId: "step-1",
+            stepKind: "planning",
+            stepNumber: null,
+            plan: "Inspect the repo and identify the main entry points.",
+            usage: { inputTokens: 10, outputTokens: 5, reasoningTokens: 0 },
+            durationMs: 120,
+            hasDelta: true,
+            createdAt: "2026-03-24T12:00:01Z",
+          },
+          {
+            id: "step_action",
+            runId: "run_1",
+            sessionId: "sess_1",
+            sequenceNo: 2,
+            stepId: "step-2",
+            stepKind: "action",
+            stepNumber: 1,
+            codeAction: 'print("hello")',
+            actionOutput: { result: "hello" },
+            observations: ["Execution logs:", "hello"],
+            error: "Minor warning",
+            usage: { inputTokens: 12, outputTokens: 4, reasoningTokens: 0 },
+            durationMs: 180,
+            hasDelta: true,
+            createdAt: "2026-03-24T12:00:02Z",
+          },
+        ],
+      }
+    )
+
+    expect(screen.getByText("Planning step")).toBeInTheDocument()
+    expect(screen.getByText("Inspect the repo and identify the main entry points.")).toBeInTheDocument()
+    expect(screen.getByText("Step 1")).toBeInTheDocument()
+    expect(screen.getByText("print(\"hello\")")).toBeInTheDocument()
+    expect(screen.getByText((content) => content.includes('"result": "hello"'))).toBeInTheDocument()
+    expect(screen.queryByText("Execution logs:\nhello")).not.toBeInTheDocument()
+    expect(screen.getByText("Minor warning")).toBeInTheDocument()
   })
 })

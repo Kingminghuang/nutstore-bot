@@ -3,6 +3,7 @@ from __future__ import annotations
 import sqlite3
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import Any
 from uuid import uuid4
 
 from storage import transaction
@@ -18,6 +19,23 @@ def create_id(prefix: str) -> str:
 
 def create_secret_ref(connection_id: str) -> str:
     return f"sec_{connection_id}"
+
+
+def _as_int(value: object) -> int:
+    try:
+        if value is None:
+            return 0
+        if isinstance(value, bool):
+            return int(value)
+        if isinstance(value, int):
+            return value
+        if isinstance(value, float):
+            return int(value)
+        if isinstance(value, (str, bytes, bytearray)):
+            return int(value)
+        return int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return 0
 
 
 @dataclass(frozen=True)
@@ -130,6 +148,27 @@ class RunRecord:
     started_at: str | None
     completed_at: str | None
     updated_at: str
+
+
+@dataclass(frozen=True)
+class RunStepRecord:
+    id: str
+    run_id: str
+    session_id: str
+    sequence_no: int
+    step_id: str
+    step_kind: str
+    step_number: int | None
+    plan_text: str | None
+    code_action: str | None
+    action_output_json: str | None
+    observations_json: str
+    error_text: str | None
+    usage_json: str
+    duration_ms: int
+    has_delta: bool
+    raw_model_output: str | None
+    created_at: str
 
 
 class WorkspacesRepository:
@@ -293,7 +332,7 @@ class ProviderConnectionsRepository:
                         str(model["model_id"]),
                         model.get("display_name"),
                         0 if model.get("enabled") is False else 1,
-                        int(model.get("sort_order", index)),
+                        _as_int(model.get("sort_order", index)),
                         now,
                         now,
                     ),
@@ -313,7 +352,7 @@ class ProviderConnectionsRepository:
                         str(header["name"]),
                         str(header["value_kind"]),
                         header.get("plain_value"),
-                        int(header.get("sort_order", index)),
+                        _as_int(header.get("sort_order", index)),
                         now,
                         now,
                     ),
@@ -442,7 +481,9 @@ class SessionsRepository:
             "last_message_preview": updates.get(
                 "last_message_preview", existing.last_message_preview
             ),
-            "message_count": int(updates.get("message_count", existing.message_count)),
+            "message_count": _as_int(
+                updates.get("message_count", existing.message_count)
+            ),
             "active_connection_id": updates.get(
                 "active_connection_id", existing.active_connection_id
             ),
@@ -450,7 +491,7 @@ class SessionsRepository:
             "title": updates.get("title", existing.title),
             "title_source": updates.get("title_source", existing.title_source),
             "title_status": updates.get("title_status", existing.title_status),
-            "title_generation_attempts": int(
+            "title_generation_attempts": _as_int(
                 updates.get(
                     "title_generation_attempts", existing.title_generation_attempts
                 )
@@ -635,6 +676,88 @@ class RunsRepository:
         return self.get_by_id(run_id)
 
 
+class RunStepsRepository:
+    def __init__(self, connection: sqlite3.Connection):
+        self.connection = connection
+
+    def create(
+        self,
+        *,
+        run_id: str,
+        session_id: str,
+        step_id: str,
+        step_kind: str,
+        sequence_no: int | None = None,
+        step_number: int | None = None,
+        plan_text: str | None = None,
+        code_action: str | None = None,
+        action_output_json: str | None = None,
+        observations_json: str = "[]",
+        error_text: str | None = None,
+        usage_json: str = '{"inputTokens":0,"outputTokens":0,"reasoningTokens":0}',
+        duration_ms: int = 0,
+        has_delta: bool = False,
+        raw_model_output: str | None = None,
+        created_at: str | None = None,
+        run_step_id: str | None = None,
+    ) -> RunStepRecord:
+        record_id = run_step_id or create_id("rstep")
+        sequence = sequence_no or self._next_sequence_number(run_id)
+        timestamp = created_at or now_iso_timestamp()
+        self.connection.execute(
+            """
+            INSERT INTO run_steps (
+                id, run_id, session_id, sequence_no, step_id, step_kind, step_number,
+                plan_text, code_action, action_output_json, observations_json, error_text,
+                usage_json, duration_ms, has_delta, raw_model_output, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                record_id,
+                run_id,
+                session_id,
+                sequence,
+                step_id,
+                step_kind,
+                step_number,
+                plan_text,
+                code_action,
+                action_output_json,
+                observations_json,
+                error_text,
+                usage_json,
+                duration_ms,
+                1 if has_delta else 0,
+                raw_model_output,
+                timestamp,
+            ),
+        )
+        self.connection.commit()
+        return self.get_by_id(record_id)
+
+    def get_by_id(self, run_step_id: str) -> RunStepRecord:
+        row = self.connection.execute(
+            "SELECT * FROM run_steps WHERE id = ?", (run_step_id,)
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"Run step not found: {run_step_id}")
+        return _map_run_step(row)
+
+    def list_by_run_id(self, run_id: str) -> list[RunStepRecord]:
+        rows = self.connection.execute(
+            "SELECT * FROM run_steps WHERE run_id = ? ORDER BY sequence_no ASC, created_at ASC",
+            (run_id,),
+        ).fetchall()
+        return [_map_run_step(row) for row in rows]
+
+    def _next_sequence_number(self, run_id: str) -> int:
+        row = self.connection.execute(
+            "SELECT COALESCE(MAX(sequence_no), 0) FROM run_steps WHERE run_id = ?",
+            (run_id,),
+        ).fetchone()
+        return int(row[0]) + 1 if row is not None else 1
+
+
 @dataclass(frozen=True)
 class Repositories:
     workspaces: WorkspacesRepository
@@ -642,6 +765,7 @@ class Repositories:
     sessions: SessionsRepository
     messages: MessagesRepository
     runs: RunsRepository
+    run_steps: RunStepsRepository
 
 
 def create_repositories(connection: sqlite3.Connection) -> Repositories:
@@ -651,6 +775,7 @@ def create_repositories(connection: sqlite3.Connection) -> Repositories:
         sessions=SessionsRepository(connection),
         messages=MessagesRepository(connection),
         runs=RunsRepository(connection),
+        run_steps=RunStepsRepository(connection),
     )
 
 
@@ -763,6 +888,28 @@ def _map_run(row: sqlite3.Row) -> RunRecord:
         started_at=_nullable_str(row["started_at"]),
         completed_at=_nullable_str(row["completed_at"]),
         updated_at=str(row["updated_at"]),
+    )
+
+
+def _map_run_step(row: sqlite3.Row) -> RunStepRecord:
+    return RunStepRecord(
+        id=str(row["id"]),
+        run_id=str(row["run_id"]),
+        session_id=str(row["session_id"]),
+        sequence_no=int(row["sequence_no"]),
+        step_id=str(row["step_id"]),
+        step_kind=str(row["step_kind"]),
+        step_number=None if row["step_number"] is None else int(row["step_number"]),
+        plan_text=_nullable_str(row["plan_text"]),
+        code_action=_nullable_str(row["code_action"]),
+        action_output_json=_nullable_str(row["action_output_json"]),
+        observations_json=str(row["observations_json"]),
+        error_text=_nullable_str(row["error_text"]),
+        usage_json=str(row["usage_json"]),
+        duration_ms=int(row["duration_ms"]),
+        has_delta=bool(row["has_delta"]),
+        raw_model_output=_nullable_str(row["raw_model_output"]),
+        created_at=str(row["created_at"]),
     )
 
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+import json
 import platform
 from dataclasses import dataclass
 from pathlib import Path
@@ -48,6 +49,7 @@ class RuntimeWorkerConfig:
     direct_base_url: str | None = None
     direct_api_key: str | None = None
     direct_model_id: str | None = None
+    direct_reasoning_effort: str | None = None
     direct_request_timeout_ms: int = 60_000
     fd_executable: str | None = None
     rg_executable: str | None = None
@@ -101,9 +103,10 @@ class CodeAgentRuntimeService:
                 self.config.direct_base_url,
                 self.config.direct_api_key,
                 self.config.direct_model_id,
+                self.config.direct_reasoning_effort,
             ]
         )
-        selected_model = None
+        direct_model_config = None
         if use_direct_model:
             if direct_provider not in BUILTIN_PROVIDERS and direct_base_url == "":
                 raise RuntimeProcessError(
@@ -118,18 +121,17 @@ class CodeAgentRuntimeService:
                     "missing_model_id", "direct model id is missing"
                 )
 
-            selected_model = DirectModel(
-                DirectModelConfig(
-                    provider=str(self.config.direct_provider or "custom"),
-                    base_url=direct_base_url,
-                    api_key=direct_api_key,
-                    model_id=direct_model_id,
-                    timeout_seconds=max(
-                        1.0, float(self.config.direct_request_timeout_ms) / 1000.0
-                    ),
-                )
+            direct_model_config = DirectModelConfig(
+                provider=str(self.config.direct_provider or "custom"),
+                base_url=direct_base_url,
+                api_key=direct_api_key,
+                model_id=direct_model_id,
+                reasoning_effort=self.config.direct_reasoning_effort,
+                timeout_seconds=max(
+                    1.0, float(self.config.direct_request_timeout_ms) / 1000.0
+                ),
             )
-        consolidation_provider = selected_model
+        consolidation_provider = None
 
         if self.consolidator_factory:
             signature = inspect.signature(self.consolidator_factory)
@@ -180,12 +182,14 @@ class CodeAgentRuntimeService:
             raise RuntimeProcessError("context_build_failed", str(exc)) from exc
 
         try:
-            model = self.model_factory() if self.model_factory else selected_model
+            model = self._create_model(
+                direct_model_config if use_direct_model else None
+            )
         except DirectModelError as exc:
             raise RuntimeProcessError(exc.code, exc.message) from exc
         except Exception as exc:
             raise RuntimeProcessError("runtime_error", str(exc)) from exc
-        consolidation_provider = selected_model or model
+        consolidation_provider = model
 
         tools = build_workspace_tools(
             workspace_path,
@@ -257,8 +261,12 @@ class CodeAgentRuntimeService:
                     step_id = allocate_step_id(current_step_id)
                     step_payload = {
                         "step_id": step_id,
+                        "step_number": None,
                         "step_kind": "planning",
+                        "plan": event.plan or "",
                         "model_output": event.plan or "",
+                        "code_action": None,
+                        "action_output": None,
                         "observations": [],
                         "error": None,
                         "usage": self._usage_dict(event.token_usage),
@@ -279,8 +287,14 @@ class CodeAgentRuntimeService:
                     step_id = allocate_step_id(current_step_id)
                     step_payload = {
                         "step_id": step_id,
+                        "step_number": int(event.step_number),
                         "step_kind": "action",
+                        "plan": None,
                         "model_output": str(event.model_output or ""),
+                        "code_action": None
+                        if event.code_action is None
+                        else str(event.code_action),
+                        "action_output": _serialize_action_output(event.action_output),
                         "observations": self._observation_list(event.observations),
                         "error": None if event.error is None else str(event.error),
                         "usage": self._usage_dict(event.token_usage),
@@ -377,3 +391,38 @@ class CodeAgentRuntimeService:
         if raw is None:
             return []
         return [line for line in raw.splitlines() if line.strip() != ""]
+
+    def _create_model(self, direct_model_config: DirectModelConfig | None):
+        if self.model_factory is None:
+            if direct_model_config is None:
+                return None
+            return DirectModel(direct_model_config)
+
+        signature = inspect.signature(self.model_factory)
+        accepts_argument = any(
+            parameter.kind
+            in (
+                inspect.Parameter.POSITIONAL_ONLY,
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                inspect.Parameter.VAR_POSITIONAL,
+            )
+            for parameter in signature.parameters.values()
+        ) or any(
+            parameter.kind == inspect.Parameter.VAR_KEYWORD
+            for parameter in signature.parameters.values()
+        )
+        if accepts_argument:
+            return self.model_factory(direct_model_config)
+        return self.model_factory()
+
+
+def _serialize_action_output(value: Any) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, (str, int, float, bool)):
+        return value
+    try:
+        json.dumps(value, ensure_ascii=False)
+        return value
+    except TypeError:
+        return str(value)

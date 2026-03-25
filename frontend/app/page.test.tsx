@@ -2,128 +2,11 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 
 import Home from "@/app/page"
 
-class MockEventSource {
-  static instances: MockEventSource[] = []
-
-  url: string
-  listeners = new Map<string, ((event: MessageEvent<string>) => void)[]>()
-  onerror: ((event: Event) => void) | null = null
-  close = vi.fn()
-
-  constructor(url: string) {
-    this.url = url
-    MockEventSource.instances.push(this)
-  }
-
-  addEventListener(type: string, listener: EventListenerOrEventListenerObject) {
-    const fn = listener as (event: MessageEvent<string>) => void
-    const items = this.listeners.get(type) ?? []
-    items.push(fn)
-    this.listeners.set(type, items)
-  }
-
-  emit(type: string, data: Record<string, unknown>, lastEventId: string) {
-    const event = {
-      type,
-      data: JSON.stringify(data),
-      lastEventId,
-    } as MessageEvent<string>
-    for (const listener of this.listeners.get(type) ?? []) {
-      listener(event)
-    }
-  }
-
-  reset() {
-    this.listeners.clear()
-    this.close.mockReset()
-  }
-}
-
-vi.stubGlobal("EventSource", MockEventSource as unknown as typeof EventSource)
-
-Object.defineProperty(window, "showDirectoryPicker", {
-  value: undefined,
-  configurable: true,
-})
-
-vi.mock("@/lib/sidecar-client", () => ({
-  getProviderCatalog: vi.fn(async () => ({
-    providers: [
-      {
-        id: "openai",
-        label: "OpenAI / Compatible",
-        kind: "builtin",
-        runtimeProvider: "openai",
-        baseUrlPolicy: "optional",
-        models: [
-          { id: "gpt-5.4", supportsReasoningTokens: true },
-          { id: "gpt-5.4-mini", supportsReasoningTokens: true },
-        ],
-      },
-      {
-        id: "gemini",
-        label: "Gemini",
-        kind: "builtin",
-        runtimeProvider: "gemini",
-        baseUrlPolicy: "hidden",
-        models: [{ id: "gemini/gemini-2.5-pro", supportsReasoningTokens: true }],
-      },
-    ],
-  })),
-  getProviders: vi.fn(async () => ({
-    connections: [
-      {
-        id: "prov_openai",
-        kind: "builtin",
-        runtimeProvider: "openai",
-        catalogProviderId: "openai",
-        displayName: "OpenAI",
-        baseUrl: null,
-        apiKeyConfigured: true,
-        preferredModelId: "gpt-5.4-mini",
-        enabledModelIds: ["gpt-5.4-mini"],
-        updatedAt: "2026-03-24T12:00:00Z",
-        modelPolicy: "restricted",
-        customModels: [],
-        headers: [],
-      },
-    ],
-  })),
-  getModelOptions: vi.fn(async () => ({
-    groups: [
-      {
-        connectionId: "prov_openai",
-        providerLabel: "OpenAI",
-        providerId: "openai",
-        models: [
-          {
-            connectionId: "prov_openai",
-            providerLabel: "OpenAI",
-            providerId: "openai",
-            modelId: "gpt-5.4-mini",
-            label: "gpt-5.4-mini",
-            supportsReasoningTokens: true,
-          },
-        ],
-      },
-    ],
-    defaultSelection: {
-      connectionId: "prov_openai",
-      modelId: "gpt-5.4-mini",
-    },
-  })),
-  createProvider: vi.fn(),
-  updateProvider: vi.fn(),
-  deleteProvider: vi.fn(),
+const sidecarClientMocks = vi.hoisted(() => ({
+  getRunSteps: vi.fn(),
 }))
 
-let runCompleted = false
-let workspaceSessionsFetchCount = 0
-let forceRunFailure = false
-let runFailureReason = "Provider connection is missing an API key"
-let useStreamingRun = false
-
-global.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
   const url = String(input)
   if (url.includes("path=%2Fworkspaces%2Fws_1%2Fsessions") && init?.method !== "POST") {
     workspaceSessionsFetchCount += 1
@@ -204,7 +87,7 @@ global.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
               {
                 id: "msg_1",
                 sessionId: "sess_1",
-                runId: null,
+                runId: "run_1",
                 role: "user",
                 content: "Please wire the sidecar",
                 stepId: null,
@@ -396,7 +279,140 @@ global.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
   return new Response(JSON.stringify({ detail: `Unhandled request: ${url}` }), {
     status: 500,
   })
-}) as typeof fetch
+})
+
+class MockEventSource {
+  static instances: MockEventSource[] = []
+
+  url: string
+  listeners = new Map<string, ((event: MessageEvent<string>) => void)[]>()
+  onerror: ((event: Event) => void) | null = null
+  close = vi.fn()
+
+  constructor(url: string) {
+    this.url = url
+    MockEventSource.instances.push(this)
+  }
+
+  addEventListener(type: string, listener: EventListenerOrEventListenerObject) {
+    const fn = listener as (event: MessageEvent<string>) => void
+    const items = this.listeners.get(type) ?? []
+    items.push(fn)
+    this.listeners.set(type, items)
+  }
+
+  emit(type: string, data: Record<string, unknown>, lastEventId: string) {
+    const event = {
+      type,
+      data: JSON.stringify(data),
+      lastEventId,
+    } as MessageEvent<string>
+    for (const listener of this.listeners.get(type) ?? []) {
+      listener(event)
+    }
+  }
+
+  reset() {
+    this.listeners.clear()
+    this.close.mockReset()
+  }
+}
+
+vi.stubGlobal("EventSource", MockEventSource as unknown as typeof EventSource)
+
+Object.defineProperty(window, "showDirectoryPicker", {
+  value: undefined,
+  configurable: true,
+})
+
+vi.mock("@/lib/sidecar-client", () => ({
+  getProviderCatalog: vi.fn(async () => ({
+    providers: [
+      {
+        id: "openai",
+        label: "OpenAI / Compatible",
+        kind: "builtin",
+        runtimeProvider: "openai",
+        baseUrlPolicy: "optional",
+        models: [
+          {
+            id: "gpt-5.4",
+            supportsReasoningTokens: true,
+            reasoningEffortValues: ["none", "low", "medium", "high", "xhigh"],
+          },
+          {
+            id: "gpt-5.4-mini",
+            supportsReasoningTokens: true,
+            reasoningEffortValues: ["none", "low", "medium", "high"],
+          },
+        ],
+      },
+      {
+        id: "gemini",
+        label: "Gemini",
+        kind: "builtin",
+        runtimeProvider: "gemini",
+        baseUrlPolicy: "hidden",
+        models: [{ id: "gemini/gemini-2.5-pro", supportsReasoningTokens: true }],
+      },
+    ],
+  })),
+  getProviders: vi.fn(async () => ({
+    connections: [
+      {
+        id: "prov_openai",
+        kind: "builtin",
+        runtimeProvider: "openai",
+        catalogProviderId: "openai",
+        displayName: "OpenAI",
+        baseUrl: null,
+        apiKeyConfigured: true,
+        preferredModelId: "gpt-5.4-mini",
+        enabledModelIds: ["gpt-5.4-mini"],
+        updatedAt: "2026-03-24T12:00:00Z",
+        modelPolicy: "restricted",
+        customModels: [],
+        headers: [],
+      },
+    ],
+  })),
+  getModelOptions: vi.fn(async () => ({
+    groups: [
+      {
+        connectionId: "prov_openai",
+        providerLabel: "OpenAI",
+        providerId: "openai",
+        models: [
+          {
+            connectionId: "prov_openai",
+            providerLabel: "OpenAI",
+            providerId: "openai",
+            modelId: "gpt-5.4-mini",
+            label: "gpt-5.4-mini",
+            supportsReasoningTokens: true,
+            reasoningEffortValues: ["none", "low", "medium", "high"],
+          },
+        ],
+      },
+    ],
+    defaultSelection: {
+      connectionId: "prov_openai",
+      modelId: "gpt-5.4-mini",
+    },
+  })),
+  getRunSteps: sidecarClientMocks.getRunSteps,
+  createProvider: vi.fn(),
+  updateProvider: vi.fn(),
+  deleteProvider: vi.fn(),
+}))
+
+let runCompleted = false
+let workspaceSessionsFetchCount = 0
+let forceRunFailure = false
+let runFailureReason = "Provider connection is missing an API key"
+let useStreamingRun = false
+
+global.fetch = fetchMock as typeof fetch
 
 describe("Home page", () => {
   beforeEach(() => {
@@ -406,6 +422,9 @@ describe("Home page", () => {
     runFailureReason = "Provider connection is missing an API key"
     useStreamingRun = false
     MockEventSource.instances = []
+    fetchMock.mockClear()
+    sidecarClientMocks.getRunSteps.mockReset()
+    sidecarClientMocks.getRunSteps.mockResolvedValue({ steps: [] })
   })
 
   it("applies the backend default model selection", async () => {
@@ -422,6 +441,55 @@ describe("Home page", () => {
     await waitFor(() => {
       expect(screen.getAllByText("Backend driven title")).toHaveLength(2)
     })
+  })
+
+  it("loads and renders persisted run steps for session history", async () => {
+    runCompleted = true
+    sidecarClientMocks.getRunSteps.mockResolvedValueOnce({
+      steps: [
+        {
+          id: "rstep_1",
+          runId: "run_1",
+          sessionId: "sess_1",
+          sequenceNo: 1,
+          stepId: "step-1",
+          stepKind: "planning",
+          stepNumber: null,
+          plan: "Inspect the workspace and identify the provider flow.",
+          usage: { inputTokens: 10, outputTokens: 4, reasoningTokens: 0 },
+          durationMs: 120,
+          hasDelta: true,
+          createdAt: "2026-03-24T12:00:01Z",
+        },
+        {
+          id: "rstep_2",
+          runId: "run_1",
+          sessionId: "sess_1",
+          sequenceNo: 2,
+          stepId: "step-2",
+          stepKind: "action",
+          stepNumber: 1,
+          codeAction: 'print("Run completed through sidecar.")',
+          actionOutput: "Run completed through sidecar.",
+          observations: ["Execution logs:", "Run completed through sidecar."],
+          error: null,
+          usage: { inputTokens: 14, outputTokens: 6, reasoningTokens: 0 },
+          durationMs: 180,
+          hasDelta: true,
+          createdAt: "2026-03-24T12:00:02Z",
+        },
+      ],
+    })
+
+    render(<Home />)
+
+    await waitFor(() => {
+      expect(screen.getByText("Planning step")).toBeInTheDocument()
+    })
+
+    expect(screen.getByText("Inspect the workspace and identify the provider flow.")).toBeInTheDocument()
+    expect(screen.getByText("Step 1")).toBeInTheDocument()
+    expect(screen.getByText('print("Run completed through sidecar.")')).toBeInTheDocument()
   })
 
   it("sends prompts through /runs and renders returned assistant output", async () => {
@@ -522,6 +590,34 @@ describe("Home page", () => {
 
     await waitFor(() => {
       expect(screen.getByText("Run failed: Upstream model request failed")).toBeInTheDocument()
+    })
+  })
+
+  it("sends the selected reasoning effort with the run request", async () => {
+    render(<Home />)
+
+    await waitFor(() => {
+      expect(screen.getByText("OpenAI - gpt-5.4-mini")).toBeInTheDocument()
+    })
+
+    fireEvent.change(screen.getByLabelText("Reasoning effort"), {
+      target: { value: "high" },
+    })
+    fireEvent.change(screen.getByPlaceholderText("Ask for follow-up changes"), {
+      target: { value: "Use a more detailed chain of thought" },
+    })
+    fireEvent.click(screen.getByLabelText("Send"))
+
+    await waitFor(() => {
+      const runCalls = fetchMock.mock.calls.filter(
+        ([input, init]) =>
+          String(input).includes("/api/sidecar/proxy?path=%2Fruns") &&
+          init?.method === "POST"
+      )
+      expect(runCalls).toHaveLength(1)
+      expect(JSON.parse(String(runCalls[0][1]?.body))).toMatchObject({
+        reasoningEffort: "high",
+      })
     })
   })
 })

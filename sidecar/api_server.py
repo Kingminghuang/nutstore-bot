@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 import json
 import os
 import sqlite3
@@ -67,6 +68,7 @@ def create_app(config: ApiServerConfig | None = None) -> FastAPI:
         sessions=repositories.sessions,
         providers=repositories.providers,
         runs=repositories.runs,
+        run_steps=repositories.run_steps,
         session_service=session_service,
         secret_store=LocalSecretStore(cfg.ns_bot_home),
         event_store=RunEventStore(),
@@ -74,7 +76,16 @@ def create_app(config: ApiServerConfig | None = None) -> FastAPI:
         ns_bot_home=cfg.ns_bot_home,
     )
 
-    app = FastAPI(title="Nutstore Bot Sidecar", version=cfg.version)
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        try:
+            yield
+        finally:
+            db = getattr(app.state, "database", None)
+            if isinstance(db, sqlite3.Connection):
+                db.close()
+
+    app = FastAPI(title="Nutstore Bot Sidecar", version=cfg.version, lifespan=lifespan)
     app.state.api_server_config = cfg
     app.state.local_auth = auth_config
     app.state.database = database
@@ -172,7 +183,7 @@ def create_app(config: ApiServerConfig | None = None) -> FastAPI:
     @app.post("/runs")
     def create_run(
         payload: dict[str, object], background_tasks: BackgroundTasks, request: Request
-    ) -> dict[str, object]:
+    ):
         service = request.app.state.run_service
         try:
             return service.create_run(payload, background_tasks=background_tasks)
@@ -221,6 +232,16 @@ def create_app(config: ApiServerConfig | None = None) -> FastAPI:
             },
         )
 
+    @app.get("/runs/{run_id}/steps")
+    def get_run_steps(
+        run_id: str, request: Request
+    ) -> dict[str, list[dict[str, object]]]:
+        service = request.app.state.run_service
+        try:
+            return service.list_run_steps_payload(run_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail="Run not found") from exc
+
     @app.post("/runs/{run_id}/cancel")
     def cancel_run(run_id: str, request: Request) -> dict[str, object]:
         service = request.app.state.run_service
@@ -245,12 +266,6 @@ def create_app(config: ApiServerConfig | None = None) -> FastAPI:
         provider_id: str, payload: dict[str, object] | None = None
     ) -> dict[str, object]:
         return provider_service.validate_provider(provider_id, payload)
-
-    @app.on_event("shutdown")
-    def close_database() -> None:
-        db = getattr(app.state, "database", None)
-        if isinstance(db, sqlite3.Connection):
-            db.close()
 
     return app
 

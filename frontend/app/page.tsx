@@ -8,16 +8,20 @@ import { Sidebar } from "@/components/sidebar"
 import {
   createProvider,
   deleteProvider,
+  getRunSteps,
   getModelOptions,
   getProviderCatalog,
   getProviders,
   updateProvider,
+  type RunHistoryStep,
 } from "@/lib/sidecar-client"
 import {
+  normalizeSelectedReasoningEffort,
   type ModelOptionGroup,
   type ProviderCatalogEntry,
   type ProviderConnectionDetail,
   type SaveProviderPayload,
+  type SelectedReasoningEffort,
   type SelectedModelRef,
   isSelectedModelAvailable,
 } from "@/lib/provider-settings"
@@ -47,6 +51,8 @@ export type Session = {
   messages: Message[]
 }
 
+export type RunStepsByRunId = Record<string, RunHistoryStep[]>
+
 export type Project = {
   id: string
   name: string
@@ -67,6 +73,90 @@ const SIDEBAR_MIN = 160
 const SIDEBAR_MAX = 480
 const SIDEBAR_DEFAULT = 230
 
+function getMessageRunIds(messages: Message[]): string[] {
+  return Array.from(new Set(messages.map((message) => message.runId).filter(Boolean))) as string[]
+}
+
+function mergeRunStepsByEntries(
+  prev: RunStepsByRunId,
+  entries: ReadonlyArray<readonly [string, RunHistoryStep[]]>
+): RunStepsByRunId {
+  return {
+    ...prev,
+    ...Object.fromEntries(entries),
+  }
+}
+
+function updateSessionInWorkspace(
+  prev: Record<string, Session[]>,
+  workspaceId: string,
+  sessionId: string,
+  updateSession: (session: Session) => Session
+): Record<string, Session[]> {
+  return {
+    ...prev,
+    [workspaceId]: (prev[workspaceId] ?? []).map((session) =>
+      session.id === sessionId ? updateSession(session) : session
+    ),
+  }
+}
+
+function appendDeltaToMessages(
+  messages: Message[],
+  event: Extract<RunStreamEvent, { type: "run.delta" }>
+): Message[] {
+  const nextMessages = [...messages]
+  const lastMessage = nextMessages[nextMessages.length - 1]
+  if (
+    lastMessage &&
+    lastMessage.role === "assistant" &&
+    (lastMessage.stepId ?? null) === event.stepId &&
+    (lastMessage.runId ?? null) === event.runId
+  ) {
+    nextMessages[nextMessages.length - 1] = {
+      ...lastMessage,
+      content: `${lastMessage.content}${event.text}`,
+    }
+    return nextMessages
+  }
+
+  nextMessages.push({
+    id: `stream-${event.runId}-${event.sequence}`,
+    role: "assistant",
+    content: event.text,
+    createdAt: event.createdAt,
+    stepId: event.stepId,
+    runId: event.runId,
+  })
+  return nextMessages
+}
+
+function applyRunMessageToMessages(
+  messages: Message[],
+  event: Extract<RunStreamEvent, { type: "run.message" }>
+): Message[] {
+  const withoutStreamMessage = messages.filter(
+    (message) => !(message.id.startsWith("stream-") && (message.runId ?? null) === event.runId)
+  )
+  const existingIndex = withoutStreamMessage.findIndex((message) => message.id === event.messageId)
+  const nextMessage = {
+    id: event.messageId,
+    role: event.role,
+    content: event.content,
+    createdAt: event.createdAt,
+    stepId: event.stepId,
+    runId: event.runId,
+  }
+
+  if (existingIndex >= 0) {
+    withoutStreamMessage[existingIndex] = nextMessage
+  } else {
+    withoutStreamMessage.push(nextMessage)
+  }
+
+  return withoutStreamMessage
+}
+
 export default function Home() {
   const [workspaces, setWorkspaces] = useState<WorkspaceSummary[]>([])
   const [sessionsByWorkspace, setSessionsByWorkspace] = useState<Record<string, Session[]>>({})
@@ -76,7 +166,10 @@ export default function Home() {
   const [providerConnections, setProviderConnections] = useState<ProviderConnectionDetail[]>([])
   const [modelOptionGroups, setModelOptionGroups] = useState<ModelOptionGroup[]>([])
   const [selectedModel, setSelectedModel] = useState<SelectedModelRef | null>(null)
+  const [selectedReasoningEffort, setSelectedReasoningEffort] =
+    useState<SelectedReasoningEffort>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [runStepsByRunId, setRunStepsByRunId] = useState<RunStepsByRunId>({})
   const [sidebarWidth, setSidebarWidth] = useState(SIDEBAR_DEFAULT)
   const [isLoadingProviders, setIsLoadingProviders] = useState(true)
   const [providerError, setProviderError] = useState<string | null>(null)
@@ -113,6 +206,7 @@ export default function Home() {
       setProviderConnections([])
       setModelOptionGroups([])
       setSelectedModel(null)
+      setSelectedReasoningEffort(null)
     } finally {
       setIsLoadingProviders(false)
     }
@@ -158,6 +252,7 @@ export default function Home() {
       )
       setWorkspaces([])
       setSessionsByWorkspace({})
+      setRunStepsByRunId({})
       setActiveWorkspaceId(null)
       setActiveSessionId(null)
     }
@@ -175,19 +270,46 @@ export default function Home() {
   }, [])
 
   useEffect(() => {
-    if (!activeSessionId || !activeWorkspaceId) {
+    setSelectedReasoningEffort((current) =>
+      normalizeSelectedReasoningEffort(selectedModel, modelOptionGroups, current)
+    )
+  }, [modelOptionGroups, selectedModel])
+
+  const activeSession = useMemo(
+    () =>
+      activeWorkspaceId == null || activeSessionId == null
+        ? null
+        : sessionsByWorkspace[activeWorkspaceId]?.find((session) => session.id === activeSessionId) ??
+          null,
+    [activeSessionId, activeWorkspaceId, sessionsByWorkspace]
+  )
+
+  useEffect(() => {
+    if (!activeSessionId || !activeWorkspaceId || activeSession == null) {
       return
     }
 
-    const currentSession = sessionsByWorkspace[activeWorkspaceId]?.find(
-      (session) => session.id === activeSessionId
-    )
-    if (currentSession?.messages.length) {
+    if (activeSession.messages.length > 0) {
       return
     }
+
+    let cancelled = false
 
     void sidecarFetch<{ messages: Message[] }>(`/sessions/${activeSessionId}/messages`)
       .then((response) => {
+        if (cancelled) {
+          return
+        }
+        const runIds = getMessageRunIds(response.messages)
+        setRunStepsByRunId((prev) => {
+          const next = { ...prev }
+          for (const key of Object.keys(next)) {
+            if (!runIds.includes(key)) {
+              delete next[key]
+            }
+          }
+          return next
+        })
         setSessionsByWorkspace((prev) => ({
           ...prev,
           [activeWorkspaceId]: (prev[activeWorkspaceId] ?? []).map((session) =>
@@ -198,7 +320,43 @@ export default function Home() {
         }))
       })
       .catch(() => undefined)
-  }, [activeSessionId, activeWorkspaceId, sessionsByWorkspace])
+
+    return () => {
+      cancelled = true
+    }
+  }, [activeSession, activeSessionId, activeWorkspaceId])
+
+  useEffect(() => {
+    if (!activeSession) {
+      return
+    }
+
+    const runIds = getMessageRunIds(activeSession.messages)
+    const missingRunIds = runIds.filter((runId) => runStepsByRunId[runId] == null)
+    if (missingRunIds.length === 0) {
+      return
+    }
+
+    let cancelled = false
+
+    void Promise.all(
+      missingRunIds.map(async (runId) => {
+        const stepsResponse = await getRunSteps(runId)
+        return [runId, stepsResponse.steps] as const
+      })
+    )
+      .then((entries) => {
+        if (cancelled) {
+          return
+        }
+        setRunStepsByRunId((prev) => mergeRunStepsByEntries(prev, entries))
+      })
+      .catch(() => undefined)
+
+    return () => {
+      cancelled = true
+    }
+  }, [activeSession, runStepsByRunId])
 
   const handleSidebarResizeStart = useCallback(
     (e: React.MouseEvent) => {
@@ -288,6 +446,9 @@ export default function Home() {
               workspaceId: activeWorkspaceId,
               connectionId: selectedModel.connectionId,
               modelId: selectedModel.modelId,
+              ...(selectedReasoningEffort
+                ? { reasoningEffort: selectedReasoningEffort }
+                : {}),
               input: text,
             }),
           }
@@ -306,6 +467,10 @@ export default function Home() {
                 }
               : session
           ),
+        }))
+        setRunStepsByRunId((prev) => ({
+          ...prev,
+          [runResponse.run.id]: [],
         }))
 
         if (runResponse.run.status === "queued" || runResponse.run.status === "running") {
@@ -341,7 +506,7 @@ export default function Home() {
         throw error
       }
     },
-    [activeSessionId, activeWorkspaceId, selectedModel]
+    [activeSessionId, activeWorkspaceId, selectedModel, selectedReasoningEffort]
   )
 
   const startRunEventStream = useCallback(
@@ -359,113 +524,67 @@ export default function Home() {
         }
       }
 
+      const updateActiveSession = (updateSession: (session: Session) => Session) => {
+        setSessionsByWorkspace((prev) =>
+          updateSessionInWorkspace(prev, workspaceId, sessionId, updateSession)
+        )
+      }
+
+      const refreshSessionSummary = () => {
+        void sidecarFetch<{ sessions: Omit<Session, "messages">[] }>(`/workspaces/${workspaceId}/sessions`)
+          .then((response) => {
+            const refreshed = response.sessions.find((session) => session.id === sessionId)
+            if (!refreshed) {
+              return
+            }
+
+            updateActiveSession((session) => ({
+              ...session,
+              ...refreshed,
+              messages: session.messages,
+            }))
+          })
+          .catch(() => undefined)
+      }
+
+      const applyDeltaEvent = (event: Extract<RunStreamEvent, { type: "run.delta" }>) => {
+        updateActiveSession((session) => ({
+          ...session,
+          messages: appendDeltaToMessages(session.messages, event),
+        }))
+      }
+
+      const applyMessageEvent = (event: Extract<RunStreamEvent, { type: "run.message" }>) => {
+        updateActiveSession((session) => ({
+          ...session,
+          messages: applyRunMessageToMessages(session.messages, event),
+        }))
+      }
+
+      const applyTerminalEvent = (
+        event: Extract<RunStreamEvent, { type: "run.completed" | "run.failed" }>
+      ) => {
+        refreshSessionSummary()
+        setRunError(event.type === "run.failed" ? event.errorMessage : null)
+      }
+
       const applyEvent = (event: RunStreamEvent) => {
         if (event.sessionId !== sessionId) {
           return
         }
 
         if (event.type === "run.delta") {
-          setSessionsByWorkspace((prev) => ({
-            ...prev,
-            [workspaceId]: (prev[workspaceId] ?? []).map((session) => {
-              if (session.id !== sessionId) {
-                return session
-              }
-
-              const messages = [...session.messages]
-              const lastMessage = messages[messages.length - 1]
-              if (
-                lastMessage &&
-                lastMessage.role === "assistant" &&
-                (lastMessage.stepId ?? null) === event.stepId &&
-                (lastMessage.runId ?? null) === event.runId
-              ) {
-                messages[messages.length - 1] = {
-                  ...lastMessage,
-                  content: `${lastMessage.content}${event.text}`,
-                }
-              } else {
-                messages.push({
-                  id: `stream-${event.runId}-${event.sequence}`,
-                  role: "assistant",
-                  content: event.text,
-                  createdAt: event.createdAt,
-                  stepId: event.stepId,
-                  runId: event.runId,
-                })
-              }
-
-              return {
-                ...session,
-                messages,
-              }
-            }),
-          }))
+          applyDeltaEvent(event)
           return
         }
 
         if (event.type === "run.message") {
-          setSessionsByWorkspace((prev) => ({
-            ...prev,
-            [workspaceId]: (prev[workspaceId] ?? []).map((session) => {
-              if (session.id !== sessionId) {
-                return session
-              }
-
-              const withoutStreamMessage = session.messages.filter(
-                (message) =>
-                  !(message.id.startsWith("stream-") && (message.runId ?? null) === event.runId)
-              )
-              const existingIndex = withoutStreamMessage.findIndex(
-                (message) => message.id === event.messageId
-              )
-              const nextMessage = {
-                id: event.messageId,
-                role: event.role,
-                content: event.content,
-                createdAt: event.createdAt,
-                stepId: event.stepId,
-                runId: event.runId,
-              }
-              if (existingIndex >= 0) {
-                withoutStreamMessage[existingIndex] = nextMessage
-              } else {
-                withoutStreamMessage.push(nextMessage)
-              }
-              return {
-                ...session,
-                messages: withoutStreamMessage,
-              }
-            }),
-          }))
+          applyMessageEvent(event)
           return
         }
 
         if (event.type === "run.completed" || event.type === "run.failed") {
-          void sidecarFetch<{ sessions: Omit<Session, "messages">[] }>(
-            `/workspaces/${workspaceId}/sessions`
-          )
-            .then((response) => {
-              const refreshed = response.sessions.find((session) => session.id === sessionId)
-              if (!refreshed) {
-                return
-              }
-              setSessionsByWorkspace((prev) => ({
-                ...prev,
-                [workspaceId]: (prev[workspaceId] ?? []).map((session) =>
-                  session.id === sessionId
-                    ? { ...session, ...refreshed, messages: session.messages }
-                    : session
-                ),
-              }))
-            })
-            .catch(() => undefined)
-
-          if (event.type === "run.failed") {
-            setRunError(event.errorMessage)
-          } else {
-            setRunError(null)
-          }
+          applyTerminalEvent(event)
           return
         }
 
@@ -538,8 +657,6 @@ export default function Home() {
     () => projects.find((project) => project.id === activeWorkspaceId) ?? null,
     [projects, activeWorkspaceId]
   )
-  const activeSession =
-    activeProject?.sessions.find((session) => session.id === activeSessionId) ?? null
 
   useEffect(() => {
     if (activeSession?.activeConnectionId && activeSession.activeModelId) {
@@ -609,10 +726,13 @@ export default function Home() {
       <MainContent
         activeProject={activeProject}
         activeSession={activeSession}
+        runStepsByRunId={runStepsByRunId}
         onSendMessage={handleSendMessage}
         modelOptionGroups={modelOptionGroups}
         selectedModel={selectedModel}
+        selectedReasoningEffort={selectedReasoningEffort}
         onSelectedModelChange={setSelectedModel}
+        onSelectedReasoningEffortChange={setSelectedReasoningEffort}
         isLoadingModels={isLoadingProviders}
         providerError={providerError ?? workspaceError}
         runError={runError}

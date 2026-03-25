@@ -11,6 +11,51 @@ type DiscoveryPayload = {
   token: string
 }
 
+export type RunStepUsage = {
+  inputTokens: number
+  outputTokens: number
+  reasoningTokens: number
+}
+
+export type RunPlanningStep = {
+  id: string
+  runId: string
+  sessionId: string
+  sequenceNo: number
+  stepId: string
+  stepKind: "planning"
+  stepNumber: null
+  plan: string
+  usage: RunStepUsage
+  durationMs: number
+  hasDelta: boolean
+  createdAt: string
+}
+
+export type RunActionStep = {
+  id: string
+  runId: string
+  sessionId: string
+  sequenceNo: number
+  stepId: string
+  stepKind: "action"
+  stepNumber: number
+  codeAction: string | null
+  actionOutput: unknown | null
+  observations: string[]
+  error: string | null
+  usage: RunStepUsage
+  durationMs: number
+  hasDelta: boolean
+  createdAt: string
+}
+
+export type RunHistoryStep = RunPlanningStep | RunActionStep
+
+export type RunStepsResponse = {
+  steps: RunHistoryStep[]
+}
+
 class SidecarClientError extends Error {
   status: number
 
@@ -58,6 +103,10 @@ export async function updateProvider(
 
 export async function deleteProvider(providerId: string): Promise<void> {
   await sidecarFetch<void>(`/providers/${providerId}`, { method: "DELETE" })
+}
+
+export async function getRunSteps(runId: string): Promise<RunStepsResponse> {
+  return sidecarFetch<RunStepsResponse>(`/runs/${runId}/steps`)
 }
 
 export function resetSidecarDiscoveryCache(): void {

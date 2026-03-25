@@ -14,10 +14,13 @@ import {
   X,
 } from "lucide-react"
 
-import type { Message, Project, Session } from "@/app/page"
+import type { Message, Project, RunStepsByRunId, Session } from "@/app/page"
+import type { RunActionStep, RunHistoryStep } from "@/lib/sidecar-client"
 import {
   getModelOptionLabel,
+  getReasoningEffortOptions,
   type ModelOptionGroup,
+  type SelectedReasoningEffort,
   type SelectedModelRef,
 } from "@/lib/provider-settings"
 import { cn } from "@/lib/utils"
@@ -29,10 +32,13 @@ const EMPTY_MESSAGES: Message[] = []
 interface MainContentProps {
   activeProject: Project | null
   activeSession: Session | null
+  runStepsByRunId: RunStepsByRunId
   onSendMessage: (text: string) => Promise<void>
   modelOptionGroups: ModelOptionGroup[]
   selectedModel: SelectedModelRef | null
+  selectedReasoningEffort: SelectedReasoningEffort
   onSelectedModelChange: (value: SelectedModelRef | null) => void
+  onSelectedReasoningEffortChange: (value: SelectedReasoningEffort) => void
   isLoadingModels: boolean
   providerError: string | null
   runError: string | null
@@ -41,10 +47,13 @@ interface MainContentProps {
 export function MainContent({
   activeProject,
   activeSession,
+  runStepsByRunId,
   onSendMessage,
   modelOptionGroups,
   selectedModel,
+  selectedReasoningEffort,
   onSelectedModelChange,
+  onSelectedReasoningEffortChange,
   isLoadingModels,
   providerError,
   runError,
@@ -64,6 +73,11 @@ export function MainContent({
   const messages = activeSession?.messages ?? EMPTY_MESSAGES
   const hasMessages = messages.length > 0
   const hasAvailableModels = modelOptionGroups.some((group) => group.models.length > 0)
+  const reasoningEffortOptions = useMemo(
+    () => getReasoningEffortOptions(selectedModel, modelOptionGroups),
+    [modelOptionGroups, selectedModel]
+  )
+  const supportsReasoningEffort = reasoningEffortOptions.length > 0
 
   const selectedModelLabel = useMemo(() => {
     if (isLoadingModels) {
@@ -178,7 +192,12 @@ export function MainContent({
         ) : (
           <div className="max-w-2xl mx-auto px-6 py-6 space-y-4">
             {messages.map((msg) => (
-              <MessageBubble key={msg.id} message={msg} />
+              <div key={msg.id} className="space-y-3">
+                <MessageBubble message={msg} />
+                {msg.role === "user" && msg.runId && (runStepsByRunId[msg.runId] ?? []).length > 0 ? (
+                  <RunStepTimeline steps={runStepsByRunId[msg.runId] ?? []} />
+                ) : null}
+              </div>
             ))}
             {isGenerating && (
               <div className="flex gap-3 items-start">
@@ -334,6 +353,29 @@ export function MainContent({
                 )}
               </div>
 
+              {supportsReasoningEffort && (
+                <div className="relative">
+                  <label className="flex items-center gap-2 text-sm text-muted-foreground">
+                    <span>Reasoning</span>
+                    <select
+                      value={selectedReasoningEffort ?? ""}
+                      onChange={(event) => {
+                        onSelectedReasoningEffortChange(event.target.value || null)
+                      }}
+                      className="rounded-lg border border-[#e8e4e0] bg-background px-2.5 py-1.5 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-foreground/20"
+                      aria-label="Reasoning effort"
+                    >
+                      <option value="">Auto</option>
+                      {reasoningEffortOptions.map((option) => (
+                        <option key={option} value={option}>
+                          {option}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
+              )}
+
               <div className="relative">
                 <button
                   onClick={() => {
@@ -407,6 +449,89 @@ export function MainContent({
       </div>
     </main>
   )
+}
+
+function RunStepTimeline({ steps }: { steps: RunHistoryStep[] }) {
+  return (
+    <div className="ml-10 space-y-3 border-l border-[#e8e4e0] pl-4">
+      {steps.map((step) =>
+        step.stepKind === "planning" ? (
+          <PlanningStepCard key={step.id} step={step} />
+        ) : (
+          <ActionStepCard key={step.id} step={step} />
+        )
+      )}
+    </div>
+  )
+}
+
+function PlanningStepCard({ step }: { step: Extract<RunHistoryStep, { stepKind: "planning" }> }) {
+  return (
+    <div className="rounded-2xl border border-[#e8e4e0] bg-[#fcfaf8] px-4 py-3">
+      <div className="mb-2 text-xs uppercase tracking-[0.12em] text-foreground/45">Planning step</div>
+      <AgentMessageContent content={step.plan} />
+      <StepFootnote
+        usage={step.usage}
+        durationMs={step.durationMs}
+      />
+    </div>
+  )
+}
+
+function ActionStepCard({ step }: { step: RunActionStep }) {
+  const hasCodeAction = Boolean(step.codeAction)
+  const hasActionOutput = step.actionOutput !== null && step.actionOutput !== ""
+  const showObservations = !hasActionOutput && step.observations.length > 0
+
+  return (
+    <div className="rounded-2xl border border-[#e8e4e0] bg-[#fcfaf8] px-4 py-3 space-y-3">
+      <div className="text-xs uppercase tracking-[0.12em] text-foreground/45">Step {step.stepNumber}</div>
+      {hasCodeAction ? <CodeBlock label="python" content={step.codeAction ?? ""} /> : null}
+      {hasActionOutput ? <DataBlock label="Result" value={step.actionOutput} /> : null}
+      {showObservations ? <CodeBlock label="bash" content={step.observations.join("\n")} /> : null}
+      {step.error ? (
+        <div className="rounded-xl border border-[#efc1b4] bg-[#fff1ec] px-3 py-2 text-sm text-[#9d4d38] whitespace-pre-wrap">
+          {step.error}
+        </div>
+      ) : null}
+      <StepFootnote usage={step.usage} durationMs={step.durationMs} />
+    </div>
+  )
+}
+
+function DataBlock({ label, value }: { label: string; value: unknown }) {
+  const content = typeof value === "string" ? value : JSON.stringify(value, null, 2)
+  return <CodeBlock label={label} content={content} />
+}
+
+function CodeBlock({ label, content }: { label: string; content: string }) {
+  return (
+    <pre className="bg-[#1e1e1e] text-[#d4d4d4] rounded-xl px-4 py-3 text-xs overflow-x-auto font-mono">
+      <div className="text-[#6a9955] mb-2 text-xs">{label}</div>
+      <code>{content}</code>
+    </pre>
+  )
+}
+
+function StepFootnote({
+  usage,
+  durationMs,
+}: {
+  usage: { inputTokens: number; outputTokens: number; reasoningTokens: number }
+  durationMs: number
+}) {
+  const parts = [
+    `Input ${usage.inputTokens}`,
+    `Output ${usage.outputTokens}`,
+  ]
+  if (usage.reasoningTokens > 0) {
+    parts.push(`Reasoning ${usage.reasoningTokens}`)
+  }
+  if (durationMs > 0) {
+    parts.push(`Duration ${(durationMs / 1000).toFixed(2)}s`)
+  }
+
+  return <div className="text-xs text-foreground/45">{parts.join(" | ")}</div>
 }
 
 function MessageBubble({ message }: { message: Message }) {
