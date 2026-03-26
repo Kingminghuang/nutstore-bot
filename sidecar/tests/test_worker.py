@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
 import unittest
+from pathlib import Path
+from unittest.mock import patch
 
 from python_runtime.worker import parse_request
 
@@ -93,6 +96,30 @@ class WorkerRequestParsingTests(unittest.TestCase):
         self.assertEqual(req.config.direct_api_key, "sk-test")
         self.assertEqual(req.config.direct_model_id, "gpt-4.1")
         self.assertEqual(req.config.direct_request_timeout_ms, 45000)
+
+    def test_parse_request_uses_platform_nsbot_home_default(self) -> None:
+        raw = json.dumps(
+            {
+                "runId": "run-4",
+                "userInput": "default-home",
+                "authContext": {},
+                "metadata": {},
+                "config": {},
+            }
+        )
+
+        with patch("worker.sys.platform", "win32"):
+            with patch.dict(
+                os.environ,
+                {"APPDATA": r"C:\\Users\\test\\AppData\\Roaming"},
+                clear=True,
+            ):
+                req = parse_request(raw)
+
+        self.assertEqual(
+            req.config.ns_bot_home,
+            str((Path(r"C:\Users\test\AppData\Roaming") / "NutstoreBot").resolve()),
+        )
 
 
 if __name__ == "__main__":

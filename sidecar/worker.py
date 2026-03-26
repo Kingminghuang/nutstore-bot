@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from local_paths import nsbot_home
 from runtime_service import (
     CodeAgentRuntimeService,
     RunMetadata,
@@ -44,6 +46,13 @@ def _pick(data: dict[str, Any], snake_key: str, camel_key: str) -> Any:
     return data.get(camel_key)
 
 
+def _default_workspace_path() -> str:
+    try:
+        return str(Path.home())
+    except RuntimeError:
+        return os.getcwd()
+
+
 def parse_request(raw: str) -> RuntimeRequest:
     data = json.loads(raw)
     metadata_data = data.get("metadata") or {}
@@ -64,20 +73,47 @@ def parse_request(raw: str) -> RuntimeRequest:
         ),
         config=RuntimeWorkerConfig(
             model_id=str(_pick(config_data, "model_id", "modelId") or "gpt-5.4"),
-            direct_provider=str(_pick(config_data, "direct_provider", "directProvider") or "").strip() or None,
-            direct_base_url=str(_pick(config_data, "direct_base_url", "directBaseUrl") or "").strip() or None,
-            direct_api_key=str(_pick(config_data, "direct_api_key", "directApiKey") or "").strip() or None,
-            direct_model_id=str(_pick(config_data, "direct_model_id", "directModelId") or "").strip() or None,
+            direct_provider=str(
+                _pick(config_data, "direct_provider", "directProvider") or ""
+            ).strip()
+            or None,
+            direct_base_url=str(
+                _pick(config_data, "direct_base_url", "directBaseUrl") or ""
+            ).strip()
+            or None,
+            direct_api_key=str(
+                _pick(config_data, "direct_api_key", "directApiKey") or ""
+            ).strip()
+            or None,
+            direct_model_id=str(
+                _pick(config_data, "direct_model_id", "directModelId") or ""
+            ).strip()
+            or None,
             direct_request_timeout_ms=int(
-                _pick(config_data, "direct_request_timeout_ms", "directRequestTimeoutMs") or 60_000
+                _pick(
+                    config_data, "direct_request_timeout_ms", "directRequestTimeoutMs"
+                )
+                or 60_000
             ),
-            ns_bot_home=str(_pick(config_data, "ns_bot_home", "nsBotHome") or str(Path.home() / ".nsbot")),
+            ns_bot_home=str(
+                _pick(config_data, "ns_bot_home", "nsBotHome") or nsbot_home()
+            ),
             workspace_path_default=str(
-                _pick(config_data, "workspace_path_default", "workspacePathDefault") or str(Path.home())
+                _pick(config_data, "workspace_path_default", "workspacePathDefault")
+                or _default_workspace_path()
             ),
-            fd_executable=str(_pick(config_data, "fd_executable", "fdExecutable") or "").strip() or None,
-            rg_executable=str(_pick(config_data, "rg_executable", "rgExecutable") or "").strip() or None,
-            tool_os_type=str(_pick(config_data, "tool_os_type", "toolOsType") or "").strip() or None,
+            fd_executable=str(
+                _pick(config_data, "fd_executable", "fdExecutable") or ""
+            ).strip()
+            or None,
+            rg_executable=str(
+                _pick(config_data, "rg_executable", "rgExecutable") or ""
+            ).strip()
+            or None,
+            tool_os_type=str(
+                _pick(config_data, "tool_os_type", "toolOsType") or ""
+            ).strip()
+            or None,
             max_steps=int(_pick(config_data, "max_steps", "maxSteps") or 20),
         ),
     )

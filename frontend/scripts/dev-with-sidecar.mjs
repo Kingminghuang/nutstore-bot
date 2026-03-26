@@ -8,61 +8,79 @@ const frontendDir = path.resolve(scriptDir, "..")
 const workspaceRoot = path.resolve(frontendDir, "..")
 const sidecarDir = path.join(workspaceRoot, "sidecar")
 
-const children = []
-let shuttingDown = false
+export function startDevWithSidecar({
+  platform = process.platform,
+  env = process.env,
+  spawnImpl = spawn,
+} = {}) {
+  const children = []
+  let shuttingDown = false
 
-const sidecar = spawn("uv", ["run", "python", "api_server.py"], {
-  cwd: sidecarDir,
-  env: process.env,
-  stdio: "inherit",
-})
-children.push(sidecar)
+  const sidecar = spawnImpl("uv", ["run", "python", "api_server.py"], {
+    cwd: sidecarDir,
+    env,
+    stdio: "inherit",
+  })
+  children.push(sidecar)
 
-const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm"
-const frontend = spawn(npmCommand, ["run", "dev"], {
-  cwd: frontendDir,
-  env: process.env,
-  stdio: "inherit",
-})
-children.push(frontend)
+  const frontend =
+    platform === "win32"
+      ? spawnImpl(env.ComSpec ?? "cmd.exe", ["/d", "/s", "/c", "npm run dev"], {
+          cwd: frontendDir,
+          env,
+          stdio: "inherit",
+        })
+      : spawnImpl("npm", ["run", "dev"], {
+          cwd: frontendDir,
+          env,
+          stdio: "inherit",
+        })
+  children.push(frontend)
 
-function terminate(code = 0) {
-  if (shuttingDown) {
-    return
-  }
-  shuttingDown = true
-
-  for (const child of children) {
-    if (child.exitCode == null && child.signalCode == null) {
-      child.kill("SIGTERM")
+  function terminate(code = 0) {
+    if (shuttingDown) {
+      return
     }
-  }
+    shuttingDown = true
 
-  setTimeout(() => {
     for (const child of children) {
       if (child.exitCode == null && child.signalCode == null) {
-        child.kill("SIGKILL")
+        child.kill("SIGTERM")
       }
     }
-    process.exit(code)
-  }, 500).unref()
+
+    setTimeout(() => {
+      for (const child of children) {
+        if (child.exitCode == null && child.signalCode == null) {
+          child.kill("SIGKILL")
+        }
+      }
+      process.exit(code)
+    }, 500).unref()
+  }
+
+  sidecar.on("exit", (code, signal) => {
+    if (shuttingDown) {
+      return
+    }
+    const exitCode = code ?? (signal ? 1 : 0)
+    terminate(exitCode)
+  })
+
+  frontend.on("exit", (code, signal) => {
+    if (shuttingDown) {
+      return
+    }
+    const exitCode = code ?? (signal ? 1 : 0)
+    terminate(exitCode)
+  })
+
+  process.on("SIGINT", () => terminate(0))
+  process.on("SIGTERM", () => terminate(0))
+
+  return { sidecar, frontend, terminate }
 }
 
-sidecar.on("exit", (code, signal) => {
-  if (shuttingDown) {
-    return
-  }
-  const exitCode = code ?? (signal ? 1 : 0)
-  terminate(exitCode)
-})
-
-frontend.on("exit", (code, signal) => {
-  if (shuttingDown) {
-    return
-  }
-  const exitCode = code ?? (signal ? 1 : 0)
-  terminate(exitCode)
-})
-
-process.on("SIGINT", () => terminate(0))
-process.on("SIGTERM", () => terminate(0))
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  startDevWithSidecar()
+}

@@ -1,12 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
 
-const spawnMock = vi.fn()
 const killMock = vi.fn()
 
 vi.mock("node:child_process", () => ({
-  spawn: spawnMock,
+  spawn: vi.fn(),
   default: {
-    spawn: spawnMock,
+    spawn: vi.fn(),
   },
 }))
 
@@ -34,32 +33,61 @@ describe("dev-with-sidecar script", () => {
   afterEach(() => {
     vi.resetModules()
     vi.unstubAllGlobals()
+    vi.restoreAllMocks()
     vi.clearAllMocks()
   })
 
-  it("starts sidecar and frontend dev processes", async () => {
+  it("starts sidecar and frontend dev processes on non-Windows", async () => {
     const sidecarChild = createChild()
     const frontendChild = createChild()
-    spawnMock.mockReturnValueOnce(sidecarChild).mockReturnValueOnce(frontendChild)
+    const spawnImpl = vi.fn().mockReturnValueOnce(sidecarChild).mockReturnValueOnce(frontendChild)
 
-    const exitMock = vi.fn()
     vi.stubGlobal("setTimeout", vi.fn(() => ({ unref: vi.fn() })))
-    vi.spyOn(process, "exit").mockImplementation(exitMock as never)
+    vi.spyOn(process, "exit").mockImplementation(vi.fn() as never)
 
-    await import("./dev-with-sidecar.mjs")
+    const { startDevWithSidecar } = await import("./dev-with-sidecar.mjs")
+    startDevWithSidecar({ platform: "linux", env: {}, spawnImpl })
 
-    expect(spawnMock).toHaveBeenNthCalledWith(
+    expect(spawnImpl).toHaveBeenNthCalledWith(
       1,
       "uv",
       ["run", "python", "api_server.py"],
       expect.objectContaining({ stdio: "inherit" })
     )
-    expect(spawnMock).toHaveBeenNthCalledWith(
+    expect(spawnImpl).toHaveBeenNthCalledWith(
       2,
-      expect.stringMatching(/npm(\.cmd)?$/),
+      "npm",
       ["run", "dev"],
       expect.objectContaining({ stdio: "inherit" })
     )
-    expect(exitMock).not.toHaveBeenCalled()
+  })
+
+  it("starts frontend through cmd on Windows", async () => {
+    const sidecarChild = createChild()
+    const frontendChild = createChild()
+    const spawnImpl = vi.fn().mockReturnValueOnce(sidecarChild).mockReturnValueOnce(frontendChild)
+
+    vi.stubGlobal("setTimeout", vi.fn(() => ({ unref: vi.fn() })))
+    vi.spyOn(process, "exit").mockImplementation(vi.fn() as never)
+
+    const { startDevWithSidecar } = await import("./dev-with-sidecar.mjs")
+    startDevWithSidecar({
+      platform: "win32",
+      env: { ComSpec: "C:\\Windows\\System32\\cmd.exe" },
+      spawnImpl,
+    })
+
+    expect(spawnImpl).toHaveBeenNthCalledWith(
+      1,
+      "uv",
+      ["run", "python", "api_server.py"],
+      expect.objectContaining({ stdio: "inherit" })
+    )
+    expect(spawnImpl).toHaveBeenNthCalledWith(
+      2,
+      "C:\\Windows\\System32\\cmd.exe",
+      ["/d", "/s", "/c", "npm run dev"],
+      expect.objectContaining({ stdio: "inherit" })
+    )
   })
 })

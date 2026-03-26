@@ -43,6 +43,12 @@ npm run dev:with-sidecar
 - sidecar：`uv run python api_server.py`（默认 `127.0.0.1:8765`）
 - frontend：`next dev`（默认 `localhost:3000`）
 
+Windows 说明：
+
+- 在 Git Bash、PowerShell、cmd 中都可以直接运行 `npm run dev:with-sidecar`
+- 若 `uv` 未加入 `PATH`，请先确认 `uv --version` 可以正常执行
+- sidecar 的本地数据默认写入 `%APPDATA%\NutstoreBot`；如需自定义，可设置 `NS_BOT_HOME`
+
 ### 分开启动（可选）
 
 先启动 sidecar：
@@ -51,6 +57,14 @@ npm run dev:with-sidecar
 cd sidecar
 uv run python api_server.py
 ```
+
+Windows 补充：
+
+- 直接在 Git Bash、PowerShell、cmd 中运行上面的命令即可，不依赖 `run_cli.sh`
+- `sidecar/run_cli.sh` 是 Bash 辅助脚本，更适合类 Unix 环境
+- Windows 下如需读取 `sidecar/.env` 并一键调用 CLI，可运行 `powershell -ExecutionPolicy Bypass -File .\run_cli.ps1`
+- 如需指定其他 env 文件，可运行 `powershell -ExecutionPolicy Bypass -File .\run_cli.ps1 -EnvFile .\dev.env`
+- 也可以直接运行 `uv run python cli.py ...`
 
 再启动 frontend：
 
