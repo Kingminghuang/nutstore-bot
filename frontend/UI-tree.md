@@ -8,7 +8,7 @@ Home (Page)
 │   │   └── MenuItem("New session", icon=SquarePen)
 │   ├── SessionsSection
 │   │   ├── SectionHeader("Sessions")
-│   │   │   └── Actions: IconButton("Add a new project", icon=FolderPlus)
+│   │   │   └── Actions: IconButton("Add a new directory", icon=FolderPlus)
 │   │   └── ScrollArea (垂直滚动条区域 / overflow-y-auto)
 │   │       ├── ProjectGroup ("Project 1")
 │   │       ├── ProjectGroup ("Project 2")

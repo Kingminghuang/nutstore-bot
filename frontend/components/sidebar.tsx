@@ -34,6 +34,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { cn } from "@/lib/utils"
 
 interface SidebarProps {
@@ -80,7 +81,6 @@ export function Sidebar({
   onSettingsOpen,
   onResizeStart,
 }: SidebarProps) {
-  const [hoveringAddBtn, setHoveringAddBtn] = useState(false)
   const [workspaceDialogOpen, setWorkspaceDialogOpen] = useState(false)
   const [workspaceDialogError, setWorkspaceDialogError] = useState<string | null>(null)
   const [workspaceDialogSubmitting, setWorkspaceDialogSubmitting] = useState(false)
@@ -160,22 +160,20 @@ export function Sidebar({
         <div className="flex-1 px-2 mt-4 overflow-y-auto overflow-x-visible">
           <div className="flex items-center justify-between px-3 mb-2">
             <span className="text-xs font-medium text-muted-foreground">Sessions</span>
-            <div className="relative">
-              <button
-                className="p-1 hover:bg-[#efe9e4] rounded"
-                onClick={handleAddProjectClick}
-                onMouseEnter={() => setHoveringAddBtn(true)}
-                onMouseLeave={() => setHoveringAddBtn(false)}
-                aria-label="Add a new project"
-              >
-                <FolderPlus className="w-3.5 h-3.5 text-muted-foreground" />
-              </button>
-              {hoveringAddBtn && (
-                <div className="absolute right-0 bottom-full mb-1 px-2 py-1 bg-foreground text-background text-xs rounded whitespace-nowrap pointer-events-none z-50">
-                  Add a new project
-                </div>
-              )}
-            </div>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  className="p-1 hover:bg-[#efe9e4] rounded"
+                  onClick={handleAddProjectClick}
+                  aria-label="Add a new directory"
+                >
+                  <FolderPlus className="w-3.5 h-3.5 text-muted-foreground" />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="top" sideOffset={6}>
+                Add a new directory
+              </TooltipContent>
+            </Tooltip>
           </div>
 
           <div className="space-y-1">
@@ -209,13 +207,19 @@ export function Sidebar({
           </button>
         </div>
 
-        <div
-          onMouseDown={onResizeStart}
-          className="absolute top-0 right-0 h-full w-1.5 cursor-col-resize group z-30"
-          title="Drag to resize"
-        >
-          <div className="h-full w-0.5 ml-auto opacity-0 group-hover:opacity-100 transition-opacity bg-[#e87b5f]/60 rounded-full" />
-        </div>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <div
+              onMouseDown={onResizeStart}
+              className="absolute top-0 right-0 h-full w-1.5 cursor-col-resize group z-30"
+            >
+              <div className="h-full w-0.5 ml-auto opacity-0 group-hover:opacity-100 transition-opacity bg-[#e87b5f]/60 rounded-full" />
+            </div>
+          </TooltipTrigger>
+          <TooltipContent side="right" sideOffset={8}>
+            Drag to resize
+          </TooltipContent>
+        </Tooltip>
       </aside>
 
       <Dialog open={workspaceDialogOpen} onOpenChange={setWorkspaceDialogOpen}>
@@ -311,8 +315,6 @@ function ProjectGroup({
   onRemove,
 }: ProjectGroupProps) {
   const [expanded, setExpanded] = useState(true)
-  const [hovering, setHovering] = useState(false)
-  const [hoveringFolder, setHoveringFolder] = useState(false)
   const [renameOpen, setRenameOpen] = useState(false)
   const [deleteOpen, setDeleteOpen] = useState(false)
   const [projectName, setProjectName] = useState(project.name)
@@ -365,77 +367,92 @@ function ProjectGroup({
       <div className="space-y-0.5">
         <div
           className={cn(
-            "flex items-center gap-1 px-1 py-1.5 rounded-lg hover:bg-[#efe9e4] transition-colors group",
+            "group/project flex items-center gap-1 px-1 py-1.5 rounded-lg hover:bg-[#efe9e4] transition-colors",
             isActiveProject && "bg-[#efe9e4]/60"
           )}
-          onMouseEnter={() => setHovering(true)}
-          onMouseLeave={() => setHovering(false)}
         >
           <button
             onClick={() => setExpanded((value) => !value)}
-            onMouseEnter={() => setHoveringFolder(true)}
-            onMouseLeave={() => setHoveringFolder(false)}
-            className="w-5 h-5 flex items-center justify-center flex-shrink-0 rounded transition-colors hover:bg-[#e0d9d3]"
+            className="group/folder relative w-5 h-5 flex items-center justify-center flex-shrink-0 rounded transition-colors hover:bg-[#e0d9d3]"
             aria-label={expanded ? "Collapse" : "Expand"}
           >
-            {hoveringFolder ? (
-              expanded ? (
-                <ChevronDown className="w-3.5 h-3.5 text-foreground/70" />
-              ) : (
-                <ChevronRight className="w-3.5 h-3.5 text-foreground/70" />
-              )
+            <Folder className="w-4 h-4 text-muted-foreground transition-opacity group-hover/folder:opacity-0 group-focus-visible/folder:opacity-0" />
+            {expanded ? (
+              <ChevronDown className="absolute w-3.5 h-3.5 text-foreground/70 opacity-0 transition-opacity group-hover/folder:opacity-100 group-focus-visible/folder:opacity-100" />
             ) : (
-              <Folder className="w-4 h-4 text-muted-foreground" />
+              <ChevronRight className="absolute w-3.5 h-3.5 text-foreground/70 opacity-0 transition-opacity group-hover/folder:opacity-100 group-focus-visible/folder:opacity-100" />
             )}
           </button>
 
-          <button
-            className="flex-1 text-sm text-foreground/80 text-left truncate"
-            onClick={() => setExpanded((value) => !value)}
-            title={project.path}
-          >
-            {project.name}
-          </button>
-
-          {hovering && (
-            <div className="flex items-center gap-0.5 flex-shrink-0">
+          <Tooltip>
+            <TooltipTrigger asChild>
               <button
-                type="button"
-                onClick={() => {
-                  setActionError(null)
-                  setRenameOpen(true)
-                }}
-                className="p-1 hover:bg-[#e0d9d3] rounded transition-colors"
-                aria-label={`Rename workspace ${project.name}`}
-                title="Rename workspace"
+                className="flex-1 text-sm text-foreground/80 text-left truncate"
+                onClick={() => setExpanded((value) => !value)}
               >
-                <PencilLine className="w-4 h-4 text-muted-foreground" />
+                {project.name}
               </button>
+            </TooltipTrigger>
+            <TooltipContent side="right" sideOffset={8}>
+              {project.path}
+            </TooltipContent>
+          </Tooltip>
 
-              <button
-                type="button"
-                onClick={() => void onNewSession()}
-                className="p-1 hover:bg-[#e0d9d3] rounded transition-colors"
-                aria-label={`Start new session in ${project.name}`}
-                title="Start new session"
-              >
-                <Edit className="w-4 h-4 text-muted-foreground" />
-              </button>
+          <div className="flex items-center gap-0.5 flex-shrink-0 opacity-0 pointer-events-none transition-opacity group-hover/project:opacity-100 group-hover/project:pointer-events-auto group-focus-within/project:opacity-100 group-focus-within/project:pointer-events-auto">
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setActionError(null)
+                      setRenameOpen(true)
+                    }}
+                    className="p-1 hover:bg-[#e0d9d3] rounded transition-colors"
+                    aria-label={`Rename workspace ${project.name}`}
+                  >
+                    <PencilLine className="w-4 h-4 text-muted-foreground" />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="top" sideOffset={6}>
+                  Rename workspace
+                </TooltipContent>
+              </Tooltip>
 
-              <button
-                type="button"
-                onClick={() => {
-                  setActionError(null)
-                  setDeleteOpen(true)
-                }}
-                className="p-1 hover:bg-[#e0d9d3] rounded transition-colors"
-                aria-label={`Remove workspace ${project.name}`}
-                title="Remove workspace"
-              >
-                <Trash2 className="w-4 h-4 text-muted-foreground" />
-              </button>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    type="button"
+                    onClick={() => void onNewSession()}
+                    className="p-1 hover:bg-[#e0d9d3] rounded transition-colors"
+                    aria-label={`Start new session in ${project.name}`}
+                  >
+                    <Edit className="w-4 h-4 text-muted-foreground" />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="top" sideOffset={6}>
+                  Start new session
+                </TooltipContent>
+              </Tooltip>
+
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setActionError(null)
+                      setDeleteOpen(true)
+                    }}
+                    className="p-1 hover:bg-[#e0d9d3] rounded transition-colors"
+                    aria-label={`Remove workspace ${project.name}`}
+                  >
+                    <Trash2 className="w-4 h-4 text-muted-foreground" />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="top" sideOffset={6}>
+                  Remove workspace
+                </TooltipContent>
+              </Tooltip>
             </div>
-          )}
         </div>
 
         {expanded && visibleSessions.map((session) => (

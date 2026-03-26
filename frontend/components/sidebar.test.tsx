@@ -50,7 +50,7 @@ describe("Sidebar workspace controls", () => {
       />
     )
 
-    fireEvent.click(screen.getByLabelText("Add a new project"))
+    fireEvent.click(screen.getByLabelText("Add a new directory"))
     fireEvent.change(screen.getByLabelText("Workspace name"), {
       target: { value: "repo-a" },
     })
@@ -61,6 +61,29 @@ describe("Sidebar workspace controls", () => {
 
     await waitFor(() => {
       expect(onAddProject).toHaveBeenCalledWith("repo-a", "/tmp/repo-a")
+    })
+  })
+
+  it("shows the add project tooltip on hover", async () => {
+    render(
+      <Sidebar
+        projects={[]}
+        activeProjectId={null}
+        activeSessionId={null}
+        width={230}
+        onAddProject={vi.fn()}
+        onRenameProject={vi.fn()}
+        onNewSession={vi.fn()}
+        onSessionChange={vi.fn()}
+        onRemoveProject={vi.fn()}
+        onResizeStart={vi.fn()}
+      />
+    )
+
+    fireEvent.focus(screen.getByLabelText("Add a new directory"))
+
+    await waitFor(() => {
+      expect(screen.getByRole("tooltip")).toHaveTextContent("Add a new directory")
     })
   })
 
@@ -97,7 +120,7 @@ describe("Sidebar workspace controls", () => {
       />
     )
 
-    fireEvent.click(screen.getByLabelText("Add a new project"))
+    fireEvent.click(screen.getByLabelText("Add a new directory"))
     fireEvent.click(screen.getByRole("button", { name: "Pick folder" }))
 
     await waitFor(() => {
@@ -122,7 +145,7 @@ describe("Sidebar workspace controls", () => {
       />
     )
 
-    fireEvent.click(screen.getByLabelText("Add a new project"))
+    fireEvent.click(screen.getByLabelText("Add a new directory"))
     fireEvent.click(screen.getByRole("button", { name: "Use product shell" }))
 
     await waitFor(() => {
@@ -152,7 +175,7 @@ describe("Sidebar workspace controls", () => {
       />
     )
 
-    fireEvent.mouseEnter(screen.getByTitle("/tmp/nutstore-bot"))
+    fireEvent.mouseEnter(screen.getByText("nutstore-bot"))
     fireEvent.click(screen.getByLabelText("Rename workspace nutstore-bot"))
     fireEvent.change(screen.getByLabelText("Workspace name"), {
       target: { value: "renamed-workspace" },
@@ -185,7 +208,7 @@ describe("Sidebar workspace controls", () => {
       />
     )
 
-    fireEvent.mouseEnter(screen.getByTitle("/tmp/nutstore-bot"))
+    fireEvent.mouseEnter(screen.getByText("nutstore-bot"))
     fireEvent.click(screen.getByLabelText("Remove workspace nutstore-bot"))
     fireEvent.click(screen.getByRole("button", { name: "Remove workspace" }))
 

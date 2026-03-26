@@ -30,6 +30,7 @@ import {
   type SelectedReasoningEffort,
   type SelectedModelRef,
 } from "@/lib/provider-settings"
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { cn } from "@/lib/utils"
 
 type Permission = "default" | "full"
@@ -328,7 +329,14 @@ export function MainContent({
                     className="flex items-center gap-1 bg-[#efe9e4] border border-[#e0d9d2] rounded-lg px-2 py-1 text-xs text-foreground/70 max-w-[180px]"
                   >
                     <Paperclip className="w-3 h-3 flex-shrink-0 text-muted-foreground" />
-                    <span className="truncate" title={attachment.fileName}>{attachment.fileName}</span>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <span className="truncate">{attachment.fileName}</span>
+                      </TooltipTrigger>
+                      <TooltipContent side="top" sideOffset={6}>
+                        {attachment.fileName}
+                      </TooltipContent>
+                    </Tooltip>
                     <button
                       onClick={() => removeFile(attachment.id)}
                       className="ml-0.5 flex-shrink-0 hover:text-foreground/90 transition-colors"
@@ -394,24 +402,30 @@ export function MainContent({
 
           <div className="flex items-center justify-between px-4 pb-3">
             <div className="flex items-center gap-4">
-              <button
-                onClick={handleFilePickerClick}
-                disabled={!activeSession || isUploadingAttachment}
-                title={
-                  activeSession
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span tabIndex={-1}>
+                    <button
+                      onClick={handleFilePickerClick}
+                      disabled={!activeSession || isUploadingAttachment}
+                      className={cn(
+                        "p-1.5 rounded-lg transition-colors",
+                        activeSession && !isUploadingAttachment
+                          ? "hover:bg-[#efe9e4] text-muted-foreground hover:text-foreground"
+                          : "text-muted-foreground/40 cursor-not-allowed"
+                      )}
+                      aria-label="Attach files from project folder"
+                    >
+                      {isUploadingAttachment ? <Square className="w-4 h-4" /> : <Plus className="w-4 h-4" />}
+                    </button>
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent side="top" sideOffset={6}>
+                  {activeSession
                     ? `Pick files from ${activeProject?.path ?? "workspace"}`
-                    : "Select a session first"
-                }
-                className={cn(
-                  "p-1.5 rounded-lg transition-colors",
-                  activeSession && !isUploadingAttachment
-                    ? "hover:bg-[#efe9e4] text-muted-foreground hover:text-foreground"
-                    : "text-muted-foreground/40 cursor-not-allowed"
-                )}
-                aria-label="Attach files from project folder"
-              >
-                {isUploadingAttachment ? <Square className="w-4 h-4" /> : <Plus className="w-4 h-4" />}
-              </button>
+                    : "Select a session first"}
+                </TooltipContent>
+              </Tooltip>
 
               <div className="relative">
                 <button
@@ -547,23 +561,31 @@ export function MainContent({
                   <Square className="w-4 h-4" />
                 </button>
               ) : (
-                <button
-                  onClick={() => {
-                    void handleSubmit()
-                  }}
-                  disabled={!inputValue.trim() || !activeSession || !selectedModel}
-                  title={inputValue.trim() && activeSession && selectedModel ? "Send (Enter)" : undefined}
-                  className={cn(
-                    "p-2 rounded-full transition-colors",
-                    inputValue.trim() && activeSession && selectedModel
-                      ? "bg-[#f5a76c] hover:bg-[#e99a5f] text-white"
-                      : "bg-[#e8e4e0] text-muted-foreground cursor-not-allowed"
-                  )}
-                  aria-label="Send"
-                  aria-keyshortcuts="Enter"
-                >
-                  <ArrowUp className="w-4 h-4" />
-                </button>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <span tabIndex={-1}>
+                      <button
+                        onClick={() => {
+                          void handleSubmit()
+                        }}
+                        disabled={!inputValue.trim() || !activeSession || !selectedModel}
+                        className={cn(
+                          "p-2 rounded-full transition-colors",
+                          inputValue.trim() && activeSession && selectedModel
+                            ? "bg-[#f5a76c] hover:bg-[#e99a5f] text-white"
+                            : "bg-[#e8e4e0] text-muted-foreground cursor-not-allowed"
+                        )}
+                        aria-label="Send"
+                        aria-keyshortcuts="Enter"
+                      >
+                        <ArrowUp className="w-4 h-4" />
+                      </button>
+                    </span>
+                  </TooltipTrigger>
+                  <TooltipContent side="top" sideOffset={6}>
+                    Send (Enter)
+                  </TooltipContent>
+                </Tooltip>
               )}
             </div>
           </div>
