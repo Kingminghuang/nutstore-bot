@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import logging
-from typing import Any
+from typing import Any, Callable
 
 from fastapi import HTTPException, status
 
@@ -28,6 +28,44 @@ LOGGER = logging.getLogger(__name__)
 class ProviderService:
     repositories: ProviderConnectionsRepository
     secret_store: LocalSecretStore
+    model_factory: Callable[[DirectModelConfig], Any] | None = None
+
+    def _probe_provider_connection(
+        self,
+        *,
+        runtime_provider: str,
+        base_url: str,
+        api_key: str,
+        model_id: str,
+    ) -> None:
+        config = DirectModelConfig(
+            provider=runtime_provider,
+            base_url=base_url,
+            api_key=api_key,
+            model_id=model_id,
+            timeout_seconds=10.0,
+        )
+        model = (
+            self.model_factory(config)
+            if self.model_factory is not None
+            else DirectModel(config)
+        )
+
+        if hasattr(model, "generate_stream"):
+            stream = model.generate_stream(
+                messages=[{"role": "user", "content": "Reply with OK only."}]
+            )
+            for _ in stream:
+                break
+            return
+
+        if hasattr(model, "generate"):
+            model.generate(
+                messages=[{"role": "user", "content": "Reply with OK only."}]
+            )
+            return
+
+        raise RuntimeError("Model client does not support validation probes")
 
     def catalog_payload(self) -> dict[str, Any]:
         providers = list_providers()
@@ -52,7 +90,11 @@ class ProviderService:
             self.repositories.list_bundles()
         ):
             connection = bundle.connection
-            if not connection.is_enabled or not connection.api_key_configured:
+            if (
+                not connection.is_enabled
+                or not connection.api_key_configured
+                or connection.health_status != "connected"
+            ):
                 continue
 
             provider_id = (
@@ -207,13 +249,11 @@ class ProviderService:
             )
 
         try:
-            DirectModel(
-                DirectModelConfig(
-                    provider=bundle.connection.runtime_provider,
-                    base_url=base_url,
-                    api_key=api_key,
-                    model_id=model_id,
-                )
+            self._probe_provider_connection(
+                runtime_provider=bundle.connection.runtime_provider,
+                base_url=base_url,
+                api_key=api_key,
+                model_id=model_id,
             )
         except DirectModelError as exc:
             return self._persist_validation_result(

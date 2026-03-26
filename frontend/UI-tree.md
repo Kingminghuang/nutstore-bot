@@ -78,6 +78,8 @@ Home (Page)
         │   │       │   ├── ProviderIcon
         │   │       │   ├── ProviderName
         │   │       │   ├── ProviderDescription
+        │   │       │   ├── ValidationStatusBadge("Connected" / "Not validated" / 其他失败态)
+        │   │       │   ├── ValidationMessage (可选, 展示最近一次校验结果摘要)
         │   │       │   └── ModelCountBadge
         │   │       └── DisconnectButton(icon=Trash2)
         │   ├── PopularProviders
@@ -109,5 +111,5 @@ Home (Page)
 1. **外层布局**: 使用 `Home` 组件作为主视图。采用左右分栏的弹性布局（`flex h-screen`），左侧是**宽度可调**的 `Sidebar`（借助 ResizeHandle 拖拽更新宽度状态），右侧自适应撑满的是 `MainContent`，在需要时作为 Overlay 弹出 `SettingsModal`。
 2. **状态驱动的设置面板**: `SettingsModal` 没有采用跳转页面的方式，而是通过内部维护一个 `currentPage` 状态来实现不同配置项步骤（提供商列表、自定义提供商、连接提供商、已连接提供商编辑）间的切换。已连接 provider 列表已提升到 `Home` 页面级 state，通过 props 注入 `SettingsModal`，不再由 modal 内部独立持有。
 3. **复合交互的侧边栏**: 项目组通过 `hover` 状态挂载了比较多的隐藏交互（例如针对 "github" Project 的 "More options" 菜单和 "Start new session" 悬浮按钮）。**强调：类似 DropdownMenu 这样的弹出菜单需采用 Portal 等机制渲染脱离普通文档流，严格避免被 Sidebar 的边界或 `overflow` 属性遮挡。**
-4. **主内容区的滚动与状态流**: `MainContent` 内部采用纵向弹性（`flex-col`），首尾的 `Header` 和 `ComposerPanel` 空间固定，中间使用 `flex-1 overflow-y-auto` 划分出独立的一块主内容滚动区域。并利用这块滚动容器的相对定位能力，放置了一个通过滚动距离判定的绝对位置悬浮“到底部”快捷按钮。
-5. **Provider 管理流已闭环**: `ProvidersPage` 不再只是空状态展示，当前已支持“查看 Connected providers -> 点击进入 ProviderConfigPage 编辑 -> 断开删除”的完整管理流；`PopularProviders` 对已连接项会切换为 `Edit` 而非重复 `+ Connect`。但这一套仍然是页面级内存态，不代表已接入后端持久化。
+4. **主内容区的滚动与状态流**: `MainContent` 内部采用纵向弹性（`flex-col`），首尾的 `Header` 和 `ComposerPanel` 空间固定，中间使用 `flex-1 overflow-y-auto` 划分出独立的一块主内容滚动区域。并利用这块滚动容器的相对定位能力，放置了一个通过滚动距离判定的绝对位置悬浮“到底部”快捷按钮。`ModelSelector` 的候选模型仅来自**已完成校验且状态为 `connected`** 的 provider；`Not validated` 或校验失败的 provider 不会进入模型列表。
+5. **Provider 管理流已闭环**: `ProvidersPage` 不再只是空状态展示，当前已支持“查看 Connected providers -> 点击进入 ProviderConfigPage 编辑 -> 断开删除”的完整管理流；`PopularProviders` 对已连接项会切换为 `Edit` 而非重复 `+ Connect`。在保存 provider 后，前端会自动对其**主模型（优先 `preferredModelId`）**发起一次真实连通性校验，校验结果会回写到 `ConnectedProviders` 的状态 badge / message，并进一步决定其模型是否可以出现在 `ModelSelector`。

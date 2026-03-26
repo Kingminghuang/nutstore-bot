@@ -177,16 +177,16 @@ def create_app(config: ApiServerConfig | None = None) -> FastAPI:
         return {"ok": True}
 
     @app.get("/provider-catalog")
-    def get_provider_catalog() -> dict[str, object]:
-        return provider_service.catalog_payload()
+    def get_provider_catalog(request: Request) -> dict[str, object]:
+        return request.app.state.provider_service.catalog_payload()
 
     @app.get("/providers")
-    def get_providers() -> dict[str, list[dict[str, object]]]:
-        return provider_service.list_connections_payload()
+    def get_providers(request: Request) -> dict[str, list[dict[str, object]]]:
+        return request.app.state.provider_service.list_connections_payload()
 
     @app.get("/model-options")
-    def get_model_options() -> dict[str, object]:
-        return provider_service.model_options_payload()
+    def get_model_options(request: Request) -> dict[str, object]:
+        return request.app.state.provider_service.model_options_payload()
 
     @app.get("/workspaces")
     def get_workspaces() -> dict[str, list[dict[str, object]]]:
@@ -336,24 +336,30 @@ def create_app(config: ApiServerConfig | None = None) -> FastAPI:
         return service.cancel_run(run_id)
 
     @app.post("/providers")
-    def create_provider(payload: dict[str, object]) -> dict[str, object]:
-        return provider_service.create_provider(payload)
+    def create_provider(
+        payload: dict[str, object], request: Request
+    ) -> dict[str, object]:
+        return request.app.state.provider_service.create_provider(payload)
 
     @app.patch("/providers/{provider_id}")
     def update_provider(
-        provider_id: str, payload: dict[str, object]
+        provider_id: str, payload: dict[str, object], request: Request
     ) -> dict[str, object]:
-        return provider_service.update_provider(provider_id, payload)
+        return request.app.state.provider_service.update_provider(provider_id, payload)
 
     @app.delete("/providers/{provider_id}", status_code=204)
-    def delete_provider(provider_id: str) -> None:
-        provider_service.delete_provider(provider_id)
+    def delete_provider(provider_id: str, request: Request) -> None:
+        request.app.state.provider_service.delete_provider(provider_id)
 
     @app.post("/providers/{provider_id}/validate")
     def validate_provider(
-        provider_id: str, payload: dict[str, object] | None = None
+        provider_id: str,
+        request: Request,
+        payload: dict[str, object] | None = None,
     ) -> dict[str, object]:
-        return provider_service.validate_provider(provider_id, payload)
+        return request.app.state.provider_service.validate_provider(
+            provider_id, payload
+        )
 
     return app
 

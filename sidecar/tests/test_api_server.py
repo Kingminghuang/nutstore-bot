@@ -9,12 +9,52 @@ from typing import cast
 
 from fastapi.testclient import TestClient
 from fastapi import FastAPI, HTTPException
+from smolagents.models import ChatMessageStreamDelta, Model
+from smolagents.monitoring import TokenUsage
 
 from python_runtime.api_server import (
     ApiServerConfig,
     create_app,
     publish_service_discovery,
 )
+from python_runtime.direct_model import DirectModelError
+
+
+class FakeValidationSuccessModel(Model):
+    def __init__(self) -> None:
+        super().__init__(model_id="fake-validation")
+
+    def generate_stream(
+        self,
+        messages,
+        stop_sequences=None,
+        response_format=None,
+        tools_to_call_from=None,
+        **kwargs,
+    ):
+        yield ChatMessageStreamDelta(
+            content="OK",
+            token_usage=TokenUsage(input_tokens=1, output_tokens=1),
+        )
+
+
+class FakeValidationFailureModel(Model):
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(model_id="fake-validation")
+        self.code = code
+        self.message = message
+
+    def generate_stream(
+        self,
+        messages,
+        stop_sequences=None,
+        response_format=None,
+        tools_to_call_from=None,
+        **kwargs,
+    ):
+        raise DirectModelError(self.code, self.message)
+
+
 from python_runtime.discovery import read_service_discovery
 from python_runtime.local_paths import nsbot_home
 from python_runtime.runtime_service import (
@@ -44,6 +84,21 @@ class ApiServerTests(unittest.TestCase):
             self.app.state.run_service,
             run_launcher=lambda task: task(),
         )
+
+    def _set_validation_model_factory(self, factory) -> None:
+        object.__setattr__(self.app.state.provider_service, "model_factory", factory)
+
+    def _validate_provider(
+        self, provider_id: str, model_id: str | None = None
+    ) -> dict[str, object]:
+        payload = {"modelId": model_id} if model_id is not None else {}
+        response = self.client.post(
+            f"/providers/{provider_id}/validate",
+            headers={"Authorization": "Bearer test-token"},
+            json=payload,
+        )
+        self.assertEqual(response.status_code, 200)
+        return response.json()
 
     def _create_workspace(self, name: str = "workspace") -> dict[str, str]:
         workspace_dir = self.temp_dir / name
@@ -353,6 +408,7 @@ class ApiServerTests(unittest.TestCase):
         self.assertNotIn("hasStoredSecret", listed_headers[0])
 
     def test_validate_provider_returns_ok_for_builtin_openai(self) -> None:
+        self._set_validation_model_factory(lambda config: FakeValidationSuccessModel())
         created = self.client.post(
             "/providers",
             headers={"Authorization": "Bearer test-token"},
@@ -395,6 +451,7 @@ class ApiServerTests(unittest.TestCase):
         self.assertEqual(listing.json()["connections"][0]["healthStatus"], "connected")
 
     def test_validate_provider_reports_missing_api_key(self) -> None:
+        self._set_validation_model_factory(lambda config: FakeValidationSuccessModel())
         created = self.client.post(
             "/providers",
             headers={"Authorization": "Bearer test-token"},
@@ -419,6 +476,13 @@ class ApiServerTests(unittest.TestCase):
         self.assertEqual(response.json()["healthStatus"], "invalid_config")
 
     def test_validate_provider_uses_requested_model_id(self) -> None:
+        captured_model_ids: list[str] = []
+
+        def model_factory(config) -> FakeValidationSuccessModel:
+            captured_model_ids.append(config.model_id)
+            return FakeValidationSuccessModel()
+
+        self._set_validation_model_factory(model_factory)
         created = self.client.post(
             "/providers",
             headers={"Authorization": "Bearer test-token"},
@@ -446,12 +510,49 @@ class ApiServerTests(unittest.TestCase):
         self.assertEqual(response.json()["ok"], True)
         self.assertEqual(response.json()["modelId"], "team-model-v2")
         self.assertEqual(response.json()["healthStatus"], "connected")
+        self.assertEqual(captured_model_ids, ["team-model-v2"])
+
+    def test_validate_provider_persists_failure_status_from_probe(self) -> None:
+        self._set_validation_model_factory(
+            lambda config: FakeValidationFailureModel("unauthorized", "Invalid API key")
+        )
+        created = self.client.post(
+            "/providers",
+            headers={"Authorization": "Bearer test-token"},
+            json={
+                "kind": "builtin",
+                "catalogProviderId": "openai",
+                "displayName": "OpenAI",
+                "apiKey": "sk-test",
+                "preferredModelId": "gpt-5.4",
+            },
+        )
+        provider_id = created.json()["id"]
+
+        response = self.client.post(
+            f"/providers/{provider_id}/validate",
+            headers={"Authorization": "Bearer test-token"},
+            json={},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["ok"], False)
+        self.assertEqual(response.json()["healthStatus"], "invalid_key")
+        self.assertEqual(response.json()["healthMessage"], "Invalid API key")
+
+        listing = self.client.get(
+            "/providers",
+            headers={"Authorization": "Bearer test-token"},
+        )
+        self.assertEqual(
+            listing.json()["connections"][0]["healthStatus"], "invalid_key"
+        )
 
     def test_model_options_requires_auth(self) -> None:
         response = self.client.get("/model-options")
         self.assertEqual(response.status_code, 401)
 
     def test_model_options_returns_built_in_catalog_group_and_default(self) -> None:
+        self._set_validation_model_factory(lambda config: FakeValidationSuccessModel())
         create_response = self.client.post(
             "/providers",
             headers={"Authorization": "Bearer test-token"},
@@ -466,6 +567,7 @@ class ApiServerTests(unittest.TestCase):
         )
         self.assertEqual(create_response.status_code, 200)
         connection_id = create_response.json()["id"]
+        self._validate_provider(connection_id)
 
         response = self.client.get(
             "/model-options",
@@ -486,6 +588,7 @@ class ApiServerTests(unittest.TestCase):
         )
 
     def test_model_options_respects_builtin_restricted_models(self) -> None:
+        self._set_validation_model_factory(lambda config: FakeValidationSuccessModel())
         create_response = self.client.post(
             "/providers",
             headers={"Authorization": "Bearer test-token"},
@@ -500,6 +603,7 @@ class ApiServerTests(unittest.TestCase):
             },
         )
         self.assertEqual(create_response.status_code, 200)
+        self._validate_provider(create_response.json()["id"])
 
         response = self.client.get(
             "/model-options",
@@ -542,6 +646,7 @@ class ApiServerTests(unittest.TestCase):
     def test_model_options_filters_out_disabled_or_unconfigured_connections(
         self,
     ) -> None:
+        self._set_validation_model_factory(lambda config: FakeValidationSuccessModel())
         configured = self.client.post(
             "/providers",
             headers={"Authorization": "Bearer test-token"},
@@ -553,6 +658,7 @@ class ApiServerTests(unittest.TestCase):
             },
         )
         self.assertEqual(configured.status_code, 200)
+        self._validate_provider(configured.json()["id"])
 
         disabled = self.client.post(
             "/providers",
@@ -590,6 +696,7 @@ class ApiServerTests(unittest.TestCase):
         self.assertEqual(body["groups"][0]["providerId"], "anthropic")
 
     def test_model_options_uses_custom_models_for_custom_connections(self) -> None:
+        self._set_validation_model_factory(lambda config: FakeValidationSuccessModel())
         create_response = self.client.post(
             "/providers",
             headers={"Authorization": "Bearer test-token"},
@@ -616,6 +723,7 @@ class ApiServerTests(unittest.TestCase):
         )
         self.assertEqual(create_response.status_code, 200)
         connection_id = create_response.json()["id"]
+        self._validate_provider(connection_id)
 
         response = self.client.get(
             "/model-options",
@@ -640,10 +748,27 @@ class ApiServerTests(unittest.TestCase):
                 }
             ],
         )
-        self.assertEqual(
-            body["defaultSelection"],
-            {"connectionId": connection_id, "modelId": "my-model"},
+
+    def test_model_options_excludes_not_validated_connections(self) -> None:
+        create_response = self.client.post(
+            "/providers",
+            headers={"Authorization": "Bearer test-token"},
+            json={
+                "kind": "builtin",
+                "catalogProviderId": "openai",
+                "displayName": "OpenAI",
+                "apiKey": "sk-test",
+                "preferredModelId": "gpt-5.4",
+            },
         )
+        self.assertEqual(create_response.status_code, 200)
+
+        response = self.client.get(
+            "/model-options",
+            headers={"Authorization": "Bearer test-token"},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"groups": [], "defaultSelection": None})
 
     def test_workspace_session_and_messages_flow(self) -> None:
         workspace_dir = self.temp_dir / "workspace-a"

@@ -4,6 +4,12 @@ import Home from "@/app/page"
 
 const sidecarClientMocks = vi.hoisted(() => ({
   getRunSteps: vi.fn(),
+  createProvider: vi.fn(),
+  updateProvider: vi.fn(),
+  deleteProvider: vi.fn(),
+  validateProvider: vi.fn(),
+  getProviders: vi.fn(),
+  getModelOptions: vi.fn(),
 }))
 
 const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -421,7 +427,7 @@ vi.mock("@/lib/sidecar-client", () => ({
       },
     ],
   })),
-  getProviders: vi.fn(async () => ({
+  getProviders: sidecarClientMocks.getProviders.mockImplementation(async () => ({
     connections: [
       {
         id: "prov_openai",
@@ -431,6 +437,9 @@ vi.mock("@/lib/sidecar-client", () => ({
         displayName: "OpenAI",
         baseUrl: null,
         apiKeyConfigured: true,
+        healthStatus: "connected",
+        healthMessage: "Validation succeeded",
+        lastValidatedAt: "2026-03-24T12:00:00Z",
         preferredModelId: "gpt-5.4-mini",
         enabledModelIds: ["gpt-5.4-mini"],
         updatedAt: "2026-03-24T12:00:00Z",
@@ -440,7 +449,7 @@ vi.mock("@/lib/sidecar-client", () => ({
       },
     ],
   })),
-  getModelOptions: vi.fn(async () => ({
+  getModelOptions: sidecarClientMocks.getModelOptions.mockImplementation(async () => ({
     groups: [
       {
         connectionId: "prov_openai",
@@ -465,9 +474,10 @@ vi.mock("@/lib/sidecar-client", () => ({
     },
   })),
   getRunSteps: sidecarClientMocks.getRunSteps,
-  createProvider: vi.fn(),
-  updateProvider: vi.fn(),
-  deleteProvider: vi.fn(),
+  createProvider: sidecarClientMocks.createProvider,
+  updateProvider: sidecarClientMocks.updateProvider,
+  deleteProvider: sidecarClientMocks.deleteProvider,
+  validateProvider: sidecarClientMocks.validateProvider,
 }))
 
 let runCompleted = false
@@ -491,6 +501,69 @@ describe("Home page", () => {
     fetchMock.mockClear()
     sidecarClientMocks.getRunSteps.mockReset()
     sidecarClientMocks.getRunSteps.mockResolvedValue({ steps: [] })
+    sidecarClientMocks.createProvider.mockReset()
+    sidecarClientMocks.createProvider.mockResolvedValue({ id: "prov_new" })
+    sidecarClientMocks.updateProvider.mockReset()
+    sidecarClientMocks.updateProvider.mockResolvedValue({ id: "prov_openai" })
+    sidecarClientMocks.deleteProvider.mockReset()
+    sidecarClientMocks.deleteProvider.mockResolvedValue(undefined)
+    sidecarClientMocks.validateProvider.mockReset()
+    sidecarClientMocks.validateProvider.mockResolvedValue({
+      ok: true,
+      providerId: "prov_openai",
+      modelId: "gpt-5.4-mini",
+      healthStatus: "connected",
+      healthMessage: "Validation succeeded",
+      lastValidatedAt: "2026-03-24T12:00:00Z",
+    })
+    sidecarClientMocks.getProviders.mockReset()
+    sidecarClientMocks.getProviders.mockResolvedValue({
+      connections: [
+        {
+          id: "prov_openai",
+          kind: "builtin",
+          runtimeProvider: "openai",
+          catalogProviderId: "openai",
+          displayName: "OpenAI",
+          baseUrl: null,
+          apiKeyConfigured: true,
+          healthStatus: "connected",
+          healthMessage: "Validation succeeded",
+          lastValidatedAt: "2026-03-24T12:00:00Z",
+          preferredModelId: "gpt-5.4-mini",
+          enabledModelIds: ["gpt-5.4-mini"],
+          updatedAt: "2026-03-24T12:00:00Z",
+          modelPolicy: "restricted",
+          customModels: [],
+          headers: [],
+        },
+      ],
+    })
+    sidecarClientMocks.getModelOptions.mockReset()
+    sidecarClientMocks.getModelOptions.mockResolvedValue({
+      groups: [
+        {
+          connectionId: "prov_openai",
+          providerLabel: "OpenAI",
+          providerId: "openai",
+          models: [
+            {
+              connectionId: "prov_openai",
+              providerLabel: "OpenAI",
+              providerId: "openai",
+              modelId: "gpt-5.4-mini",
+              label: "gpt-5.4-mini",
+              supportsReasoningTokens: true,
+              reasoningEffortValues: ["none", "low", "medium", "high"],
+            },
+          ],
+        },
+      ],
+      defaultSelection: {
+        connectionId: "prov_openai",
+        modelId: "gpt-5.4-mini",
+      },
+    })
   })
 
   it("applies the backend default model selection", async () => {
@@ -506,6 +579,242 @@ describe("Home page", () => {
 
     await waitFor(() => {
       expect(screen.getAllByText("Backend driven title")).toHaveLength(2)
+    })
+  })
+
+  it("validates a saved provider and refreshes state", async () => {
+    sidecarClientMocks.getProviders
+      .mockResolvedValueOnce({
+        connections: [
+          {
+            id: "prov_openai",
+            kind: "builtin",
+            runtimeProvider: "openai",
+            catalogProviderId: "openai",
+            displayName: "OpenAI",
+            baseUrl: null,
+            apiKeyConfigured: true,
+            healthStatus: "connected",
+            healthMessage: "Validation succeeded",
+            lastValidatedAt: "2026-03-24T12:00:00Z",
+            preferredModelId: "gpt-5.4-mini",
+            enabledModelIds: ["gpt-5.4-mini"],
+            updatedAt: "2026-03-24T12:00:00Z",
+            modelPolicy: "restricted",
+            customModels: [],
+            headers: [],
+          },
+        ],
+      })
+      .mockResolvedValueOnce({
+        connections: [
+          {
+            id: "prov_openai",
+            kind: "builtin",
+            runtimeProvider: "openai",
+            catalogProviderId: "openai",
+            displayName: "OpenAI",
+            baseUrl: null,
+            apiKeyConfigured: true,
+            healthStatus: "connected",
+            healthMessage: "Validation succeeded",
+            lastValidatedAt: "2026-03-27T10:00:00Z",
+            preferredModelId: "gpt-5.4",
+            enabledModelIds: ["gpt-5.4"],
+            updatedAt: "2026-03-27T10:00:00Z",
+            modelPolicy: "restricted",
+            customModels: [],
+            headers: [],
+          },
+        ],
+      })
+
+    sidecarClientMocks.getModelOptions
+      .mockResolvedValueOnce({
+        groups: [
+          {
+            connectionId: "prov_openai",
+            providerLabel: "OpenAI",
+            providerId: "openai",
+            models: [
+              {
+                connectionId: "prov_openai",
+                providerLabel: "OpenAI",
+                providerId: "openai",
+                modelId: "gpt-5.4-mini",
+                label: "gpt-5.4-mini",
+                supportsReasoningTokens: true,
+                reasoningEffortValues: ["none", "low", "medium", "high"],
+              },
+            ],
+          },
+        ],
+        defaultSelection: {
+          connectionId: "prov_openai",
+          modelId: "gpt-5.4-mini",
+        },
+      })
+      .mockResolvedValueOnce({
+        groups: [
+          {
+            connectionId: "prov_openai",
+            providerLabel: "OpenAI",
+            providerId: "openai",
+            models: [
+              {
+                connectionId: "prov_openai",
+                providerLabel: "OpenAI",
+                providerId: "openai",
+                modelId: "gpt-5.4",
+                label: "gpt-5.4",
+                supportsReasoningTokens: true,
+                reasoningEffortValues: ["none", "low", "medium", "high", "xhigh"],
+              },
+            ],
+          },
+        ],
+        defaultSelection: {
+          connectionId: "prov_openai",
+          modelId: "gpt-5.4",
+        },
+      })
+
+    sidecarClientMocks.updateProvider.mockResolvedValueOnce({ id: "prov_openai" })
+    sidecarClientMocks.validateProvider.mockResolvedValueOnce({
+      ok: true,
+      providerId: "prov_openai",
+      modelId: "gpt-5.4",
+      healthStatus: "connected",
+      healthMessage: "Validation succeeded",
+      lastValidatedAt: "2026-03-27T10:00:00Z",
+    })
+
+    render(<Home />)
+
+    await waitFor(() => {
+      expect(screen.getByText("OpenAI - gpt-5.4-mini")).toBeInTheDocument()
+    })
+
+    fireEvent.click(screen.getByText("Settings"))
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }))
+    fireEvent.change(screen.getByPlaceholderText("Provider display name"), {
+      target: { value: "OpenAI Updated" },
+    })
+    fireEvent.click(screen.getByRole("button", { name: "Save provider" }))
+
+    await waitFor(() => {
+      expect(sidecarClientMocks.updateProvider).toHaveBeenCalled()
+      expect(sidecarClientMocks.validateProvider).toHaveBeenCalledWith("prov_openai", {
+        modelId: "gpt-5.4-mini",
+      })
+    })
+
+    await waitFor(() => {
+      expect(sidecarClientMocks.getProviders).toHaveBeenCalledTimes(2)
+      expect(sidecarClientMocks.getModelOptions).toHaveBeenCalledTimes(2)
+    })
+  })
+
+  it("falls back when refreshed model options exclude not validated providers", async () => {
+    sidecarClientMocks.getModelOptions
+      .mockResolvedValueOnce({
+        groups: [
+          {
+            connectionId: "prov_openai",
+            providerLabel: "OpenAI",
+            providerId: "openai",
+            models: [
+              {
+                connectionId: "prov_openai",
+                providerLabel: "OpenAI",
+                providerId: "openai",
+                modelId: "gpt-5.4-mini",
+                label: "gpt-5.4-mini",
+                supportsReasoningTokens: true,
+                reasoningEffortValues: ["none", "low", "medium", "high"],
+              },
+            ],
+          },
+        ],
+        defaultSelection: {
+          connectionId: "prov_openai",
+          modelId: "gpt-5.4-mini",
+        },
+      })
+      .mockResolvedValueOnce({
+        groups: [],
+        defaultSelection: null,
+      })
+
+    sidecarClientMocks.getProviders
+      .mockResolvedValueOnce({
+        connections: [
+          {
+            id: "prov_openai",
+            kind: "builtin",
+            runtimeProvider: "openai",
+            catalogProviderId: "openai",
+            displayName: "OpenAI",
+            baseUrl: null,
+            apiKeyConfigured: true,
+            healthStatus: "connected",
+            healthMessage: "Validation succeeded",
+            lastValidatedAt: "2026-03-24T12:00:00Z",
+            preferredModelId: "gpt-5.4-mini",
+            enabledModelIds: ["gpt-5.4-mini"],
+            updatedAt: "2026-03-24T12:00:00Z",
+            modelPolicy: "restricted",
+            customModels: [],
+            headers: [],
+          },
+        ],
+      })
+      .mockResolvedValueOnce({
+        connections: [
+          {
+            id: "prov_openai",
+            kind: "builtin",
+            runtimeProvider: "openai",
+            catalogProviderId: "openai",
+            displayName: "OpenAI",
+            baseUrl: null,
+            apiKeyConfigured: true,
+            healthStatus: "unknown",
+            healthMessage: null,
+            lastValidatedAt: null,
+            preferredModelId: "gpt-5.4-mini",
+            enabledModelIds: ["gpt-5.4-mini"],
+            updatedAt: "2026-03-27T10:00:00Z",
+            modelPolicy: "restricted",
+            customModels: [],
+            headers: [],
+          },
+        ],
+      })
+
+    sidecarClientMocks.updateProvider.mockResolvedValueOnce({ id: "prov_openai" })
+    sidecarClientMocks.validateProvider.mockResolvedValueOnce({
+      ok: false,
+      providerId: "prov_openai",
+      modelId: "gpt-5.4-mini",
+      errorMessage: "Provider validation failed",
+      healthStatus: "unknown",
+      healthMessage: null,
+      lastValidatedAt: "2026-03-27T10:00:00Z",
+    })
+
+    render(<Home />)
+
+    await waitFor(() => {
+      expect(screen.getByText("OpenAI - gpt-5.4-mini")).toBeInTheDocument()
+    })
+
+    fireEvent.click(screen.getByText("Settings"))
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }))
+    fireEvent.click(screen.getByRole("button", { name: "Save provider" }))
+
+    await waitFor(() => {
+      expect(screen.getByText("No configured providers")).toBeInTheDocument()
     })
   })
 

@@ -13,6 +13,7 @@ import {
   getProviderCatalog,
   getProviders,
   updateProvider,
+  validateProvider,
   type RunHistoryStep,
 } from "@/lib/sidecar-client"
 import {
@@ -890,12 +891,35 @@ export default function Home() {
 
   const handleSaveProvider = useCallback(
     async (payload: SaveProviderPayload, providerId?: string) => {
-      if (providerId) {
-        await updateProvider(providerId, payload)
-      } else {
-        await createProvider(payload)
+      const savedProvider = providerId
+        ? await updateProvider(providerId, payload)
+        : await createProvider(payload)
+
+      const validationModelId = payload.preferredModelId ?? undefined
+      let validationError: Error | null = null
+
+      try {
+        const validationResult = await validateProvider(savedProvider.id, {
+          modelId: validationModelId,
+        })
+
+        if (!validationResult.ok) {
+          validationError = new Error(
+            validationResult.errorMessage ??
+              validationResult.healthMessage ??
+              "Provider validation failed"
+          )
+        }
+      } catch (error) {
+        validationError =
+          error instanceof Error ? error : new Error("Provider validation failed")
       }
+
       await refreshProviderState()
+
+      if (validationError) {
+        throw validationError
+      }
     },
     [refreshProviderState]
   )

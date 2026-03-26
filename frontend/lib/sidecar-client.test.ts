@@ -118,4 +118,44 @@ describe("sidecar-client proxy requests", () => {
       message: 'invalid payload: {"apiKey":"[REDACTED]"}',
     })
   })
+
+  it("posts provider validation through Next sidecar proxy", async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          ok: true,
+          providerId: "prov_openai",
+          modelId: "gpt-5.4",
+          healthStatus: "connected",
+          healthMessage: "Validation succeeded",
+          lastValidatedAt: "2026-03-27T10:00:00Z",
+        }),
+        {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }
+      )
+    )
+
+    vi.stubGlobal("fetch", fetchMock)
+
+    const { validateProvider } = await import("@/lib/sidecar-client")
+    const response = await validateProvider("prov_openai", { modelId: "gpt-5.4" })
+
+    expect(response).toMatchObject({
+      ok: true,
+      providerId: "prov_openai",
+      modelId: "gpt-5.4",
+      healthStatus: "connected",
+    })
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/sidecar/proxy?path=%2Fproviders%2Fprov_openai%2Fvalidate",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ modelId: "gpt-5.4" }),
+        headers: expect.objectContaining({ "Content-Type": "application/json" }),
+        cache: "no-store",
+      })
+    )
+  })
 })

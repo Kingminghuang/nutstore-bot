@@ -93,6 +93,27 @@ export async function updateProvider(
   })
 }
 
+export async function validateProvider(
+  providerId: string,
+  payload?: { modelId?: string }
+): Promise<{
+  ok: boolean
+  providerId: string
+  modelId: string
+  runtimeProvider?: string
+  baseUrl?: string | null
+  errorCode?: string
+  errorMessage?: string
+  healthStatus: string
+  healthMessage: string | null
+  lastValidatedAt: string | null
+}> {
+  return sidecarFetch(`/providers/${providerId}/validate`, {
+    method: "POST",
+    body: JSON.stringify(payload ?? {}),
+  })
+}
+
 export async function deleteProvider(providerId: string): Promise<void> {
   await sidecarFetch<void>(`/providers/${providerId}`, { method: "DELETE" })
 }
