@@ -165,6 +165,56 @@ describe("MainContent model selector", () => {
     expect(screen.getByLabelText("Send")).toBeDisabled()
   })
 
+  it("offers settings shortcut when providers are not configured", () => {
+    const onOpenSettings = vi.fn()
+
+    render(
+      <MainContent
+        activeProject={{ id: 1, name: "nutstore-bot", path: "/tmp/nutstore-bot", sessions: [] }}
+        activeSession={{
+          id: "sess_1",
+          workspaceId: "ws_1",
+          title: "New session",
+          titleSource: "placeholder",
+          createdAt: "2026-03-24T12:00:00Z",
+          updatedAt: "2026-03-24T12:00:00Z",
+          lastMessageAt: null,
+          messageCount: 0,
+          lastMessagePreview: null,
+          activeConnectionId: null,
+          activeModelId: null,
+          messages: [],
+          hasMoreHistory: false,
+          nextBeforeSequence: null,
+          isLoadingHistory: false,
+        }}
+        runStepsByRunId={{}}
+        onSendMessage={vi.fn()}
+        modelOptionGroups={[]}
+        selectedModel={null}
+        selectedReasoningEffort={null}
+        onSelectedModelChange={vi.fn()}
+        onSelectedReasoningEffortChange={vi.fn()}
+        isLoadingModels={false}
+        providerError={null}
+        runError={null}
+        hasMoreHistory={false}
+        isLoadingHistory={false}
+        onLoadEarlierMessages={vi.fn(async () => undefined)}
+        composerAttachments={[]}
+        isUploadingAttachment={false}
+        onAttachFiles={vi.fn(async () => undefined)}
+        onRemoveAttachment={vi.fn(async () => undefined)}
+        onOpenSettings={onOpenSettings}
+      />
+    )
+
+    fireEvent.click(screen.getByRole("button", { name: "Open Settings" }))
+    fireEvent.click(screen.getByText("No configured providers"))
+
+    expect(onOpenSettings).toHaveBeenCalledTimes(2)
+  })
+
   it("shows reasoning effort selector when the selected model supports it", () => {
     renderMainContent({ connectionId: "prov_openai", modelId: "gpt-5.4" })
 

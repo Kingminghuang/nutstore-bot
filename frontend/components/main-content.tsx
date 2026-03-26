@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react"
 import {
+  AlertCircle,
   ArrowDown,
   ArrowUp,
   Check,
@@ -55,6 +56,7 @@ interface MainContentProps {
   isUploadingAttachment: boolean
   onAttachFiles: (files: File[]) => Promise<void>
   onRemoveAttachment: (attachmentId: string) => Promise<void>
+  onOpenSettings?: () => void
 }
 
 export function MainContent({
@@ -77,6 +79,7 @@ export function MainContent({
   isUploadingAttachment,
   onAttachFiles,
   onRemoveAttachment,
+  onOpenSettings,
 }: MainContentProps) {
   const [permissionOpen, setPermissionOpen] = useState(false)
   const [permission, setPermission] = useState<Permission>("default")
@@ -84,6 +87,7 @@ export function MainContent({
   const [inputValue, setInputValue] = useState("")
   const [isGenerating, setIsGenerating] = useState(false)
   const [showScrollBtn, setShowScrollBtn] = useState(false)
+  const [hasAnimatedProviderNotice, setHasAnimatedProviderNotice] = useState(false)
 
   const scrollRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
@@ -100,6 +104,21 @@ export function MainContent({
     [modelOptionGroups, selectedModel]
   )
   const supportsReasoningEffort = reasoningEffortOptions.length > 0
+  const showProviderNotice = Boolean(providerError || (!hasAvailableModels && !isLoadingModels))
+
+  useEffect(() => {
+    if (!showProviderNotice || hasAnimatedProviderNotice) {
+      return
+    }
+
+    const frame = requestAnimationFrame(() => {
+      setHasAnimatedProviderNotice(true)
+    })
+
+    return () => {
+      cancelAnimationFrame(frame)
+    }
+  }, [hasAnimatedProviderNotice, showProviderNotice])
 
   const selectedModelLabel = useMemo(() => {
     if (isLoadingModels) {
@@ -335,9 +354,37 @@ export function MainContent({
             />
           </div>
 
-          {(providerError || (!hasAvailableModels && !isLoadingModels)) && (
-            <div className="px-4 pb-1 text-xs text-muted-foreground">
-              {providerError ?? "Configure a provider in Settings to enable model selection."}
+          {showProviderNotice && (
+            <div className="px-4 pb-2">
+              <div
+                className={cn(
+                  "inline-flex max-w-full flex-wrap items-center gap-1.5 rounded-xl border px-3 py-2 text-[12.5px] transition-all duration-200 ease-out",
+                  hasAnimatedProviderNotice ? "translate-y-0 opacity-100" : "translate-y-1 opacity-0",
+                  providerError
+                    ? "border-[#efc8bb] bg-[#fff3ef] text-[#8a4a38]"
+                    : "border-[#e7ddd3] bg-[#f6f1ec] text-[#6e635a]"
+                )}
+              >
+                <AlertCircle
+                  className={cn("mt-[1px] h-3.5 w-3.5 flex-shrink-0", providerError ? "text-[#b45b44]" : "text-[#8d7768]")}
+                  aria-hidden="true"
+                />
+                <span className="leading-5">
+                  {providerError ?? "Configure a provider to enable model selection."}
+                </span>
+                {onOpenSettings && (
+                  <button
+                    onClick={onOpenSettings}
+                    className={cn(
+                      "text-[12.5px] font-medium underline underline-offset-2 transition-colors",
+                      providerError ? "text-[#8a4a38] hover:text-[#6f3c2f]" : "text-[#7a4a2f] hover:text-[#5f3823]"
+                    )}
+                    type="button"
+                  >
+                    Open Settings
+                  </button>
+                )}
+              </div>
             </div>
           )}
 
@@ -369,16 +416,22 @@ export function MainContent({
               <div className="relative">
                 <button
                   onClick={() => {
-                    if (!hasAvailableModels || isLoadingModels) return
+                    if (isLoadingModels) return
+                    if (!hasAvailableModels) {
+                      onOpenSettings?.()
+                      return
+                    }
                     setModelOpen(!modelOpen)
                     setPermissionOpen(false)
                   }}
-                  disabled={!hasAvailableModels || isLoadingModels}
+                  disabled={isLoadingModels || (!hasAvailableModels && !onOpenSettings)}
                   className={cn(
                     "flex items-center gap-1.5 text-sm transition-colors",
                     hasAvailableModels && !isLoadingModels
                       ? "text-muted-foreground hover:text-foreground"
-                      : "text-muted-foreground/50 cursor-not-allowed"
+                      : onOpenSettings && !isLoadingModels
+                        ? "text-muted-foreground hover:text-foreground"
+                        : "text-muted-foreground/50 cursor-not-allowed"
                   )}
                 >
                   <span className="max-w-[260px] truncate">{selectedModelLabel}</span>

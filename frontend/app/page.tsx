@@ -963,6 +963,7 @@ export default function Home() {
         }
         onAttachFiles={handleAttachFiles}
         onRemoveAttachment={handleRemoveAttachment}
+        onOpenSettings={() => setSettingsOpen(true)}
       />
       <SettingsModal
         isOpen={settingsOpen}
