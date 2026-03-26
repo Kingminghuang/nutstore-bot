@@ -8,9 +8,19 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request
+from fastapi import (
+    BackgroundTasks,
+    Depends,
+    FastAPI,
+    File,
+    HTTPException,
+    Query,
+    Request,
+    UploadFile,
+)
 from fastapi.responses import JSONResponse, StreamingResponse
 
+from attachment_store import AttachmentStore
 from auth import (
     LocalAuthConfig,
     auth_header_dependency,
@@ -62,6 +72,8 @@ def create_app(config: ApiServerConfig | None = None) -> FastAPI:
         workspaces=repositories.workspaces,
         sessions=repositories.sessions,
         messages=repositories.messages,
+        attachments=repositories.attachments,
+        attachment_store=AttachmentStore(cfg.ns_bot_home),
     )
     run_service = RunService(
         workspaces=repositories.workspaces,
@@ -70,6 +82,7 @@ def create_app(config: ApiServerConfig | None = None) -> FastAPI:
         runs=repositories.runs,
         run_steps=repositories.run_steps,
         session_service=session_service,
+        attachments=repositories.attachments,
         secret_store=LocalSecretStore(cfg.ns_bot_home),
         event_store=RunEventStore(),
         cancellation_registry=RunCancellationRegistry(),
@@ -167,8 +180,16 @@ def create_app(config: ApiServerConfig | None = None) -> FastAPI:
         return session_service.update_session(session_id, payload)
 
     @app.get("/sessions/{session_id}/messages")
-    def get_session_messages(session_id: str) -> dict[str, list[dict[str, object]]]:
-        return session_service.list_messages_payload(session_id)
+    def get_session_messages(
+        session_id: str,
+        limit: int | None = Query(default=None, ge=1),
+        before_sequence: int | None = Query(default=None, alias="beforeSequence", ge=1),
+    ) -> dict[str, object]:
+        return session_service.list_messages_payload(
+            session_id,
+            limit=limit,
+            before_sequence=before_sequence,
+        )
 
     @app.post("/sessions/{session_id}/messages")
     def create_session_message(
@@ -179,6 +200,27 @@ def create_app(config: ApiServerConfig | None = None) -> FastAPI:
         return session_service.append_message(
             session_id, payload, background_tasks=background_tasks
         )
+
+    @app.get("/sessions/{session_id}/attachments")
+    def get_session_attachments(session_id: str) -> dict[str, list[dict[str, object]]]:
+        return session_service.list_attachments_payload(session_id)
+
+    @app.post("/sessions/{session_id}/attachments")
+    async def create_session_attachment(
+        session_id: str,
+        file: UploadFile = File(...),
+    ) -> dict[str, object]:
+        payload = await file.read()
+        return session_service.create_attachment(
+            session_id,
+            file_name=file.filename or "attachment",
+            mime_type=file.content_type or "application/octet-stream",
+            payload=payload,
+        )
+
+    @app.delete("/sessions/{session_id}/attachments/{attachment_id}", status_code=204)
+    def delete_session_attachment(session_id: str, attachment_id: str) -> None:
+        session_service.delete_attachment(session_id, attachment_id)
 
     @app.post("/runs")
     def create_run(

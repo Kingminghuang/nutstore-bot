@@ -49,9 +49,37 @@ export type Session = {
   activeConnectionId: string | null
   activeModelId: string | null
   messages: Message[]
+  hasMoreHistory: boolean
+  nextBeforeSequence: number | null
+  isLoadingHistory: boolean
 }
 
+type MessagesPageResponse = {
+  messages: Message[]
+  pagination?: {
+    hasMore?: boolean
+    nextBeforeSequence?: number | null
+  }
+}
+
+type ServerSession = Omit<
+  Session,
+  "messages" | "hasMoreHistory" | "nextBeforeSequence" | "isLoadingHistory"
+>
+
 export type RunStepsByRunId = Record<string, RunHistoryStep[]>
+
+export type ComposerAttachment = {
+  id: string
+  sessionId: string
+  workspaceId: string
+  fileName: string
+  mimeType: string
+  sizeBytes: number
+  status: "uploaded" | "consumed" | "deleted" | "missing"
+  createdAt: string
+  updatedAt: string
+}
 
 export type Project = {
   id: string
@@ -72,6 +100,33 @@ export type WorkspaceSummary = {
 const SIDEBAR_MIN = 160
 const SIDEBAR_MAX = 480
 const SIDEBAR_DEFAULT = 230
+const MESSAGE_PAGE_SIZE = 50
+
+function withSessionHistoryDefaults(
+  session: ServerSession
+): Session {
+  return {
+    ...session,
+    messages: [],
+    hasMoreHistory: false,
+    nextBeforeSequence: null,
+    isLoadingHistory: false,
+  }
+}
+
+function mergeSessionWithLocalHistory(
+  incoming: ServerSession,
+  existing: Session | undefined,
+  messages: Message[]
+): Session {
+  return {
+    ...incoming,
+    messages,
+    hasMoreHistory: existing?.hasMoreHistory ?? false,
+    nextBeforeSequence: existing?.nextBeforeSequence ?? null,
+    isLoadingHistory: existing?.isLoadingHistory ?? false,
+  }
+}
 
 function getMessageRunIds(messages: Message[]): string[] {
   return Array.from(new Set(messages.map((message) => message.runId).filter(Boolean))) as string[]
@@ -175,6 +230,8 @@ export default function Home() {
   const [providerError, setProviderError] = useState<string | null>(null)
   const [workspaceError, setWorkspaceError] = useState<string | null>(null)
   const [runError, setRunError] = useState<string | null>(null)
+  const [attachmentsBySession, setAttachmentsBySession] = useState<Record<string, ComposerAttachment[]>>({})
+  const [uploadingAttachmentSessionId, setUploadingAttachmentSessionId] = useState<string | null>(null)
   const eventSourceRef = useRef<EventSource | null>(null)
   const isDragging = useRef(false)
 
@@ -221,12 +278,12 @@ export default function Home() {
 
       const sessionsEntries = await Promise.all(
         nextWorkspaces.map(async (workspace) => {
-          const sessionsResponse = await sidecarFetch<{ sessions: Omit<Session, "messages">[] }>(
+          const sessionsResponse = await sidecarFetch<{ sessions: ServerSession[] }>(
             `/workspaces/${workspace.id}/sessions`
           )
           return [
             workspace.id,
-            sessionsResponse.sessions.map((session) => ({ ...session, messages: [] })),
+            sessionsResponse.sessions.map((session) => withSessionHistoryDefaults(session)),
           ] as const
         })
       )
@@ -252,6 +309,7 @@ export default function Home() {
       )
       setWorkspaces([])
       setSessionsByWorkspace({})
+      setAttachmentsBySession({})
       setRunStepsByRunId({})
       setActiveWorkspaceId(null)
       setActiveSessionId(null)
@@ -295,7 +353,9 @@ export default function Home() {
 
     let cancelled = false
 
-    void sidecarFetch<{ messages: Message[] }>(`/sessions/${activeSessionId}/messages`)
+    void sidecarFetch<MessagesPageResponse>(
+      `/sessions/${activeSessionId}/messages?limit=${MESSAGE_PAGE_SIZE}`
+    )
       .then((response) => {
         if (cancelled) {
           return
@@ -313,8 +373,14 @@ export default function Home() {
         setSessionsByWorkspace((prev) => ({
           ...prev,
           [activeWorkspaceId]: (prev[activeWorkspaceId] ?? []).map((session) =>
-            session.id === activeSessionId
-              ? { ...session, messages: response.messages }
+              session.id === activeSessionId
+              ? {
+                  ...session,
+                  messages: response.messages,
+                  hasMoreHistory: response.pagination?.hasMore ?? false,
+                  nextBeforeSequence: response.pagination?.nextBeforeSequence ?? null,
+                  isLoadingHistory: false,
+                }
               : session
           ),
         }))
@@ -323,6 +389,78 @@ export default function Home() {
 
     return () => {
       cancelled = true
+    }
+  }, [activeSession, activeSessionId, activeWorkspaceId])
+
+  useEffect(() => {
+    if (!activeSessionId) {
+      return
+    }
+    if (attachmentsBySession[activeSessionId] != null) {
+      return
+    }
+
+    let cancelled = false
+    void sidecarFetch<{ attachments: ComposerAttachment[] }>(
+      `/sessions/${activeSessionId}/attachments`
+    )
+      .then((response) => {
+        if (cancelled) {
+          return
+        }
+        setAttachmentsBySession((prev) => ({
+          ...prev,
+          [activeSessionId]: response.attachments,
+        }))
+      })
+      .catch(() => undefined)
+
+    return () => {
+      cancelled = true
+    }
+  }, [activeSessionId, attachmentsBySession])
+
+  const handleLoadEarlierMessages = useCallback(async () => {
+    if (!activeSessionId || !activeWorkspaceId || !activeSession) {
+      return
+    }
+    if (!activeSession.hasMoreHistory || activeSession.nextBeforeSequence == null) {
+      return
+    }
+
+    setSessionsByWorkspace((prev) =>
+      updateSessionInWorkspace(prev, activeWorkspaceId, activeSessionId, (session) => ({
+        ...session,
+        isLoadingHistory: true,
+      }))
+    )
+
+    try {
+      const response = await sidecarFetch<MessagesPageResponse>(
+        `/sessions/${activeSessionId}/messages?limit=${MESSAGE_PAGE_SIZE}&beforeSequence=${activeSession.nextBeforeSequence}`
+      )
+
+      setSessionsByWorkspace((prev) =>
+        updateSessionInWorkspace(prev, activeWorkspaceId, activeSessionId, (session) => {
+          const existingIds = new Set(session.messages.map((message) => message.id))
+          const olderMessages = response.messages.filter((message) => !existingIds.has(message.id))
+
+          return {
+            ...session,
+            messages: [...olderMessages, ...session.messages],
+            hasMoreHistory: response.pagination?.hasMore ?? false,
+            nextBeforeSequence: response.pagination?.nextBeforeSequence ?? null,
+            isLoadingHistory: false,
+          }
+        })
+      )
+    } catch {
+      setSessionsByWorkspace((prev) =>
+        updateSessionInWorkspace(prev, activeWorkspaceId, activeSessionId, (session) => ({
+          ...session,
+          isLoadingHistory: false,
+        }))
+      )
     }
   }, [activeSession, activeSessionId, activeWorkspaceId])
 
@@ -404,7 +542,7 @@ export default function Home() {
       const targetId = projectId ?? activeWorkspaceId
       if (targetId == null || !selectedModel) return
 
-      const session = (await sidecarFetch<Omit<Session, "messages">>(`/workspaces/${targetId}/sessions`, {
+      const session = (await sidecarFetch<ServerSession>(`/workspaces/${targetId}/sessions`, {
         method: "POST",
         body: JSON.stringify({
           connectionId: selectedModel.connectionId,
@@ -414,7 +552,7 @@ export default function Home() {
 
       setSessionsByWorkspace((prev) => ({
         ...prev,
-        [targetId]: [{ ...session, messages: [] }, ...(prev[targetId] ?? [])],
+        [targetId]: [withSessionHistoryDefaults(session), ...(prev[targetId] ?? [])],
       }))
       setActiveWorkspaceId(targetId)
       setActiveSessionId(session.id)
@@ -427,6 +565,7 @@ export default function Home() {
       if (!activeSessionId || !activeWorkspaceId || !selectedModel) return
 
       setRunError(null)
+      const attachmentIds = (attachmentsBySession[activeSessionId] ?? []).map((item) => item.id)
 
       try {
         const runResponse = await sidecarFetch<{
@@ -435,7 +574,7 @@ export default function Home() {
             status: string
             finalAnswer: string | null
           }
-          session: Omit<Session, "messages">
+          session: ServerSession
           messages: Message[]
         }>(
           "/runs",
@@ -449,21 +588,30 @@ export default function Home() {
               ...(selectedReasoningEffort
                 ? { reasoningEffort: selectedReasoningEffort }
                 : {}),
+              attachmentIds,
               input: text,
             }),
           }
         )
+
+        setAttachmentsBySession((prev) => ({
+          ...prev,
+          [activeSessionId]: [],
+        }))
 
         setSessionsByWorkspace((prev) => ({
           ...prev,
           [activeWorkspaceId]: (prev[activeWorkspaceId] ?? []).map((session) =>
             session.id === activeSessionId
               ? {
-                  ...runResponse.session,
-                  messages: runResponse.messages.map((message) => ({
-                    ...message,
-                    role: message.role,
-                  })),
+                  ...mergeSessionWithLocalHistory(
+                    runResponse.session,
+                    session,
+                    runResponse.messages.map((message) => ({
+                      ...message,
+                      role: message.role,
+                    }))
+                  ),
                 }
               : session
           ),
@@ -480,7 +628,7 @@ export default function Home() {
         if (error instanceof SidecarRequestError && error.payload) {
           const payload = error.payload as {
             detail?: string
-            session?: Omit<Session, "messages">
+            session?: ServerSession
             messages?: Message[]
           }
           if (payload.session && payload.messages) {
@@ -489,16 +637,23 @@ export default function Home() {
               [activeWorkspaceId]: (prev[activeWorkspaceId] ?? []).map((session) =>
                 session.id === activeSessionId
                   ? {
-                      ...payload.session,
-                      messages: payload.messages.map((message) => ({
-                        ...message,
-                        role: message.role,
-                      })),
+                      ...mergeSessionWithLocalHistory(
+                        payload.session,
+                        session,
+                        payload.messages.map((message) => ({
+                          ...message,
+                          role: message.role,
+                        }))
+                      ),
                     }
                   : session
               ),
             }))
           }
+          setAttachmentsBySession((prev) => ({
+            ...prev,
+            [activeSessionId]: [],
+          }))
           setRunError(payload.detail ?? error.message)
         } else {
           setRunError(error instanceof Error ? error.message : "Failed to run request")
@@ -506,7 +661,70 @@ export default function Home() {
         throw error
       }
     },
-    [activeSessionId, activeWorkspaceId, selectedModel, selectedReasoningEffort]
+    [
+      activeSessionId,
+      activeWorkspaceId,
+      attachmentsBySession,
+      selectedModel,
+      selectedReasoningEffort,
+    ]
+  )
+
+  const handleAttachFiles = useCallback(
+    async (files: File[]) => {
+      if (!activeSessionId) {
+        return
+      }
+      setUploadingAttachmentSessionId(activeSessionId)
+
+      try {
+        const uploads = files.map(async (file) => {
+          const formData = new FormData()
+          formData.append("file", file)
+          return sidecarFetch<ComposerAttachment>(
+            `/sessions/${activeSessionId}/attachments`,
+            {
+              method: "POST",
+              body: formData,
+            }
+          )
+        })
+
+        const created = await Promise.all(uploads)
+        setAttachmentsBySession((prev) => {
+          const existing = prev[activeSessionId] ?? []
+          const existingIds = new Set(existing.map((item) => item.id))
+          return {
+            ...prev,
+            [activeSessionId]: [...existing, ...created.filter((item) => !existingIds.has(item.id))],
+          }
+        })
+      } finally {
+        setUploadingAttachmentSessionId((current) =>
+          current === activeSessionId ? null : current
+        )
+      }
+    },
+    [activeSessionId]
+  )
+
+  const handleRemoveAttachment = useCallback(
+    async (attachmentId: string) => {
+      if (!activeSessionId) {
+        return
+      }
+      await sidecarFetch<void>(
+        `/sessions/${activeSessionId}/attachments/${attachmentId}`,
+        { method: "DELETE" }
+      )
+      setAttachmentsBySession((prev) => ({
+        ...prev,
+        [activeSessionId]: (prev[activeSessionId] ?? []).filter(
+          (attachment) => attachment.id !== attachmentId
+        ),
+      }))
+    },
+    [activeSessionId]
   )
 
   const startRunEventStream = useCallback(
@@ -531,7 +749,7 @@ export default function Home() {
       }
 
       const refreshSessionSummary = () => {
-        void sidecarFetch<{ sessions: Omit<Session, "messages">[] }>(`/workspaces/${workspaceId}/sessions`)
+        void sidecarFetch<{ sessions: ServerSession[] }>(`/workspaces/${workspaceId}/sessions`)
           .then((response) => {
             const refreshed = response.sessions.find((session) => session.id === sessionId)
             if (!refreshed) {
@@ -736,6 +954,15 @@ export default function Home() {
         isLoadingModels={isLoadingProviders}
         providerError={providerError ?? workspaceError}
         runError={runError}
+        hasMoreHistory={activeSession?.hasMoreHistory ?? false}
+        isLoadingHistory={activeSession?.isLoadingHistory ?? false}
+        onLoadEarlierMessages={handleLoadEarlierMessages}
+        composerAttachments={activeSessionId ? attachmentsBySession[activeSessionId] ?? [] : []}
+        isUploadingAttachment={
+          activeSessionId != null && uploadingAttachmentSessionId === activeSessionId
+        }
+        onAttachFiles={handleAttachFiles}
+        onRemoveAttachment={handleRemoveAttachment}
       />
       <SettingsModal
         isOpen={settingsOpen}
@@ -753,7 +980,7 @@ async function sidecarFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`/api/sidecar/proxy?path=${encodeURIComponent(path)}`, {
     ...init,
     headers: {
-      "Content-Type": "application/json",
+      ...(!(init?.body instanceof FormData) ? { "Content-Type": "application/json" } : {}),
       ...(init?.headers ?? {}),
     },
     cache: "no-store",

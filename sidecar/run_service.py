@@ -24,6 +24,7 @@ from run_events import (
 from local_paths import nsbot_home
 from provider_catalog import list_providers
 from repositories import (
+    AttachmentsRepository,
     ProviderConnectionsRepository,
     RunStepsRepository,
     RunsRepository,
@@ -67,6 +68,7 @@ class RunService:
     workspaces: WorkspacesRepository
     sessions: SessionsRepository
     providers: ProviderConnectionsRepository
+    attachments: AttachmentsRepository
     runs: RunsRepository
     run_steps: RunStepsRepository
     session_service: SessionService
@@ -103,6 +105,9 @@ class RunService:
             payload.get("input", payload.get("inputText", payload.get("input_text"))),
             detail="Run input is required",
         )
+        attachment_ids = _normalize_attachment_ids(
+            payload.get("attachmentIds", payload.get("attachment_ids"))
+        )
 
         workspace = self._get_workspace_or_404(workspace_id)
         session = self._get_session_or_404(session_id)
@@ -111,6 +116,27 @@ class RunService:
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Session does not belong to workspace",
             )
+
+        attachments = self.attachments.list_by_ids(attachment_ids)
+        if len(attachments) != len(set(attachment_ids)):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="One or more attachments were not found",
+            )
+        for attachment in attachments:
+            if (
+                attachment.session_id != session_id
+                or attachment.workspace_id != workspace_id
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Attachment does not belong to this session",
+                )
+            if attachment.status != "uploaded":
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Attachment is not available",
+                )
 
         bundle = self.providers.get_bundle_by_id(connection_id)
         if bundle is None:
@@ -135,8 +161,17 @@ class RunService:
                 "runId": run.id,
                 "connectionId": connection_id,
                 "modelId": model_id,
+                "metadataJson": _json_dumps_or_none(
+                    {
+                        "attachmentIds": attachment_ids,
+                    }
+                    if attachment_ids
+                    else None
+                ),
             },
         )
+        for attachment in attachments:
+            self.attachments.update_status(attachment.id, "consumed")
         self._append_event(
             run.id,
             status_event(
@@ -1053,6 +1088,25 @@ def _normalize_optional_string(value: Any) -> str | None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _normalize_attachment_ids(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="attachmentIds must be a list of strings",
+        )
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        text = _normalize_optional_string(item)
+        if text is None or text in seen:
+            continue
+        seen.add(text)
+        normalized.append(text)
+    return normalized
 
 
 def _normalize_optional_int(value: Any) -> int | None:

@@ -20,6 +20,9 @@ const project = {
       activeConnectionId: "prov_openai",
       activeModelId: "gpt-5.4",
       messages: [],
+      hasMoreHistory: false,
+      nextBeforeSequence: null,
+      isLoadingHistory: false,
     },
   ],
 }

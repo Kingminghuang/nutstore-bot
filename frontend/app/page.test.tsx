@@ -8,6 +8,8 @@ const sidecarClientMocks = vi.hoisted(() => ({
 
 const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
   const url = String(input)
+  const decodedPathMatch = url.match(/[?&]path=([^&]+)/)
+  const decodedPath = decodedPathMatch ? decodeURIComponent(decodedPathMatch[1]) : ""
   if (url.includes("path=%2Fworkspaces%2Fws_1%2Fsessions") && init?.method !== "POST") {
     workspaceSessionsFetchCount += 1
     return new Response(
@@ -54,7 +56,57 @@ const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => 
     )
   }
 
-  if (url.includes("path=%2Fsessions%2Fsess_1%2Fmessages")) {
+  if (decodedPath.startsWith("/sessions/sess_1/messages")) {
+    if (usePaginatedHistory && decodedPath.includes("beforeSequence=2")) {
+      return new Response(
+        JSON.stringify({
+          messages: [
+            {
+              id: "msg_older_1",
+              sessionId: "sess_1",
+              runId: null,
+              role: "user",
+              content: "Please wire the sidecar",
+              stepId: null,
+              sequenceNo: 1,
+              createdAt: "2026-03-24T12:00:00Z",
+              metadataJson: null,
+            },
+          ],
+          pagination: {
+            hasMore: false,
+            nextBeforeSequence: null,
+          },
+        }),
+        { status: 200 }
+      )
+    }
+
+    if (usePaginatedHistory) {
+      return new Response(
+        JSON.stringify({
+          messages: [
+            {
+              id: "msg_latest_1",
+              sessionId: "sess_1",
+              runId: null,
+              role: "assistant",
+              content: "I split provider catalog from persisted connections",
+              stepId: null,
+              sequenceNo: 2,
+              createdAt: "2026-03-24T12:10:00Z",
+              metadataJson: null,
+            },
+          ],
+          pagination: {
+            hasMore: true,
+            nextBeforeSequence: 2,
+          },
+        }),
+        { status: 200 }
+      )
+    }
+
     return new Response(
       JSON.stringify({
         messages: forceRunFailure
@@ -134,6 +186,18 @@ const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => 
                 metadataJson: null,
               },
             ],
+      }),
+      { status: 200 }
+    )
+  }
+
+  if (decodedPath.startsWith("/sessions/sess_1/attachments")) {
+    if (init?.method === "DELETE") {
+      return new Response(null, { status: 204 })
+    }
+    return new Response(
+      JSON.stringify({
+        attachments: [],
       }),
       { status: 200 }
     )
@@ -411,6 +475,7 @@ let workspaceSessionsFetchCount = 0
 let forceRunFailure = false
 let runFailureReason = "Provider connection is missing an API key"
 let useStreamingRun = false
+let usePaginatedHistory = false
 
 global.fetch = fetchMock as typeof fetch
 
@@ -421,6 +486,7 @@ describe("Home page", () => {
     forceRunFailure = false
     runFailureReason = "Provider connection is missing an API key"
     useStreamingRun = false
+    usePaginatedHistory = false
     MockEventSource.instances = []
     fetchMock.mockClear()
     sidecarClientMocks.getRunSteps.mockReset()
@@ -619,5 +685,34 @@ describe("Home page", () => {
         reasoningEffort: "high",
       })
     })
+  })
+
+  it("loads session messages lazily with pagination", async () => {
+    usePaginatedHistory = true
+    render(<Home />)
+
+    await waitFor(() => {
+      expect(screen.getByText("I split provider catalog from persisted connections")).toBeInTheDocument()
+    })
+
+    const initialMessageCalls = fetchMock.mock.calls.filter(([input]) => {
+      const value = String(input)
+      return value.includes("path=%2Fsessions%2Fsess_1%2Fmessages%3Flimit%3D50")
+    })
+    expect(initialMessageCalls).toHaveLength(1)
+
+    fireEvent.click(screen.getByRole("button", { name: "Load earlier messages" }))
+
+    await waitFor(() => {
+      expect(screen.getByText("Please wire the sidecar")).toBeInTheDocument()
+    })
+
+    const olderPageCalls = fetchMock.mock.calls.filter(([input]) => {
+      const value = String(input)
+      return value.includes(
+        "path=%2Fsessions%2Fsess_1%2Fmessages%3Flimit%3D50%26beforeSequence%3D2"
+      )
+    })
+    expect(olderPageCalls).toHaveLength(1)
   })
 })

@@ -43,4 +43,29 @@ describe("sidecar proxy route", () => {
     expect(response.status).toBe(200)
     await expect(response.json()).resolves.toEqual({ ok: true })
   })
+
+  it("forwards multipart uploads as binary payload", async () => {
+    proxySidecarRequestMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })
+    )
+
+    const { POST } = await import("@/app/api/sidecar/proxy/route")
+    const formData = new FormData()
+    formData.append("file", new Blob(["hello"]), "hello.txt")
+    const request = new NextRequest(
+      "http://localhost/api/sidecar/proxy?path=%2Fsessions%2Fsess_1%2Fattachments",
+      {
+        method: "POST",
+        body: formData,
+      }
+    )
+
+    await POST(request)
+
+    const init = proxySidecarRequestMock.mock.calls[0][1] as RequestInit
+    expect(init.body).toBeInstanceOf(ArrayBuffer)
+  })
 })

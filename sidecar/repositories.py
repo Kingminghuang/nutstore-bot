@@ -133,6 +133,20 @@ class MessageRecord:
 
 
 @dataclass(frozen=True)
+class AttachmentRecord:
+    id: str
+    session_id: str
+    workspace_id: str
+    file_name: str
+    mime_type: str
+    size_bytes: int
+    storage_path: str
+    status: str
+    created_at: str
+    updated_at: str
+
+
+@dataclass(frozen=True)
 class RunRecord:
     id: str
     session_id: str
@@ -587,6 +601,40 @@ class MessagesRepository:
         ).fetchall()
         return [_map_message(row) for row in rows]
 
+    def list_by_session_id_page(
+        self,
+        session_id: str,
+        *,
+        limit: int,
+        before_sequence: int | None = None,
+    ) -> tuple[list[MessageRecord], bool, int | None]:
+        where_sql = "session_id = ?"
+        params: list[object] = [session_id]
+        if before_sequence is not None:
+            where_sql += " AND sequence_no < ?"
+            params.append(before_sequence)
+
+        params.append(limit + 1)
+        rows = self.connection.execute(
+            f"""
+            SELECT *
+            FROM messages
+            WHERE {where_sql}
+            ORDER BY sequence_no DESC, created_at DESC
+            LIMIT ?
+            """,
+            tuple(params),
+        ).fetchall()
+
+        has_more = len(rows) > limit
+        if has_more:
+            rows = rows[:limit]
+
+        rows.reverse()
+        records = [_map_message(row) for row in rows]
+        next_before_sequence = records[0].sequence_no if has_more and records else None
+        return records, has_more, next_before_sequence
+
     def _next_sequence_number(self, session_id: str) -> int:
         row = self.connection.execute(
             "SELECT COALESCE(MAX(sequence_no), 0) FROM messages WHERE session_id = ?",
@@ -674,6 +722,105 @@ class RunsRepository:
         )
         self.connection.commit()
         return self.get_by_id(run_id)
+
+
+class AttachmentsRepository:
+    def __init__(self, connection: sqlite3.Connection):
+        self.connection = connection
+
+    def create(
+        self,
+        *,
+        session_id: str,
+        workspace_id: str,
+        file_name: str,
+        mime_type: str,
+        size_bytes: int,
+        storage_path: str,
+        status: str = "uploaded",
+        attachment_id: str | None = None,
+    ) -> AttachmentRecord:
+        record_id = attachment_id or create_id("att")
+        now = now_iso_timestamp()
+        self.connection.execute(
+            """
+            INSERT INTO attachments (
+                id, session_id, workspace_id, file_name, mime_type,
+                size_bytes, storage_path, status, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                record_id,
+                session_id,
+                workspace_id,
+                file_name,
+                mime_type,
+                size_bytes,
+                storage_path,
+                status,
+                now,
+                now,
+            ),
+        )
+        self.connection.commit()
+        return self.get_by_id(record_id)
+
+    def get_by_id(self, attachment_id: str) -> AttachmentRecord:
+        row = self.connection.execute(
+            "SELECT * FROM attachments WHERE id = ?", (attachment_id,)
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"Attachment not found: {attachment_id}")
+        return _map_attachment(row)
+
+    def list_by_session_id(
+        self, session_id: str, *, statuses: list[str] | None = None
+    ) -> list[AttachmentRecord]:
+        if statuses is None:
+            rows = self.connection.execute(
+                """
+                SELECT * FROM attachments
+                WHERE session_id = ?
+                ORDER BY created_at ASC, id ASC
+                """,
+                (session_id,),
+            ).fetchall()
+            return [_map_attachment(row) for row in rows]
+
+        placeholders = ",".join("?" for _ in statuses)
+        rows = self.connection.execute(
+            f"""
+            SELECT * FROM attachments
+            WHERE session_id = ? AND status IN ({placeholders})
+            ORDER BY created_at ASC, id ASC
+            """,
+            (session_id, *statuses),
+        ).fetchall()
+        return [_map_attachment(row) for row in rows]
+
+    def list_by_ids(self, attachment_ids: list[str]) -> list[AttachmentRecord]:
+        if not attachment_ids:
+            return []
+        placeholders = ",".join("?" for _ in attachment_ids)
+        rows = self.connection.execute(
+            f"SELECT * FROM attachments WHERE id IN ({placeholders})",
+            tuple(attachment_ids),
+        ).fetchall()
+        return [_map_attachment(row) for row in rows]
+
+    def update_status(self, attachment_id: str, status: str) -> AttachmentRecord:
+        self.connection.execute(
+            "UPDATE attachments SET status = ?, updated_at = ? WHERE id = ?",
+            (status, now_iso_timestamp(), attachment_id),
+        )
+        self.connection.commit()
+        return self.get_by_id(attachment_id)
+
+    def delete_by_id(self, attachment_id: str) -> None:
+        self.connection.execute(
+            "DELETE FROM attachments WHERE id = ?", (attachment_id,)
+        )
+        self.connection.commit()
 
 
 class RunStepsRepository:
@@ -764,6 +911,7 @@ class Repositories:
     providers: ProviderConnectionsRepository
     sessions: SessionsRepository
     messages: MessagesRepository
+    attachments: AttachmentsRepository
     runs: RunsRepository
     run_steps: RunStepsRepository
 
@@ -774,6 +922,7 @@ def create_repositories(connection: sqlite3.Connection) -> Repositories:
         providers=ProviderConnectionsRepository(connection),
         sessions=SessionsRepository(connection),
         messages=MessagesRepository(connection),
+        attachments=AttachmentsRepository(connection),
         runs=RunsRepository(connection),
         run_steps=RunStepsRepository(connection),
     )
@@ -869,6 +1018,21 @@ def _map_message(row: sqlite3.Row) -> MessageRecord:
         sequence_no=int(row["sequence_no"]),
         created_at=str(row["created_at"]),
         metadata_json=_nullable_str(row["metadata_json"]),
+    )
+
+
+def _map_attachment(row: sqlite3.Row) -> AttachmentRecord:
+    return AttachmentRecord(
+        id=str(row["id"]),
+        session_id=str(row["session_id"]),
+        workspace_id=str(row["workspace_id"]),
+        file_name=str(row["file_name"]),
+        mime_type=str(row["mime_type"]),
+        size_bytes=int(row["size_bytes"]),
+        storage_path=str(row["storage_path"]),
+        status=str(row["status"]),
+        created_at=str(row["created_at"]),
+        updated_at=str(row["updated_at"]),
     )
 
 

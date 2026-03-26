@@ -193,6 +193,28 @@ MIGRATIONS: tuple[Migration, ...] = (
         ON run_steps(run_id, created_at, sequence_no);
         """,
     ),
+    Migration(
+        version=4,
+        sql="""
+        CREATE TABLE IF NOT EXISTS attachments (
+          id TEXT PRIMARY KEY,
+          session_id TEXT NOT NULL,
+          workspace_id TEXT NOT NULL,
+          file_name TEXT NOT NULL,
+          mime_type TEXT NOT NULL,
+          size_bytes INTEGER NOT NULL,
+          storage_path TEXT NOT NULL UNIQUE,
+          status TEXT NOT NULL CHECK (status IN ('uploaded', 'consumed', 'deleted', 'missing')),
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE,
+          FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_attachments_session_status
+        ON attachments(session_id, status, created_at);
+        """,
+    ),
 )
 
 

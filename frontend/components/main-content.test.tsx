@@ -54,9 +54,9 @@ function renderMainContent(selection: SelectedModelRef | null, runStepsByRunId: 
         lastMessageAt: null,
         messageCount: 0,
         lastMessagePreview: null,
-        activeConnectionId: null,
-        activeModelId: null,
-        messages: runStepsByRunId.run_1
+          activeConnectionId: null,
+          activeModelId: null,
+          messages: runStepsByRunId.run_1
           ? [
               {
                 id: "msg_1",
@@ -68,7 +68,10 @@ function renderMainContent(selection: SelectedModelRef | null, runStepsByRunId: 
               },
             ]
           : [],
-      }}
+          hasMoreHistory: false,
+          nextBeforeSequence: null,
+          isLoadingHistory: false,
+        }}
       runStepsByRunId={runStepsByRunId}
       onSendMessage={vi.fn()}
       modelOptionGroups={groups}
@@ -79,6 +82,13 @@ function renderMainContent(selection: SelectedModelRef | null, runStepsByRunId: 
       isLoadingModels={false}
       providerError={null}
       runError={null}
+      hasMoreHistory={false}
+      isLoadingHistory={false}
+      onLoadEarlierMessages={vi.fn(async () => undefined)}
+      composerAttachments={[]}
+      isUploadingAttachment={false}
+      onAttachFiles={vi.fn(async () => undefined)}
+      onRemoveAttachment={vi.fn(async () => undefined)}
     />
   )
 
@@ -124,10 +134,13 @@ describe("MainContent model selector", () => {
           lastMessageAt: null,
           messageCount: 0,
           lastMessagePreview: null,
-          activeConnectionId: null,
-          activeModelId: null,
-          messages: [],
-        }}
+           activeConnectionId: null,
+           activeModelId: null,
+           messages: [],
+            hasMoreHistory: false,
+            nextBeforeSequence: null,
+            isLoadingHistory: false,
+          }}
         runStepsByRunId={{}}
         onSendMessage={vi.fn()}
         modelOptionGroups={[]}
@@ -138,6 +151,13 @@ describe("MainContent model selector", () => {
         isLoadingModels={false}
         providerError={null}
         runError={null}
+        hasMoreHistory={false}
+        isLoadingHistory={false}
+        onLoadEarlierMessages={vi.fn(async () => undefined)}
+        composerAttachments={[]}
+        isUploadingAttachment={false}
+        onAttachFiles={vi.fn(async () => undefined)}
+        onRemoveAttachment={vi.fn(async () => undefined)}
       />
     )
 

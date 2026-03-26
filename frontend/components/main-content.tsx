@@ -14,7 +14,13 @@ import {
   X,
 } from "lucide-react"
 
-import type { Message, Project, RunStepsByRunId, Session } from "@/app/page"
+import type {
+  ComposerAttachment,
+  Message,
+  Project,
+  RunStepsByRunId,
+  Session,
+} from "@/app/page"
 import type { RunActionStep, RunHistoryStep } from "@/lib/sidecar-client"
 import {
   getModelOptionLabel,
@@ -42,6 +48,13 @@ interface MainContentProps {
   isLoadingModels: boolean
   providerError: string | null
   runError: string | null
+  hasMoreHistory: boolean
+  isLoadingHistory: boolean
+  onLoadEarlierMessages: () => Promise<void>
+  composerAttachments: ComposerAttachment[]
+  isUploadingAttachment: boolean
+  onAttachFiles: (files: File[]) => Promise<void>
+  onRemoveAttachment: (attachmentId: string) => Promise<void>
 }
 
 export function MainContent({
@@ -57,6 +70,13 @@ export function MainContent({
   isLoadingModels,
   providerError,
   runError,
+  hasMoreHistory,
+  isLoadingHistory,
+  onLoadEarlierMessages,
+  composerAttachments,
+  isUploadingAttachment,
+  onAttachFiles,
+  onRemoveAttachment,
 }: MainContentProps) {
   const [permissionOpen, setPermissionOpen] = useState(false)
   const [permission, setPermission] = useState<Permission>("default")
@@ -64,11 +84,13 @@ export function MainContent({
   const [inputValue, setInputValue] = useState("")
   const [isGenerating, setIsGenerating] = useState(false)
   const [showScrollBtn, setShowScrollBtn] = useState(false)
-  const [selectedFiles, setSelectedFiles] = useState<File[]>([])
 
   const scrollRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const pendingHistoryScrollRestore = useRef<{ previousTop: number; previousHeight: number } | null>(
+    null
+  )
 
   const messages = activeSession?.messages ?? EMPTY_MESSAGES
   const hasMessages = messages.length > 0
@@ -91,10 +113,40 @@ export function MainContent({
   }, [isLoadingModels, modelOptionGroups, providerError, selectedModel])
 
   useEffect(() => {
-    if (scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight
+    const scrollElement = scrollRef.current
+    if (!scrollElement) {
+      return
     }
+
+    const restore = pendingHistoryScrollRestore.current
+    if (restore) {
+      scrollElement.scrollTop = restore.previousTop + (scrollElement.scrollHeight - restore.previousHeight)
+      pendingHistoryScrollRestore.current = null
+      return
+    }
+
+    scrollElement.scrollTop = scrollElement.scrollHeight
   }, [messages])
+
+  const handleLoadEarlierMessages = async () => {
+    if (!hasMoreHistory || isLoadingHistory) {
+      return
+    }
+
+    const scrollElement = scrollRef.current
+    if (scrollElement) {
+      pendingHistoryScrollRestore.current = {
+        previousTop: scrollElement.scrollTop,
+        previousHeight: scrollElement.scrollHeight,
+      }
+    }
+
+    try {
+      await onLoadEarlierMessages()
+    } catch {
+      pendingHistoryScrollRestore.current = null
+    }
+  }
 
   const handleScroll = () => {
     const el = scrollRef.current
@@ -116,7 +168,6 @@ export function MainContent({
     try {
       await onSendMessage(text)
       setInputValue("")
-      setSelectedFiles([])
     } catch {
       // Error state is surfaced by the page container.
     } finally {
@@ -131,16 +182,12 @@ export function MainContent({
   const handleFilesSelected = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files ?? [])
     if (files.length === 0) return
-    setSelectedFiles((prev) => {
-      const existingNames = new Set(prev.map((file) => file.name))
-      const newFiles = files.filter((file) => !existingNames.has(file.name))
-      return [...prev, ...newFiles]
-    })
+    void onAttachFiles(files)
     e.target.value = ""
   }
 
-  const removeFile = (index: number) => {
-    setSelectedFiles((prev) => prev.filter((_, currentIndex) => currentIndex !== index))
+  const removeFile = (attachmentId: string) => {
+    void onRemoveAttachment(attachmentId)
   }
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -191,6 +238,24 @@ export function MainContent({
           </div>
         ) : (
           <div className="max-w-2xl mx-auto px-6 py-6 space-y-4">
+            {hasMoreHistory && (
+              <div className="flex justify-center">
+                <button
+                  onClick={() => {
+                    void handleLoadEarlierMessages()
+                  }}
+                  disabled={isLoadingHistory}
+                  className={cn(
+                    "rounded-full border px-3 py-1.5 text-xs transition-colors",
+                    isLoadingHistory
+                      ? "cursor-not-allowed border-[#e8e4e0] text-muted-foreground/60"
+                      : "border-[#e0d9d2] text-muted-foreground hover:bg-[#efe9e4] hover:text-foreground"
+                  )}
+                >
+                  {isLoadingHistory ? "Loading..." : "Load earlier messages"}
+                </button>
+              </div>
+            )}
             {messages.map((msg) => (
               <div key={msg.id} className="space-y-3">
                 <MessageBubble message={msg} />
@@ -236,19 +301,19 @@ export function MainContent({
           onClick={(e) => e.stopPropagation()}
         >
           <div className="p-4">
-            {selectedFiles.length > 0 && (
+            {composerAttachments.length > 0 && (
               <div className="flex flex-wrap gap-1.5 mb-3">
-                {selectedFiles.map((file, index) => (
+                {composerAttachments.map((attachment) => (
                   <div
-                    key={index}
+                    key={attachment.id}
                     className="flex items-center gap-1 bg-[#efe9e4] border border-[#e0d9d2] rounded-lg px-2 py-1 text-xs text-foreground/70 max-w-[180px]"
                   >
                     <Paperclip className="w-3 h-3 flex-shrink-0 text-muted-foreground" />
-                    <span className="truncate" title={file.name}>{file.name}</span>
+                    <span className="truncate" title={attachment.fileName}>{attachment.fileName}</span>
                     <button
-                      onClick={() => removeFile(index)}
+                      onClick={() => removeFile(attachment.id)}
                       className="ml-0.5 flex-shrink-0 hover:text-foreground/90 transition-colors"
-                      aria-label={`Remove ${file.name}`}
+                      aria-label={`Remove ${attachment.fileName}`}
                     >
                       <X className="w-3 h-3" />
                     </button>
@@ -284,17 +349,21 @@ export function MainContent({
             <div className="flex items-center gap-4">
               <button
                 onClick={handleFilePickerClick}
-                disabled={!activeProject}
-                title={activeProject ? `Pick files from ${activeProject.path}` : "Select a project first"}
+                disabled={!activeSession || isUploadingAttachment}
+                title={
+                  activeSession
+                    ? `Pick files from ${activeProject?.path ?? "workspace"}`
+                    : "Select a session first"
+                }
                 className={cn(
                   "p-1.5 rounded-lg transition-colors",
-                  activeProject
+                  activeSession && !isUploadingAttachment
                     ? "hover:bg-[#efe9e4] text-muted-foreground hover:text-foreground"
                     : "text-muted-foreground/40 cursor-not-allowed"
                 )}
                 aria-label="Attach files from project folder"
               >
-                <Plus className="w-4 h-4" />
+                {isUploadingAttachment ? <Square className="w-4 h-4" /> : <Plus className="w-4 h-4" />}
               </button>
 
               <div className="relative">

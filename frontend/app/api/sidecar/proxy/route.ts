@@ -33,7 +33,9 @@ async function handleProxyRequest(request: NextRequest) {
   const body =
     request.method === "GET" || request.method === "DELETE"
       ? undefined
-      : await request.text()
+      : contentType?.toLowerCase().startsWith("application/json")
+        ? await request.text()
+        : await request.arrayBuffer()
 
   const response = await proxySidecarRequest(routePath, {
     method: request.method,

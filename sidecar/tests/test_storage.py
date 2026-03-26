@@ -28,7 +28,7 @@ class StorageTests(unittest.TestCase):
     def test_connect_database_applies_migrations(self) -> None:
         connection = connect_database(self.temp_dir)
         try:
-            self.assertEqual(get_user_version(connection), 2)
+            self.assertEqual(get_user_version(connection), 4)
             tables = list_tables(connection)
             self.assertIn("workspaces", tables)
             self.assertIn("provider_connections", tables)
@@ -36,6 +36,7 @@ class StorageTests(unittest.TestCase):
             self.assertIn("provider_headers", tables)
             self.assertIn("sessions", tables)
             self.assertIn("messages", tables)
+            self.assertIn("attachments", tables)
             self.assertIn("runs", tables)
         finally:
             connection.close()

@@ -688,6 +688,149 @@ class ApiServerTests(unittest.TestCase):
         self.assertEqual(len(messages_response.json()["messages"]), 1)
         self.assertEqual(messages_response.json()["messages"][0]["role"], "user")
 
+    def test_session_messages_supports_pagination(self) -> None:
+        workspace = self._create_workspace("workspace-message-pagination")
+        provider = self._create_provider()
+        session = self._create_session(
+            workspace_id=str(workspace["id"]),
+            connection_id=str(provider["id"]),
+        )
+
+        for content in ["message-1", "message-2", "message-3"]:
+            response = self.client.post(
+                f"/sessions/{session['id']}/messages",
+                headers={"Authorization": "Bearer test-token"},
+                json={
+                    "role": "user",
+                    "content": content,
+                },
+            )
+            self.assertEqual(response.status_code, 200)
+
+        latest_response = self.client.get(
+            f"/sessions/{session['id']}/messages?limit=2",
+            headers={"Authorization": "Bearer test-token"},
+        )
+        self.assertEqual(latest_response.status_code, 200)
+        latest_body = latest_response.json()
+        self.assertEqual(
+            [item["content"] for item in latest_body["messages"]],
+            ["message-2", "message-3"],
+        )
+        self.assertEqual(latest_body["pagination"]["hasMore"], True)
+        self.assertEqual(latest_body["pagination"]["nextBeforeSequence"], 2)
+
+        older_response = self.client.get(
+            f"/sessions/{session['id']}/messages?limit=2&beforeSequence=2",
+            headers={"Authorization": "Bearer test-token"},
+        )
+        self.assertEqual(older_response.status_code, 200)
+        older_body = older_response.json()
+        self.assertEqual(
+            [item["content"] for item in older_body["messages"]],
+            ["message-1"],
+        )
+        self.assertEqual(older_body["pagination"]["hasMore"], False)
+        self.assertIsNone(older_body["pagination"]["nextBeforeSequence"])
+
+    def test_session_attachments_can_upload_list_and_delete(self) -> None:
+        workspace = self._create_workspace("workspace-attachments")
+        provider = self._create_provider()
+        session = self._create_session(
+            workspace_id=str(workspace["id"]),
+            connection_id=str(provider["id"]),
+        )
+
+        upload_response = self.client.post(
+            f"/sessions/{session['id']}/attachments",
+            headers={"Authorization": "Bearer test-token"},
+            files={"file": ("notes.txt", b"attachment-content", "text/plain")},
+        )
+        self.assertEqual(upload_response.status_code, 200)
+        attachment = upload_response.json()
+        self.assertEqual(attachment["fileName"], "notes.txt")
+        self.assertEqual(attachment["mimeType"], "text/plain")
+        self.assertEqual(attachment["sizeBytes"], len(b"attachment-content"))
+
+        list_response = self.client.get(
+            f"/sessions/{session['id']}/attachments",
+            headers={"Authorization": "Bearer test-token"},
+        )
+        self.assertEqual(list_response.status_code, 200)
+        self.assertEqual(len(list_response.json()["attachments"]), 1)
+
+        delete_response = self.client.delete(
+            f"/sessions/{session['id']}/attachments/{attachment['id']}",
+            headers={"Authorization": "Bearer test-token"},
+        )
+        self.assertEqual(delete_response.status_code, 204)
+
+        list_after_delete = self.client.get(
+            f"/sessions/{session['id']}/attachments",
+            headers={"Authorization": "Bearer test-token"},
+        )
+        self.assertEqual(list_after_delete.status_code, 200)
+        self.assertEqual(list_after_delete.json()["attachments"], [])
+
+    def test_run_consumes_uploaded_attachments_and_persists_message_metadata(
+        self,
+    ) -> None:
+        workspace = self._create_workspace("workspace-run-attachments")
+        provider = self._create_provider()
+        session = self._create_session(
+            workspace_id=str(workspace["id"]),
+            connection_id=str(provider["id"]),
+        )
+        self._set_sync_run_launcher()
+
+        self.app.state.run_service = replace(
+            self.app.state.run_service,
+            runtime_executor=lambda *_args, **_kwargs: {
+                "deltas": [],
+                "steps": [],
+                "final_answer": "Attachment accepted",
+            },
+        )
+
+        uploaded = self.client.post(
+            f"/sessions/{session['id']}/attachments",
+            headers={"Authorization": "Bearer test-token"},
+            files={"file": ("context.md", b"hello", "text/markdown")},
+        )
+        self.assertEqual(uploaded.status_code, 200)
+        attachment_id = uploaded.json()["id"]
+
+        run_response = self.client.post(
+            "/runs",
+            headers={"Authorization": "Bearer test-token"},
+            json={
+                "sessionId": session["id"],
+                "workspaceId": workspace["id"],
+                "connectionId": provider["id"],
+                "modelId": "gpt-5.4",
+                "attachmentIds": [attachment_id],
+                "input": "Use the attached context",
+            },
+        )
+        self.assertEqual(run_response.status_code, 200)
+
+        attachments_response = self.client.get(
+            f"/sessions/{session['id']}/attachments",
+            headers={"Authorization": "Bearer test-token"},
+        )
+        self.assertEqual(attachments_response.status_code, 200)
+        self.assertEqual(attachments_response.json()["attachments"], [])
+
+        messages_response = self.client.get(
+            f"/sessions/{session['id']}/messages",
+            headers={"Authorization": "Bearer test-token"},
+        )
+        self.assertEqual(messages_response.status_code, 200)
+        self.assertEqual(
+            messages_response.json()["messages"][0]["metadataJson"],
+            '{"attachmentIds": ["' + attachment_id + '"]}',
+        )
+
     def test_workspace_requires_existing_directory(self) -> None:
         response = self.client.post(
             "/workspaces",

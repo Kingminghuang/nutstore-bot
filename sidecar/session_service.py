@@ -8,10 +8,13 @@ from typing import Any, Callable
 
 from fastapi import BackgroundTasks, HTTPException, status
 
+from attachment_store import AttachmentStore
 from repositories import (
+    AttachmentsRepository,
     MessagesRepository,
     SessionsRepository,
     WorkspacesRepository,
+    create_id,
 )
 
 
@@ -26,6 +29,8 @@ class SessionService:
     workspaces: WorkspacesRepository
     sessions: SessionsRepository
     messages: MessagesRepository
+    attachments: AttachmentsRepository
+    attachment_store: AttachmentStore
     model_title_generator: ModelTitleGenerator | None = None
 
     def list_workspaces_payload(self) -> dict[str, list[dict[str, Any]]]:
@@ -157,10 +162,48 @@ class SessionService:
         )
         return serialize_session(updated)
 
-    def list_messages_payload(self, session_id: str) -> dict[str, list[dict[str, Any]]]:
+    def list_messages_payload(
+        self,
+        session_id: str,
+        *,
+        limit: int | None = None,
+        before_sequence: int | None = None,
+    ) -> dict[str, Any]:
         self._get_session_or_404(session_id)
-        messages = self.messages.list_by_session_id(session_id)
-        return {"messages": [serialize_message(message) for message in messages]}
+
+        if limit is None:
+            messages = self.messages.list_by_session_id(session_id)
+            return {
+                "messages": [serialize_message(message) for message in messages],
+                "pagination": {
+                    "hasMore": False,
+                    "nextBeforeSequence": None,
+                },
+            }
+
+        if limit <= 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Message limit must be greater than 0",
+            )
+        if before_sequence is not None and before_sequence <= 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="beforeSequence must be greater than 0",
+            )
+
+        page, has_more, next_before_sequence = self.messages.list_by_session_id_page(
+            session_id,
+            limit=limit,
+            before_sequence=before_sequence,
+        )
+        return {
+            "messages": [serialize_message(message) for message in page],
+            "pagination": {
+                "hasMore": has_more,
+                "nextBeforeSequence": next_before_sequence,
+            },
+        }
 
     def append_message(
         self,
@@ -241,6 +284,80 @@ class SessionService:
                 self.generate_model_title(session_id)
 
         return serialize_message(message)
+
+    def list_attachments_payload(
+        self, session_id: str
+    ) -> dict[str, list[dict[str, Any]]]:
+        session = self._get_session_or_404(session_id)
+        records = self.attachments.list_by_session_id(session.id, statuses=["uploaded"])
+        next_records = []
+        for record in records:
+            file_path = self.attachment_store.absolute_path(record.storage_path)
+            if not file_path.exists():
+                self.attachments.update_status(record.id, "missing")
+                continue
+            next_records.append(record)
+        return {
+            "attachments": [serialize_attachment(record) for record in next_records]
+        }
+
+    def create_attachment(
+        self,
+        session_id: str,
+        *,
+        file_name: str,
+        mime_type: str,
+        payload: bytes,
+    ) -> dict[str, Any]:
+        session = self._get_session_or_404(session_id)
+        workspace = self._get_workspace_or_404(session.workspace_id)
+        if len(payload) == 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Attachment file is empty",
+            )
+
+        normalized_name = _normalize_required_string(
+            file_name, detail="Attachment file name is required"
+        )
+        attachment_id = create_id("att")
+        relative_path = self.attachment_store.relative_path(
+            attachment_id, normalized_name
+        )
+        self.attachment_store.write_bytes(relative_path, payload)
+
+        record = self.attachments.create(
+            attachment_id=attachment_id,
+            session_id=session.id,
+            workspace_id=workspace.id,
+            file_name=normalized_name,
+            mime_type=_normalize_optional_string(mime_type)
+            or "application/octet-stream",
+            size_bytes=len(payload),
+            storage_path=relative_path,
+            status="uploaded",
+        )
+        return serialize_attachment(record)
+
+    def delete_attachment(self, session_id: str, attachment_id: str) -> None:
+        session = self._get_session_or_404(session_id)
+        try:
+            record = self.attachments.get_by_id(attachment_id)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Attachment not found",
+            ) from exc
+
+        if record.session_id != session.id:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Attachment not found",
+            )
+
+        self.attachments.update_status(attachment_id, "deleted")
+        self.attachment_store.delete_file(record.storage_path)
+        self.attachments.delete_by_id(attachment_id)
 
     def apply_first_user_message_title(
         self,
@@ -400,6 +517,20 @@ def serialize_message(message) -> dict[str, Any]:
         "sequenceNo": message.sequence_no,
         "createdAt": message.created_at,
         "metadataJson": message.metadata_json,
+    }
+
+
+def serialize_attachment(attachment) -> dict[str, Any]:
+    return {
+        "id": attachment.id,
+        "sessionId": attachment.session_id,
+        "workspaceId": attachment.workspace_id,
+        "fileName": attachment.file_name,
+        "mimeType": attachment.mime_type,
+        "sizeBytes": attachment.size_bytes,
+        "status": attachment.status,
+        "createdAt": attachment.created_at,
+        "updatedAt": attachment.updated_at,
     }
 
 
