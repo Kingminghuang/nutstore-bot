@@ -6,11 +6,6 @@ import {
   type SaveProviderPayload,
 } from "@/lib/provider-settings"
 
-type DiscoveryPayload = {
-  baseUrl: string
-  token: string
-}
-
 export type RunStepUsage = {
   inputTokens: number
   outputTokens: number
@@ -66,10 +61,6 @@ class SidecarClientError extends Error {
   }
 }
 
-const DEFAULT_DISCOVERY_URL = "/api/sidecar/discovery"
-
-let discoveryPromise: Promise<DiscoveryPayload> | null = null
-
 export async function getProviderCatalog(): Promise<ProviderCatalogResponse> {
   return sidecarFetch<ProviderCatalogResponse>("/provider-catalog")
 }
@@ -109,30 +100,11 @@ export async function getRunSteps(runId: string): Promise<RunStepsResponse> {
   return sidecarFetch<RunStepsResponse>(`/runs/${runId}/steps`)
 }
 
-export function resetSidecarDiscoveryCache(): void {
-  discoveryPromise = null
-}
-
 async function sidecarFetch<T>(path: string, init?: RequestInit): Promise<T> {
-  try {
-    return await performSidecarFetch<T>(path, init)
-  } catch (error) {
-    if (!shouldRetryDiscovery(error)) {
-      throw error
-    }
-
-    resetSidecarDiscoveryCache()
-    return performSidecarFetch<T>(path, init)
-  }
-}
-
-async function performSidecarFetch<T>(path: string, init?: RequestInit): Promise<T> {
-  const discovery = await getSidecarDiscovery()
-  const response = await fetch(`${discovery.baseUrl}${path}`, {
+  const response = await fetch(`/api/sidecar/proxy?path=${encodeURIComponent(path)}`, {
     ...init,
     headers: {
       "Content-Type": "application/json",
-      Authorization: `Bearer ${discovery.token}`,
       ...(init?.headers ?? {}),
     },
     cache: "no-store",
@@ -150,22 +122,6 @@ async function performSidecarFetch<T>(path: string, init?: RequestInit): Promise
   return (await response.json()) as T
 }
 
-async function getSidecarDiscovery(): Promise<DiscoveryPayload> {
-  if (!discoveryPromise) {
-    discoveryPromise = fetch(DEFAULT_DISCOVERY_URL, { cache: "no-store" }).then(
-      async (response) => {
-        if (!response.ok) {
-          const message = await readErrorMessage(response)
-          throw new Error(message)
-        }
-        return (await response.json()) as DiscoveryPayload
-      }
-    )
-  }
-
-  return discoveryPromise
-}
-
 async function readErrorMessage(response: Response): Promise<string> {
   try {
     const payload = (await response.json()) as { detail?: string }
@@ -177,16 +133,4 @@ async function readErrorMessage(response: Response): Promise<string> {
   }
 
   return `Request failed with status ${response.status}`
-}
-
-function shouldRetryDiscovery(error: unknown): boolean {
-  if (error instanceof SidecarClientError) {
-    return error.status === 401 || error.status === 403
-  }
-
-  if (error instanceof TypeError) {
-    return true
-  }
-
-  return false
 }
