@@ -23,6 +23,7 @@ from run_events import (
 )
 from local_paths import nsbot_home
 from provider_catalog import list_providers
+from redaction import redact_text
 from repositories import (
     AttachmentsRepository,
     ProviderConnectionsRepository,
@@ -1079,7 +1080,10 @@ def serialize_run(run) -> dict[str, Any]:
 def _normalize_required_string(value: Any, *, detail: str) -> str:
     text = str(value or "").strip()
     if text == "":
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=detail)
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=redact_text(detail),
+        )
     return text
 
 

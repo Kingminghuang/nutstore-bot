@@ -88,4 +88,45 @@ describe("SettingsModal provider config", () => {
     expect(screen.getByText("Connected")).toBeInTheDocument()
     expect(screen.getByText("Validation succeeded")).toBeInTheDocument()
   })
+
+  it("blocks submit when non-secret fields contain sensitive-looking content", async () => {
+    const onSaveProvider = vi.fn(async () => undefined)
+
+    render(
+      <SettingsModal
+        isOpen={true}
+        onClose={vi.fn()}
+        providerCatalog={providerCatalog}
+        providerConnections={[]}
+        onSaveProvider={onSaveProvider}
+        onRemoveProvider={vi.fn(async () => undefined)}
+      />
+    )
+
+    fireEvent.click(screen.getByRole("button", { name: /Configure custom provider/i }))
+
+    fireEvent.change(screen.getByPlaceholderText("provider-id"), {
+      target: { value: "minimax" },
+    })
+    fireEvent.change(screen.getByPlaceholderText("My AI Provider"), {
+      target: { value: 'MiniMax apiKey="sk-sensitive-123456"' },
+    })
+    fireEvent.change(screen.getByPlaceholderText("https://api.myprovider.com/v1"), {
+      target: { value: "https://api.minimaxi.com/v1" },
+    })
+    fireEvent.change(screen.getByPlaceholderText("model-id"), {
+      target: { value: "MiniMax-M2.7-highspeed" },
+    })
+
+    fireEvent.click(screen.getByRole("button", { name: "Save and continue" }))
+
+    await waitFor(() => {
+      expect(
+        screen.getByText(
+          "Sensitive data detected in non-secret fields. Move keys/tokens to API key or secret headers."
+        )
+      ).toBeInTheDocument()
+    })
+    expect(onSaveProvider).not.toHaveBeenCalled()
+  })
 })

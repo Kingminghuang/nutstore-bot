@@ -9,6 +9,7 @@ from typing import Any, Callable
 from fastapi import BackgroundTasks, HTTPException, status
 
 from attachment_store import AttachmentStore
+from redaction import redact_text
 from repositories import (
     AttachmentsRepository,
     MessagesRepository,
@@ -602,7 +603,10 @@ def _title_words(text: str) -> list[str]:
 def _normalize_required_string(value: Any, *, detail: str) -> str:
     normalized = _normalize_optional_string(value)
     if normalized is None:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=detail)
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=redact_text(detail),
+        )
     return normalized
 
 

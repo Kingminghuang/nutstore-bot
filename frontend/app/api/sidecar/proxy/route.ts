@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
 
 import { proxySidecarRequest } from "@/lib/sidecar-server"
+import { redactSensitive } from "@/lib/redaction"
 
 export async function GET(request: NextRequest) {
   return handleProxyRequest(request)
@@ -42,6 +43,17 @@ async function handleProxyRequest(request: NextRequest) {
     headers,
     body,
   })
+
+  const contentTypeHeader = response.headers.get("content-type")?.toLowerCase() ?? ""
+  if (response.status >= 400 && contentTypeHeader.includes("application/json")) {
+    const payload = await response.json().catch(() => null)
+    if (payload && typeof payload === "object") {
+      return NextResponse.json(redactSensitive(payload), {
+        status: response.status,
+        headers: response.headers,
+      })
+    }
+  }
 
   return new NextResponse(response.body, {
     status: response.status,

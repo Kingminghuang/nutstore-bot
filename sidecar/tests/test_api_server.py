@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import cast
 
 from fastapi.testclient import TestClient
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 
 from python_runtime.api_server import (
     ApiServerConfig,
@@ -153,6 +153,75 @@ class ApiServerTests(unittest.TestCase):
         self.assertIn("version", body)
         self.assertIn("providers", body)
         self.assertTrue(any(item["id"] == "custom" for item in body["providers"]))
+
+    def test_request_validation_error_redacts_raw_input(self) -> None:
+        response = self.client.post(
+            "/providers",
+            headers={
+                "Authorization": "Bearer test-token",
+                "Content-Type": "text/plain",
+            },
+            content='{"kind":"custom","apiKey":"sk-sensitive"}',
+        )
+        self.assertEqual(response.status_code, 422)
+        body = response.json()
+        self.assertIn("detail", body)
+        self.assertIsInstance(body["detail"], list)
+        self.assertGreater(len(body["detail"]), 0)
+        first_error = body["detail"][0]
+        self.assertNotIn("input", first_error)
+        self.assertEqual(first_error.get("loc"), ["body"])
+
+    def test_http_exception_detail_redacts_sensitive_values(self) -> None:
+        @self.app.get("/_redaction-http-exception")
+        def _redaction_http_exception() -> None:
+            raise HTTPException(
+                status_code=400,
+                detail='invalid payload: {"apiKey":"sk-sensitive"}',
+            )
+
+        response = self.client.get(
+            "/_redaction-http-exception",
+            headers={"Authorization": "Bearer test-token"},
+        )
+        self.assertEqual(response.status_code, 400)
+        detail = response.json().get("detail", "")
+        self.assertNotIn("sk-sensitive", detail)
+        self.assertIn("[REDACTED]", detail)
+
+    def test_provider_save_blocks_sensitive_data_in_non_secret_fields(self) -> None:
+        with self.assertLogs(
+            "provider_service", level=logging.WARNING
+        ) as captured_logs:
+            response = self.client.post(
+                "/providers",
+                headers={"Authorization": "Bearer test-token"},
+                json={
+                    "kind": "custom",
+                    "customSlug": "unsafe-provider",
+                    "displayName": 'unsafe apiKey="sk-sensitive-value"',
+                    "baseUrl": "https://llm.example.com/v1",
+                    "apiKey": "sk-safe-channel",
+                    "preferredModelId": "safe-model",
+                    "customModels": [
+                        {
+                            "modelId": "safe-model",
+                            "displayName": "Safe Model",
+                            "enabled": True,
+                        }
+                    ],
+                    "headers": [],
+                },
+            )
+
+        self.assertEqual(response.status_code, 400)
+        body = response.json()
+        self.assertEqual(
+            body.get("detail"),
+            "Sensitive data detected in non-secret persisted fields",
+        )
+        self.assertNotIn("sk-sensitive-value", "\n".join(captured_logs.output))
+        self.assertIn("[REDACTED]", "\n".join(captured_logs.output))
 
     def test_builtin_provider_persistence_redacts_api_key(self) -> None:
         response = self.client.post(

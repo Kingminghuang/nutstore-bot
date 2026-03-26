@@ -48,4 +48,74 @@ describe("sidecar-client proxy requests", () => {
       message: "Unauthorized",
     })
   })
+
+  it("formats validation error arrays into readable messages", async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          detail: [
+            {
+              type: "dict_type",
+              loc: ["body"],
+              msg: "Input should be a valid dictionary",
+              input: "{...}",
+            },
+          ],
+        }),
+        {
+          status: 422,
+          headers: { "content-type": "application/json" },
+        }
+      )
+    )
+
+    vi.stubGlobal("fetch", fetchMock)
+
+    const { createProvider } = await import("@/lib/sidecar-client")
+    await expect(
+      createProvider({
+        kind: "custom",
+        customSlug: "minimax",
+        displayName: "MiniMax",
+        baseUrl: "https://api.minimaxi.com/v1",
+        apiKey: "sk-test",
+        preferredModelId: "MiniMax-M2.7-highspeed",
+        customModels: [
+          {
+            modelId: "MiniMax-M2.7-highspeed",
+            displayName: "MiniMax-M2.7-highspeed",
+            enabled: true,
+          },
+        ],
+        headers: [],
+      })
+    ).rejects.toMatchObject({
+      name: "SidecarClientError",
+      status: 422,
+      message: "body: Input should be a valid dictionary",
+    })
+  })
+
+  it("redacts sensitive fields in detail string responses", async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          detail: 'invalid payload: {"apiKey":"sk-secret-123"}',
+        }),
+        {
+          status: 400,
+          headers: { "content-type": "application/json" },
+        }
+      )
+    )
+
+    vi.stubGlobal("fetch", fetchMock)
+
+    const { getProviders } = await import("@/lib/sidecar-client")
+    await expect(getProviders()).rejects.toMatchObject({
+      name: "SidecarClientError",
+      status: 400,
+      message: 'invalid payload: {"apiKey":"[REDACTED]"}',
+    })
+  })
 })

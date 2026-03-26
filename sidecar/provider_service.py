@@ -8,6 +8,8 @@ from fastapi import HTTPException, status
 
 from direct_model import DirectModel, DirectModelConfig, DirectModelError
 from provider_catalog import BUILTIN_PROVIDERS, catalog_version, list_providers
+from redaction import redact_sensitive
+from sensitive_write_guard import detect_sensitive_write_issues
 from repositories import (
     ProviderConnectionBundle,
     ProviderConnectionsRepository,
@@ -276,6 +278,32 @@ class ProviderService:
             else normalized["secret_ref"]
         )
         secret_payload = build_secret_payload(normalized, existing_secret)
+
+        sensitive_issues = detect_sensitive_write_issues(
+            {
+                "connection_data": normalized,
+                "models": normalized["models"],
+                "headers": normalized["headers"],
+            }
+        )
+        if sensitive_issues:
+            LOGGER.warning(
+                "Blocked provider persistence due to sensitive values in non-secret fields: provider_id=%s issues=%s payload=%s",
+                normalized["id"],
+                ", ".join(sensitive_issues),
+                redact_sensitive(
+                    {
+                        "display_name": normalized.get("display_name"),
+                        "base_url": normalized.get("base_url"),
+                        "models": normalized.get("models"),
+                        "headers": normalized.get("headers"),
+                    }
+                ),
+            )
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Sensitive data detected in non-secret persisted fields",
+            )
 
         bundle = self.repositories.save_bundle(
             connection_data={
@@ -546,8 +574,12 @@ def normalize_provider_payload(
         models = [
             {
                 "id": (
-                    _find_existing_model(existing, "catalog", model_id).id
-                    if _find_existing_model(existing, "catalog", model_id)
+                    existing_model.id
+                    if (
+                        existing_model := _find_existing_model(
+                            existing, "catalog", model_id
+                        )
+                    )
                     else None
                 ),
                 "source": "catalog",

@@ -30,12 +30,12 @@ export async function proxySidecarRequest(
   init?: RequestInit
 ): Promise<Response> {
   const discovery = await readSidecarDiscovery()
+  const headers = new Headers(init?.headers)
+  headers.set("Authorization", `Bearer ${discovery.token}`)
+
   return fetch(`${discovery.baseUrl}${routePath}`, {
     ...init,
-    headers: {
-      Authorization: `Bearer ${discovery.token}`,
-      ...(init?.headers ?? {}),
-    },
+    headers,
     cache: "no-store",
   })
 }

@@ -18,6 +18,7 @@ from fastapi import (
     Request,
     UploadFile,
 )
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from attachment_store import AttachmentStore
@@ -30,6 +31,7 @@ from auth import (
 )
 from discovery import ServiceDiscovery, nsbot_home, write_service_discovery
 from provider_service import ProviderService
+from redaction import install_log_redaction_filter, redact_sensitive
 from run_cancellation import RunCancellationRegistry
 from run_event_store import RunEventStore
 from run_service import RunRequestFailed, RunService
@@ -106,6 +108,47 @@ def create_app(config: ApiServerConfig | None = None) -> FastAPI:
     app.state.provider_service = provider_service
     app.state.session_service = session_service
     app.state.run_service = run_service
+    install_log_redaction_filter()
+
+    @app.exception_handler(RequestValidationError)
+    async def request_validation_exception_handler(
+        request: Request, exc: RequestValidationError
+    ) -> JSONResponse:
+        sanitized_errors: list[dict[str, object]] = []
+        for error in exc.errors():
+            sanitized: dict[str, object] = {
+                "type": error.get("type"),
+                "loc": error.get("loc"),
+                "msg": error.get("msg"),
+            }
+            ctx = error.get("ctx")
+            if isinstance(ctx, dict) and ctx:
+                sanitized["ctx"] = ctx
+            sanitized_errors.append(sanitized)
+
+        return JSONResponse(
+            status_code=422,
+            content=redact_sensitive({"detail": sanitized_errors}),
+        )
+
+    @app.exception_handler(HTTPException)
+    async def http_exception_handler(
+        request: Request, exc: HTTPException
+    ) -> JSONResponse:
+        detail = exc.detail
+        payload = detail if isinstance(detail, dict) else {"detail": detail}
+        return JSONResponse(
+            status_code=exc.status_code, content=redact_sensitive(payload)
+        )
+
+    @app.exception_handler(Exception)
+    async def unhandled_exception_handler(
+        request: Request, exc: Exception
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=500,
+            content=redact_sensitive({"detail": str(exc)}),
+        )
 
     @app.middleware("http")
     async def localhost_auth_middleware(request: Request, call_next):  # type: ignore[override]
@@ -230,7 +273,10 @@ def create_app(config: ApiServerConfig | None = None) -> FastAPI:
         try:
             return service.create_run(payload, background_tasks=background_tasks)
         except RunRequestFailed as exc:
-            return JSONResponse(status_code=exc.status_code, content=exc.payload)
+            return JSONResponse(
+                status_code=exc.status_code,
+                content=redact_sensitive(exc.payload),
+            )
 
     @app.get("/runs/{run_id}/events")
     def get_run_events(

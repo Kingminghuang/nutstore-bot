@@ -5,6 +5,7 @@ import {
   type ProviderConnectionDetail,
   type SaveProviderPayload,
 } from "@/lib/provider-settings"
+import { redactSensitive, redactText } from "@/lib/redaction"
 
 export type RunStepUsage = {
   inputTokens: number
@@ -124,9 +125,28 @@ async function sidecarFetch<T>(path: string, init?: RequestInit): Promise<T> {
 
 async function readErrorMessage(response: Response): Promise<string> {
   try {
-    const payload = (await response.json()) as { detail?: string }
-    if (payload.detail) {
-      return payload.detail
+    const payload = redactSensitive((await response.json()) as {
+      detail?: string | Array<{ loc?: unknown; msg?: unknown; type?: unknown }>
+    }) as {
+      detail?: string | Array<{ loc?: unknown; msg?: unknown; type?: unknown }>
+    }
+    if (typeof payload.detail === "string" && payload.detail) {
+      return redactText(payload.detail)
+    }
+    if (Array.isArray(payload.detail) && payload.detail.length > 0) {
+      const detailMessage = payload.detail
+        .map((item) => {
+          const location = Array.isArray(item.loc)
+            ? item.loc.map((part) => String(part)).join(".")
+            : "body"
+          const message = typeof item.msg === "string" && item.msg ? item.msg : "Validation failed"
+          return `${location}: ${message}`
+        })
+        .join("; ")
+
+      if (detailMessage) {
+        return redactText(detailMessage)
+      }
     }
   } catch {
     // Ignore non-JSON errors.

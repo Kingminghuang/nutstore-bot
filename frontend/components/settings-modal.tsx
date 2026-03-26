@@ -17,6 +17,7 @@ import {
   type ProviderModelDraft,
   type SaveProviderPayload,
 } from "@/lib/provider-settings"
+import { detectSensitiveWriteIssues } from "@/lib/sensitive-write-guard"
 import { cn } from "@/lib/utils"
 
 type SettingsPage = "providers" | "custom-provider" | "provider-config" | "connect-provider"
@@ -422,6 +423,31 @@ export function SettingsModal({
     return nextErrors
   }
 
+  const getSensitiveFieldError = (normalizedConfig: ProviderConnectionForm): string | null => {
+    const issues = detectSensitiveWriteIssues({
+      providerId: normalizedConfig.providerId,
+      displayName: normalizedConfig.displayName,
+      baseUrl: normalizedConfig.baseUrl,
+      preferredModelId: normalizedConfig.preferredModelId,
+      models: normalizedConfig.models.map((model) => ({
+        modelId: model.modelId,
+        displayName: model.displayName,
+      })),
+      headers: normalizedConfig.headers
+        .filter((header) => header.valueKind === "plain")
+        .map((header) => ({
+          name: header.name,
+          plainValue: header.plainValue,
+        })),
+    })
+
+    if (issues.length === 0) {
+      return null
+    }
+
+    return "Sensitive data detected in non-secret fields. Move keys/tokens to API key or secret headers."
+  }
+
   const getSubmitLabels = () => {
     if (currentPage === "custom-provider") {
       return { label: "Save and continue", loadingLabel: "Saving..." }
@@ -489,10 +515,17 @@ export function SettingsModal({
 
   const handleSubmit = async () => {
     const nextErrors = validateCurrentPage()
+    const normalizedConfig = normalizeProviderConfig(config, selectedProviderData)
+    const sensitiveFieldError = getSensitiveFieldError(normalizedConfig)
 
     if (Object.keys(nextErrors).length > 0) {
       setFieldErrors(nextErrors)
       setSubmitError("Fix the highlighted fields and try again.")
+      return
+    }
+
+    if (sensitiveFieldError) {
+      setSubmitError(sensitiveFieldError)
       return
     }
 
@@ -514,7 +547,6 @@ export function SettingsModal({
         return
       }
 
-      const normalizedConfig = normalizeProviderConfig(config, selectedProviderData)
       const payload = buildSavePayload(normalizedConfig)
       await onSaveProvider(payload, editingProviderId ?? undefined)
       handleModalClose()
@@ -914,6 +946,7 @@ function ProviderIdField({
         type="text"
         placeholder="provider-id"
         value={value}
+        autoComplete="off"
         onChange={(e) => onChange(e.target.value)}
         aria-invalid={Boolean(error)}
         disabled={disabled}
@@ -950,6 +983,7 @@ function TextField({
         type="text"
         placeholder={placeholder}
         value={value}
+        autoComplete="off"
         onChange={(e) => onChange(e.target.value)}
         aria-invalid={Boolean(error)}
         className={inputClassName(Boolean(error))}
@@ -982,6 +1016,7 @@ function PasswordField({
         type="password"
         placeholder={placeholder}
         value={value}
+        autoComplete="new-password"
         onChange={(e) => onChange(e.target.value)}
         aria-invalid={Boolean(error)}
         className={inputClassName(Boolean(error))}
@@ -1020,6 +1055,7 @@ function ModelsEditor({
                 type="text"
                 placeholder="model-id"
                 value={model.modelId}
+                autoComplete="off"
                 onChange={(e) => onUpdateModel(model.id, "modelId", e.target.value)}
                 className={inputClassName(Boolean(fieldError))}
               />
@@ -1029,6 +1065,7 @@ function ModelsEditor({
                 type="text"
                 placeholder="Display name"
                 value={model.displayName}
+                autoComplete="off"
                 onChange={(e) => onUpdateModel(model.id, "displayName", e.target.value)}
                 className={inputClassName(false)}
               />
@@ -1095,6 +1132,7 @@ function HeadersEditor({
                   type="text"
                   placeholder="Header-Name"
                   value={header.name}
+                  autoComplete="off"
                   onChange={(e) => onUpdateHeader(header.id, "name", e.target.value)}
                   className={inputClassName(false)}
                 />
@@ -1119,6 +1157,7 @@ function HeadersEditor({
                 type="text"
                 placeholder="value"
                 value={header.plainValue}
+                autoComplete="off"
                 onChange={(e) => onUpdateHeader(header.id, "plainValue", e.target.value)}
                 className={inputClassName(false)}
               />
@@ -1128,6 +1167,7 @@ function HeadersEditor({
                   type="password"
                   placeholder={header.hasStoredSecret ? "Leave blank to keep existing secret" : "secret value"}
                   value={header.secretValueInput}
+                  autoComplete="new-password"
                   onChange={(e) => onUpdateHeader(header.id, "secretValueInput", e.target.value)}
                   className={inputClassName(false)}
                 />
