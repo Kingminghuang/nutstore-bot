@@ -97,11 +97,8 @@ def parse_request(raw: str) -> RuntimeRequest:
                 or ""
             ).strip()
             or None,
-            direct_request_timeout_ms=int(
-                _pick(
-                    config_data, "direct_request_timeout_ms", "directRequestTimeoutMs"
-                )
-                or 60_000
+            request_timeout_ms=int(
+                _pick(config_data, "request_timeout_ms", "requestTimeoutMs") or 60_000
             ),
             ns_bot_home=str(
                 _pick(config_data, "ns_bot_home", "nsBotHome") or nsbot_home()

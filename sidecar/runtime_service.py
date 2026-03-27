@@ -50,7 +50,7 @@ class RuntimeWorkerConfig:
     api_key: str | None = None
     model: str | None = None
     direct_reasoning_effort: str | None = None
-    direct_request_timeout_ms: int = 60_000
+    request_timeout_ms: int = 60_000
     fd_executable: str | None = None
     rg_executable: str | None = None
     tool_os_type: str | None = None
@@ -126,7 +126,7 @@ class CodeAgentRuntimeService:
                 model_id=model,
                 reasoning_effort=self.config.direct_reasoning_effort,
                 timeout_seconds=max(
-                    1.0, float(self.config.direct_request_timeout_ms) / 1000.0
+                    1.0, float(self.config.request_timeout_ms) / 1000.0
                 ),
             )
         consolidation_provider = None

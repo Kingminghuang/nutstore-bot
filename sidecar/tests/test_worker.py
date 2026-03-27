@@ -82,7 +82,7 @@ class WorkerRequestParsingTests(unittest.TestCase):
                     "baseUrl": "https://api.openai.com/v1",
                     "apiKey": "sk-test",
                     "model": "gpt-4.1",
-                    "directRequestTimeoutMs": 45000,
+                    "requestTimeoutMs": 45000,
                     "nsBotHome": "/tmp/.nsbot",
                     "workspacePathDefault": "/tmp",
                     "maxSteps": 7,
@@ -95,7 +95,7 @@ class WorkerRequestParsingTests(unittest.TestCase):
         self.assertEqual(req.config.base_url, "https://api.openai.com/v1")
         self.assertEqual(req.config.api_key, "sk-test")
         self.assertEqual(req.config.model, "gpt-4.1")
-        self.assertEqual(req.config.direct_request_timeout_ms, 45000)
+        self.assertEqual(req.config.request_timeout_ms, 45000)
 
     def test_parse_request_uses_platform_nsbot_home_default(self) -> None:
         raw = json.dumps(
