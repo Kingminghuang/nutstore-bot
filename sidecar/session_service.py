@@ -12,6 +12,7 @@ from attachment_store import AttachmentStore
 from redaction import redact_text
 from repositories import (
     AttachmentsRepository,
+    DraftAttachmentsRepository,
     MessagesRepository,
     SessionsRepository,
     WorkspacesRepository,
@@ -31,6 +32,7 @@ class SessionService:
     sessions: SessionsRepository
     messages: MessagesRepository
     attachments: AttachmentsRepository
+    draft_attachments: DraftAttachmentsRepository
     attachment_store: AttachmentStore
     model_title_generator: ModelTitleGenerator | None = None
 
@@ -140,6 +142,10 @@ class SessionService:
             active_model_id=model_id,
         )
         return serialize_session(session)
+
+    def delete_session(self, session_id: str) -> None:
+        session = self._get_session_or_404(session_id)
+        self.sessions.delete_by_id(session.id)
 
     def update_session(
         self, session_id: str, payload: dict[str, Any]
@@ -340,6 +346,78 @@ class SessionService:
         )
         return serialize_attachment(record)
 
+    def list_draft_attachments_payload(
+        self, workspace_id: str
+    ) -> dict[str, list[dict[str, Any]]]:
+        workspace = self._get_workspace_or_404(workspace_id)
+        records = self.draft_attachments.list_by_workspace_id(workspace.id)
+        next_records = []
+        for record in records:
+            file_path = self.attachment_store.absolute_path(record.storage_path)
+            if not file_path.exists():
+                self.draft_attachments.delete_by_id(record.id)
+                continue
+            next_records.append(record)
+        return {
+            "draftAttachments": [
+                serialize_draft_attachment(record) for record in next_records
+            ]
+        }
+
+    def create_draft_attachment(
+        self,
+        workspace_id: str,
+        *,
+        file_name: str,
+        mime_type: str,
+        payload: bytes,
+    ) -> dict[str, Any]:
+        workspace = self._get_workspace_or_404(workspace_id)
+        if len(payload) == 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Attachment file is empty",
+            )
+
+        normalized_name = _normalize_required_string(
+            file_name, detail="Attachment file name is required"
+        )
+        draft_attachment_id = create_id("draftatt")
+        relative_path = self.attachment_store.draft_relative_path(
+            draft_attachment_id, normalized_name
+        )
+        self.attachment_store.write_bytes(relative_path, payload)
+
+        record = self.draft_attachments.create(
+            draft_attachment_id=draft_attachment_id,
+            workspace_id=workspace.id,
+            file_name=normalized_name,
+            mime_type=_normalize_optional_string(mime_type)
+            or "application/octet-stream",
+            size_bytes=len(payload),
+            storage_path=relative_path,
+        )
+        return serialize_draft_attachment(record)
+
+    def delete_draft_attachment(self, workspace_id: str, draft_attachment_id: str) -> None:
+        workspace = self._get_workspace_or_404(workspace_id)
+        try:
+            record = self.draft_attachments.get_by_id(draft_attachment_id)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Draft attachment not found",
+            ) from exc
+
+        if record.workspace_id != workspace.id:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Draft attachment not found",
+            )
+
+        self.attachment_store.delete_file(record.storage_path)
+        self.draft_attachments.delete_by_id(draft_attachment_id)
+
     def delete_attachment(self, session_id: str, attachment_id: str) -> None:
         session = self._get_session_or_404(session_id)
         try:
@@ -532,6 +610,18 @@ def serialize_attachment(attachment) -> dict[str, Any]:
         "status": attachment.status,
         "createdAt": attachment.created_at,
         "updatedAt": attachment.updated_at,
+    }
+
+
+def serialize_draft_attachment(draft_attachment) -> dict[str, Any]:
+    return {
+        "id": draft_attachment.id,
+        "workspaceId": draft_attachment.workspace_id,
+        "fileName": draft_attachment.file_name,
+        "mimeType": draft_attachment.mime_type,
+        "sizeBytes": draft_attachment.size_bytes,
+        "createdAt": draft_attachment.created_at,
+        "updatedAt": draft_attachment.updated_at,
     }
 
 

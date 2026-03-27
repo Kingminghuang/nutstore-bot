@@ -215,6 +215,25 @@ MIGRATIONS: tuple[Migration, ...] = (
         ON attachments(session_id, status, created_at);
         """,
     ),
+    Migration(
+        version=5,
+        sql="""
+        CREATE TABLE IF NOT EXISTS draft_attachments (
+          id TEXT PRIMARY KEY,
+          workspace_id TEXT NOT NULL,
+          file_name TEXT NOT NULL,
+          mime_type TEXT NOT NULL,
+          size_bytes INTEGER NOT NULL,
+          storage_path TEXT NOT NULL UNIQUE,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_draft_attachments_workspace_created
+        ON draft_attachments(workspace_id, created_at, id);
+        """,
+    ),
 )
 
 

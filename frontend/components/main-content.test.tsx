@@ -72,6 +72,7 @@ function renderMainContent(selection: SelectedModelRef | null, runStepsByRunId: 
           nextBeforeSequence: null,
           isLoadingHistory: false,
         }}
+      isDraftSession={false}
       runStepsByRunId={runStepsByRunId}
       onSendMessage={vi.fn()}
       modelOptionGroups={groups}
@@ -141,6 +142,7 @@ describe("MainContent model selector", () => {
             nextBeforeSequence: null,
             isLoadingHistory: false,
           }}
+        isDraftSession={false}
         runStepsByRunId={{}}
         onSendMessage={vi.fn()}
         modelOptionGroups={[]}
@@ -188,6 +190,7 @@ describe("MainContent model selector", () => {
           nextBeforeSequence: null,
           isLoadingHistory: false,
         }}
+        isDraftSession={false}
         runStepsByRunId={{}}
         onSendMessage={vi.fn()}
         modelOptionGroups={[]}

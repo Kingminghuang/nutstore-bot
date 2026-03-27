@@ -16,6 +16,10 @@ const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => 
   const url = String(input)
   const decodedPathMatch = url.match(/[?&]path=([^&]+)/)
   const decodedPath = decodedPathMatch ? decodeURIComponent(decodedPathMatch[1]) : ""
+  const body =
+    typeof init?.body === "string"
+      ? (JSON.parse(init.body) as Record<string, unknown>)
+      : null
   if (url.includes("path=%2Fworkspaces%2Fws_1%2Fsessions") && init?.method !== "POST") {
     workspaceSessionsFetchCount += 1
     const sessions = [
@@ -36,9 +40,10 @@ const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => 
         activeConnectionId: "prov_openai",
         activeModelId: "gpt-5.4-mini",
       },
-    ]
+    ].filter((session) => !deletedSessionIds.has(session.id))
     if (includeEmptySession) {
-      sessions.unshift({
+      if (!deletedSessionIds.has("sess_2")) {
+        sessions.unshift({
         id: "sess_2",
         workspaceId: "ws_1",
         title: "Fresh session",
@@ -50,31 +55,12 @@ const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => 
         lastMessagePreview: null,
         activeConnectionId: "prov_openai",
         activeModelId: "gpt-5.4-mini",
-      })
+        })
+      }
     }
     return new Response(
       JSON.stringify({
         sessions,
-      }),
-      { status: 200 }
-    )
-  }
-
-  if (url.includes("path=%2Fworkspaces%2Fws_1%2Fsessions") && init?.method === "POST") {
-    includeEmptySession = true
-    return new Response(
-      JSON.stringify({
-        id: "sess_2",
-        workspaceId: "ws_1",
-        title: "Fresh session",
-        titleSource: "placeholder",
-        createdAt: "2026-03-24T12:30:00Z",
-        updatedAt: "2026-03-24T12:30:00Z",
-        lastMessageAt: null,
-        messageCount: 0,
-        lastMessagePreview: null,
-        activeConnectionId: "prov_openai",
-        activeModelId: "gpt-5.4-mini",
       }),
       { status: 200 }
     )
@@ -99,6 +85,9 @@ const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => 
   }
 
   if (decodedPath.startsWith("/sessions/sess_1/messages")) {
+    if (deletedSessionIds.has("sess_1")) {
+      return new Response(JSON.stringify({ detail: "Session not found" }), { status: 404 })
+    }
     if (usePaginatedHistory && decodedPath.includes("beforeSequence=2")) {
       return new Response(
         JSON.stringify({
@@ -234,6 +223,9 @@ const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => 
   }
 
   if (decodedPath.startsWith("/sessions/sess_2/messages")) {
+    if (deletedSessionIds.has("sess_2")) {
+      return new Response(JSON.stringify({ detail: "Session not found" }), { status: 404 })
+    }
     emptySessionMessagesFetchCount += 1
     if (failFirstEmptySessionMessagesRequest && emptySessionMessagesFetchCount === 1) {
       return new Response(JSON.stringify({ detail: "Temporary fetch failure" }), { status: 500 })
@@ -250,7 +242,36 @@ const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => 
     )
   }
 
+  if (decodedPath.startsWith("/workspaces/ws_1/draft-attachments")) {
+    if (init?.method === "POST") {
+      return new Response(
+        JSON.stringify({
+          id: "draftatt_1",
+          workspaceId: "ws_1",
+          fileName: "draft-note.txt",
+          mimeType: "text/plain",
+          sizeBytes: 12,
+          createdAt: "2026-03-24T12:31:00Z",
+          updatedAt: "2026-03-24T12:31:00Z",
+        }),
+        { status: 200 }
+      )
+    }
+    if (init?.method === "DELETE") {
+      return new Response(null, { status: 204 })
+    }
+    return new Response(
+      JSON.stringify({
+        draftAttachments: [],
+      }),
+      { status: 200 }
+    )
+  }
+
   if (decodedPath.startsWith("/sessions/sess_1/attachments")) {
+    if (deletedSessionIds.has("sess_1")) {
+      return new Response(JSON.stringify({ detail: "Session not found" }), { status: 404 })
+    }
     if (init?.method === "DELETE") {
       return new Response(null, { status: 204 })
     }
@@ -263,6 +284,9 @@ const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => 
   }
 
   if (decodedPath.startsWith("/sessions/sess_2/attachments")) {
+    if (deletedSessionIds.has("sess_2")) {
+      return new Response(JSON.stringify({ detail: "Session not found" }), { status: 404 })
+    }
     if (init?.method === "DELETE") {
       return new Response(null, { status: 204 })
     }
@@ -275,6 +299,11 @@ const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => 
   }
 
   if (url.includes("/api/sidecar/proxy?path=%2Fruns") && init?.method === "POST") {
+    const requestSessionId = typeof body?.sessionId === "string" ? String(body.sessionId) : null
+    const responseSessionId = requestSessionId ?? "sess_2"
+    if (requestSessionId == null) {
+      includeEmptySession = true
+    }
     if (forceRunFailure) {
       return new Response(JSON.stringify({
         detail: runFailureReason,
@@ -286,10 +315,10 @@ const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => 
           errorMessage: runFailureReason,
         },
         session: {
-          id: "sess_1",
+          id: responseSessionId,
           workspaceId: "ws_1",
-          title: "Backend driven title",
-          titleSource: "model",
+          title: requestSessionId ? "Backend driven title" : "Fresh session",
+          titleSource: requestSessionId ? "model" : "heuristic",
           createdAt: "2026-03-24T12:00:00Z",
           updatedAt: "2026-03-24T12:12:00Z",
           lastMessageAt: "2026-03-24T12:12:00Z",
@@ -301,7 +330,7 @@ const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => 
         messages: [
           {
             id: "msg_1",
-            sessionId: "sess_1",
+            sessionId: responseSessionId,
             runId: "run_1",
             role: "user",
             content: "Please wire the sidecar",
@@ -312,7 +341,7 @@ const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => 
           },
           {
             id: "msg_2",
-            sessionId: "sess_1",
+            sessionId: responseSessionId,
             runId: "run_1",
             role: "system",
             content: `Run failed: ${runFailureReason}`,
@@ -336,10 +365,10 @@ const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => 
           finalAnswer: useStreamingRun ? null : "Run completed through sidecar.",
         },
         session: {
-          id: "sess_1",
+          id: responseSessionId,
           workspaceId: "ws_1",
-          title: "Backend driven title",
-          titleSource: useStreamingRun ? "heuristic" : "model",
+          title: requestSessionId ? "Backend driven title" : "Fresh session",
+          titleSource: useStreamingRun ? "heuristic" : requestSessionId ? "model" : "heuristic",
           createdAt: "2026-03-24T12:00:00Z",
           updatedAt: "2026-03-24T12:12:00Z",
           lastMessageAt: "2026-03-24T12:12:00Z",
@@ -354,7 +383,7 @@ const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => 
           ? [
               {
                 id: "msg_stream_user",
-                sessionId: "sess_1",
+                sessionId: responseSessionId,
                 runId: "run_1",
                 role: "user",
                 content: "Run through sidecar",
@@ -367,7 +396,7 @@ const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => 
           : [
               {
                 id: "msg_1",
-                sessionId: "sess_1",
+                sessionId: responseSessionId,
                 runId: null,
                 role: "user",
                 content: "Please wire the sidecar",
@@ -378,7 +407,7 @@ const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => 
               },
               {
                 id: "msg_2",
-                sessionId: "sess_1",
+                sessionId: responseSessionId,
                 runId: "run_1",
                 role: "assistant",
                 content: "Run completed through sidecar.",
@@ -391,6 +420,16 @@ const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => 
       }),
       { status: 200 }
     )
+  }
+
+  if (decodedPath === "/sessions/sess_1" && init?.method === "DELETE") {
+    deletedSessionIds.add("sess_1")
+    return new Response(null, { status: 204 })
+  }
+
+  if (decodedPath === "/sessions/sess_2" && init?.method === "DELETE") {
+    deletedSessionIds.add("sess_2")
+    return new Response(null, { status: 204 })
   }
 
   if (url.includes("path=%2Fworkspaces%2Fws_1") && init?.method === "PATCH") {
@@ -554,6 +593,7 @@ let usePaginatedHistory = false
 let includeEmptySession = false
 let emptySessionMessagesFetchCount = 0
 let failFirstEmptySessionMessagesRequest = false
+let deletedSessionIds = new Set<string>()
 
 global.fetch = fetchMock as typeof fetch
 
@@ -568,6 +608,7 @@ describe("Home page", () => {
     includeEmptySession = false
     emptySessionMessagesFetchCount = 0
     failFirstEmptySessionMessagesRequest = false
+    deletedSessionIds = new Set<string>()
     MockEventSource.instances = []
     fetchMock.mockClear()
     sidecarClientMocks.getRunSteps.mockReset()
@@ -1067,7 +1108,7 @@ describe("Home page", () => {
     })
   })
 
-  it("hydrates a newly created empty session only once", async () => {
+  it("does not persist a session when clicking New session before first message", async () => {
     render(<Home />)
 
     await waitFor(() => {
@@ -1077,16 +1118,16 @@ describe("Home page", () => {
     fireEvent.click(screen.getByRole("button", { name: "New session" }))
 
     await waitFor(() => {
-      expect(screen.getAllByText("Fresh session").length).toBeGreaterThan(0)
-      expect(emptySessionMessagesFetchCount).toBe(1)
+      const createSessionCalls = fetchMock.mock.calls.filter(
+        ([input, init]) =>
+          String(input).includes("path=%2Fworkspaces%2Fws_1%2Fsessions") &&
+          init?.method === "POST"
+      )
+      expect(createSessionCalls).toHaveLength(0)
     })
-
-    await new Promise((resolve) => setTimeout(resolve, 30))
-    expect(emptySessionMessagesFetchCount).toBe(1)
   })
 
-  it("retries empty-session hydration after switching away and back", async () => {
-    failFirstEmptySessionMessagesRequest = true
+  it("loads workspace draft attachments after entering draft session mode", async () => {
     render(<Home />)
 
     await waitFor(() => {
@@ -1096,15 +1137,48 @@ describe("Home page", () => {
     fireEvent.click(screen.getByRole("button", { name: "New session" }))
 
     await waitFor(() => {
-      expect(screen.getAllByText("Fresh session").length).toBeGreaterThan(0)
-      expect(emptySessionMessagesFetchCount).toBe(1)
+      const draftAttachmentCalls = fetchMock.mock.calls.filter(
+        ([input, init]) =>
+          String(input).includes("path=%2Fworkspaces%2Fws_1%2Fdraft-attachments") &&
+          (init?.method == null || init?.method === "GET")
+      )
+      expect(draftAttachmentCalls.length).toBeGreaterThan(0)
     })
 
-    fireEvent.click(screen.getByText("Backend driven title"))
-    fireEvent.click(screen.getByText("Fresh session"))
+    expect(screen.getByPlaceholderText("Ask for follow-up changes")).toBeInTheDocument()
+  })
+
+  it("deletes a non-active session without changing the active one", async () => {
+    includeEmptySession = true
+    render(<Home />)
 
     await waitFor(() => {
-      expect(emptySessionMessagesFetchCount).toBe(2)
+      expect(screen.getAllByText("Fresh session").length).toBeGreaterThan(0)
+      expect(screen.getAllByText("Backend driven title").length).toBeGreaterThan(0)
+    })
+
+    fireEvent.click(screen.getByLabelText("Remove session Backend driven title"))
+    fireEvent.click(screen.getByRole("button", { name: "Remove session" }))
+
+    await waitFor(() => {
+      expect(screen.queryByText("Backend driven title")).not.toBeInTheDocument()
+      expect(screen.getAllByText("Fresh session").length).toBeGreaterThan(0)
+    })
+  })
+
+  it("deletes the active session and falls back to draft mode when none remain", async () => {
+    render(<Home />)
+
+    await waitFor(() => {
+      expect(screen.getAllByText("Backend driven title").length).toBeGreaterThan(0)
+    })
+
+    fireEvent.click(screen.getByLabelText("Remove session Backend driven title"))
+    fireEvent.click(screen.getByRole("button", { name: "Remove session" }))
+
+    await waitFor(() => {
+      expect(screen.queryByText("Backend driven title")).not.toBeInTheDocument()
+      expect(screen.getByPlaceholderText("Ask for follow-up changes")).toBeInTheDocument()
     })
   })
 

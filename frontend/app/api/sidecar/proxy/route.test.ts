@@ -68,4 +68,28 @@ describe("sidecar proxy route", () => {
     const init = proxyNSBotRequestMock.mock.calls[0][1] as RequestInit
     expect(init.body).toBeInstanceOf(ArrayBuffer)
   })
+
+  it("forwards DELETE requests without a request body", async () => {
+    proxyNSBotRequestMock.mockResolvedValueOnce(new Response(null, { status: 204 }))
+
+    const { DELETE } = await import("@/app/api/sidecar/proxy/route")
+    const request = new NextRequest(
+      "http://localhost/api/sidecar/proxy?path=%2Fsessions%2Fsess_1",
+      {
+        method: "DELETE",
+      }
+    )
+
+    const response = await DELETE(request)
+
+    expect(proxyNSBotRequestMock).toHaveBeenCalledWith(
+      "/sessions/sess_1",
+      expect.objectContaining({
+        method: "DELETE",
+        body: undefined,
+        headers: expect.any(Headers),
+      })
+    )
+    expect(response.status).toBe(204)
+  })
 })

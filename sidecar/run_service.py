@@ -9,6 +9,7 @@ from typing import Any, Callable, Literal, cast
 
 from fastapi import BackgroundTasks, HTTPException, status
 
+from attachment_store import AttachmentStore
 from run_cancellation import RunCancellationRegistry
 from run_event_store import RunEventStore
 from run_events import (
@@ -26,11 +27,13 @@ from provider_catalog import list_providers
 from redaction import redact_text
 from repositories import (
     AttachmentsRepository,
+    DraftAttachmentsRepository,
     ProviderConnectionsRepository,
     RunStepsRepository,
     RunsRepository,
     SessionsRepository,
     WorkspacesRepository,
+    create_id,
     now_iso_timestamp,
 )
 from runtime_service import (
@@ -70,9 +73,11 @@ class RunService:
     sessions: SessionsRepository
     providers: ProviderConnectionsRepository
     attachments: AttachmentsRepository
+    draft_attachments: DraftAttachmentsRepository
     runs: RunsRepository
     run_steps: RunStepsRepository
     session_service: SessionService
+    attachment_store: AttachmentStore
     secret_store: LocalSecretStore
     event_store: RunEventStore | None = None
     cancellation_registry: RunCancellationRegistry | None = None
@@ -83,9 +88,8 @@ class RunService:
     def create_run(
         self, payload: dict[str, Any], background_tasks: BackgroundTasks | None = None
     ) -> dict[str, Any]:
-        session_id = _normalize_required_string(
-            payload.get("sessionId", payload.get("session_id")),
-            detail="Session id is required",
+        session_id = _normalize_optional_string(
+            payload.get("sessionId", payload.get("session_id"))
         )
         workspace_id = _normalize_required_string(
             payload.get("workspaceId", payload.get("workspace_id")),
@@ -109,17 +113,82 @@ class RunService:
         attachment_ids = _normalize_attachment_ids(
             payload.get("attachmentIds", payload.get("attachment_ids"))
         )
-
-        workspace = self._get_workspace_or_404(workspace_id)
-        session = self._get_session_or_404(session_id)
-        if session.workspace_id != workspace.id:
+        draft_attachment_ids = _normalize_draft_attachment_ids(
+            payload.get("draftAttachmentIds", payload.get("draft_attachment_ids"))
+        )
+        if attachment_ids and draft_attachment_ids:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Session does not belong to workspace",
+                detail="attachmentIds and draftAttachmentIds cannot be used together",
             )
+
+        workspace = self._get_workspace_or_404(workspace_id)
+        created_session_id: str | None = None
+        promoted_drafts: list[tuple[str, str]] = []
+
+        if session_id is None:
+            session = self.sessions.create(
+                workspace_id=workspace.id,
+                active_connection_id=connection_id,
+                active_model_id=model_id,
+            )
+            session_id = session.id
+            created_session_id = session.id
+        else:
+            session = self._get_session_or_404(session_id)
+            if session.workspace_id != workspace.id:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Session does not belong to workspace",
+                )
+
+        if draft_attachment_ids:
+            draft_attachments = self.draft_attachments.list_by_ids(draft_attachment_ids)
+            if len(draft_attachments) != len(set(draft_attachment_ids)):
+                self._cleanup_created_session(created_session_id, promoted_drafts)
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="One or more draft attachments were not found",
+                )
+            if any(
+                draft_attachment.workspace_id != workspace_id
+                for draft_attachment in draft_attachments
+            ):
+                self._cleanup_created_session(created_session_id, promoted_drafts)
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Draft attachment does not belong to this workspace",
+                )
+
+            try:
+                for draft_attachment in draft_attachments:
+                    attachment_id = create_id("att")
+                    target_storage_path = self.attachment_store.relative_path(
+                        attachment_id, draft_attachment.file_name
+                    )
+                    self.attachment_store.move_file(
+                        draft_attachment.storage_path, target_storage_path
+                    )
+                    promoted_drafts.append((draft_attachment.storage_path, target_storage_path))
+                    attachment = self.attachments.create(
+                        attachment_id=attachment_id,
+                        session_id=session_id,
+                        workspace_id=workspace_id,
+                        file_name=draft_attachment.file_name,
+                        mime_type=draft_attachment.mime_type,
+                        size_bytes=draft_attachment.size_bytes,
+                        storage_path=target_storage_path,
+                        status="uploaded",
+                    )
+                    attachment_ids.append(attachment.id)
+                    self.draft_attachments.delete_by_id(draft_attachment.id)
+            except Exception:
+                self._cleanup_created_session(created_session_id, promoted_drafts)
+                raise
 
         attachments = self.attachments.list_by_ids(attachment_ids)
         if len(attachments) != len(set(attachment_ids)):
+            self._cleanup_created_session(created_session_id, promoted_drafts)
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="One or more attachments were not found",
@@ -134,6 +203,7 @@ class RunService:
                     detail="Attachment does not belong to this session",
                 )
             if attachment.status != "uploaded":
+                self._cleanup_created_session(created_session_id, promoted_drafts)
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail="Attachment is not available",
@@ -141,6 +211,7 @@ class RunService:
 
         bundle = self.providers.get_bundle_by_id(connection_id)
         if bundle is None:
+            self._cleanup_created_session(created_session_id, promoted_drafts)
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Provider connection not found",
@@ -289,6 +360,18 @@ class RunService:
                 "finalAnswer": None,
             },
         }
+
+    def _cleanup_created_session(
+        self, session_id: str | None, promoted_drafts: list[tuple[str, str]]
+    ) -> None:
+        for _, target_storage_path in promoted_drafts:
+            self.attachment_store.delete_file(target_storage_path)
+        if session_id is None:
+            return
+        try:
+            self.sessions.delete_by_id(session_id)
+        except Exception:
+            LOGGER.exception("Failed to clean up session %s after run bootstrap failure", session_id)
 
     def _start_run_thread(
         self,
@@ -1101,6 +1184,25 @@ def _normalize_attachment_ids(value: Any) -> list[str]:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="attachmentIds must be a list of strings",
+        )
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        text = _normalize_optional_string(item)
+        if text is None or text in seen:
+            continue
+        seen.add(text)
+        normalized.append(text)
+    return normalized
+
+
+def _normalize_draft_attachment_ids(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="draftAttachmentIds must be a list of strings",
         )
     normalized: list[str] = []
     seen: set[str] = set()

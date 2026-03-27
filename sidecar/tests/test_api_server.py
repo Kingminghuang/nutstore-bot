@@ -2017,6 +2017,200 @@ class ApiServerTests(unittest.TestCase):
         self.assertIn('"content": "Run cancelled"', payload)
         self.assertIn("event: run.replay-ready", payload)
 
+    def test_workspace_draft_attachments_crud(self) -> None:
+        workspace = self._create_workspace("workspace-draft-attachments")
+
+        upload_response = self.client.post(
+            f"/workspaces/{workspace['id']}/draft-attachments",
+            headers={"Authorization": "Bearer test-token"},
+            files={"file": ("notes.txt", b"draft attachment", "text/plain")},
+        )
+        self.assertEqual(upload_response.status_code, 200)
+        draft_attachment = upload_response.json()
+        self.assertEqual(draft_attachment["workspaceId"], workspace["id"])
+        self.assertEqual(draft_attachment["fileName"], "notes.txt")
+
+        list_response = self.client.get(
+            f"/workspaces/{workspace['id']}/draft-attachments",
+            headers={"Authorization": "Bearer test-token"},
+        )
+        self.assertEqual(list_response.status_code, 200)
+        items = list_response.json()["draftAttachments"]
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["id"], draft_attachment["id"])
+
+        delete_response = self.client.delete(
+            f"/workspaces/{workspace['id']}/draft-attachments/{draft_attachment['id']}",
+            headers={"Authorization": "Bearer test-token"},
+        )
+        self.assertEqual(delete_response.status_code, 204)
+
+        list_after_delete = self.client.get(
+            f"/workspaces/{workspace['id']}/draft-attachments",
+            headers={"Authorization": "Bearer test-token"},
+        )
+        self.assertEqual(list_after_delete.status_code, 200)
+        self.assertEqual(list_after_delete.json()["draftAttachments"], [])
+
+    def test_post_run_without_session_id_promotes_draft_attachments(self) -> None:
+        workspace = self._create_workspace("workspace-run-draft-attachments")
+        provider = self._create_provider()
+        self._set_sync_run_launcher()
+
+        def fake_runtime_executor(*args, **kwargs):
+            return {
+                "deltas": [],
+                "steps": [],
+                "final_answer": "Draft attachment run complete.",
+            }
+
+        self.app.state.run_service = replace(
+            self.app.state.run_service,
+            runtime_executor=fake_runtime_executor,
+        )
+
+        upload_response = self.client.post(
+            f"/workspaces/{workspace['id']}/draft-attachments",
+            headers={"Authorization": "Bearer test-token"},
+            files={"file": ("draft.txt", b"hello draft", "text/plain")},
+        )
+        self.assertEqual(upload_response.status_code, 200)
+        draft_attachment_id = upload_response.json()["id"]
+
+        run_response = self.client.post(
+            "/runs",
+            headers={"Authorization": "Bearer test-token"},
+            json={
+                "workspaceId": workspace["id"],
+                "connectionId": provider["id"],
+                "modelId": "gpt-5.4",
+                "input": "Please process my draft attachment",
+                "draftAttachmentIds": [draft_attachment_id],
+            },
+        )
+        self.assertEqual(run_response.status_code, 200)
+        body = run_response.json()
+        session_id = body["session"]["id"]
+        self.assertTrue(session_id.startswith("sess_"))
+
+        records = self.app.state.repositories.attachments.list_by_session_id(session_id)
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0].status, "consumed")
+        self.assertEqual(records[0].workspace_id, workspace["id"])
+        self.assertIn("draft.txt", records[0].storage_path)
+
+        remaining_drafts = self.app.state.repositories.draft_attachments.list_by_workspace_id(
+            workspace["id"]
+        )
+        self.assertEqual(remaining_drafts, [])
+
+    def test_post_run_without_session_id_rejects_cross_workspace_draft_attachment(self) -> None:
+        workspace_one = self._create_workspace("workspace-run-draft-a")
+        workspace_two = self._create_workspace("workspace-run-draft-b")
+        provider = self._create_provider()
+
+        upload_response = self.client.post(
+            f"/workspaces/{workspace_two['id']}/draft-attachments",
+            headers={"Authorization": "Bearer test-token"},
+            files={"file": ("cross.txt", b"cross workspace", "text/plain")},
+        )
+        self.assertEqual(upload_response.status_code, 200)
+        draft_attachment_id = upload_response.json()["id"]
+
+        run_response = self.client.post(
+            "/runs",
+            headers={"Authorization": "Bearer test-token"},
+            json={
+                "workspaceId": workspace_one["id"],
+                "connectionId": provider["id"],
+                "modelId": "gpt-5.4",
+                "input": "Try wrong draft attachment",
+                "draftAttachmentIds": [draft_attachment_id],
+            },
+        )
+        self.assertEqual(run_response.status_code, 400)
+        self.assertEqual(
+            run_response.json()["detail"],
+            "Draft attachment does not belong to this workspace",
+        )
+
+    def test_delete_session_cascades_related_records(self) -> None:
+        workspace = self._create_workspace("workspace-delete-session")
+        provider = self._create_provider()
+        session = self._create_session(workspace["id"], str(provider["id"]))
+
+        message_response = self.client.post(
+            f"/sessions/{session['id']}/messages",
+            headers={"Authorization": "Bearer test-token"},
+            json={
+                "role": "user",
+                "content": "Delete this session",
+            },
+        )
+        self.assertEqual(message_response.status_code, 200)
+
+        run = self.app.state.repositories.runs.create(
+            session_id=session["id"],
+            workspace_id=workspace["id"],
+            connection_id=str(provider["id"]),
+            model_id="gpt-5.4",
+            input_text="Delete this session",
+        )
+        self.app.state.repositories.run_steps.create(
+            run_id=run.id,
+            session_id=session["id"],
+            step_id="step-1",
+            step_kind="planning",
+            plan_text="Plan before deleting session.",
+        )
+        self.app.state.repositories.attachments.create(
+            session_id=session["id"],
+            workspace_id=workspace["id"],
+            file_name="evidence.txt",
+            mime_type="text/plain",
+            size_bytes=12,
+            storage_path=f"att_{session['id']}/evidence.txt",
+            status="uploaded",
+        )
+
+        delete_response = self.client.delete(
+            f"/sessions/{session['id']}",
+            headers={"Authorization": "Bearer test-token"},
+        )
+        self.assertEqual(delete_response.status_code, 204)
+
+        sessions_response = self.client.get(
+            f"/workspaces/{workspace['id']}/sessions",
+            headers={"Authorization": "Bearer test-token"},
+        )
+        self.assertEqual(sessions_response.status_code, 200)
+        self.assertEqual(sessions_response.json()["sessions"], [])
+
+        messages_response = self.client.get(
+            f"/sessions/{session['id']}/messages",
+            headers={"Authorization": "Bearer test-token"},
+        )
+        self.assertEqual(messages_response.status_code, 404)
+        self.assertEqual(messages_response.json()["detail"], "Session not found")
+
+        self.assertEqual(
+            self.app.state.repositories.attachments.list_by_session_id(session["id"]), []
+        )
+        self.assertEqual(
+            self.app.state.repositories.messages.list_by_session_id(session["id"]), []
+        )
+        with self.assertRaises(ValueError):
+            self.app.state.repositories.runs.get_by_id(run.id)
+        self.assertEqual(self.app.state.repositories.run_steps.list_by_run_id(run.id), [])
+
+    def test_delete_session_returns_404_for_unknown_id(self) -> None:
+        response = self.client.delete(
+            "/sessions/sess_not_found",
+            headers={"Authorization": "Bearer test-token"},
+        )
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.json()["detail"], "Session not found")
+
 
 if __name__ == "__main__":
     unittest.main()

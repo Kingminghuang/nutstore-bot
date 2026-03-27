@@ -17,6 +17,7 @@ import {
 
 import type {
   ComposerAttachment,
+  DraftAttachment,
   Message,
   Project,
   RunStepsByRunId,
@@ -40,6 +41,7 @@ const EMPTY_MESSAGES: Message[] = []
 interface MainContentProps {
   activeProject: Project | null
   activeSession: Session | null
+  isDraftSession: boolean
   runStepsByRunId: RunStepsByRunId
   onSendMessage: (text: string) => Promise<void>
   modelOptionGroups: ModelOptionGroup[]
@@ -53,7 +55,7 @@ interface MainContentProps {
   hasMoreHistory: boolean
   isLoadingHistory: boolean
   onLoadEarlierMessages: () => Promise<void>
-  composerAttachments: ComposerAttachment[]
+  composerAttachments: Array<ComposerAttachment | DraftAttachment>
   isUploadingAttachment: boolean
   onAttachFiles: (files: File[]) => Promise<void>
   onRemoveAttachment: (attachmentId: string) => Promise<void>
@@ -63,6 +65,7 @@ interface MainContentProps {
 export function MainContent({
   activeProject,
   activeSession,
+  isDraftSession,
   runStepsByRunId,
   onSendMessage,
   modelOptionGroups,
@@ -98,6 +101,7 @@ export function MainContent({
   )
 
   const messages = activeSession?.messages ?? EMPTY_MESSAGES
+  const canCompose = activeSession != null || isDraftSession
   const hasMessages = messages.length > 0
   const hasAvailableModels = modelOptionGroups.some((group) => group.models.length > 0)
   const reasoningEffortOptions = useMemo(
@@ -181,7 +185,7 @@ export function MainContent({
 
   const handleSubmit = async () => {
     const text = inputValue.trim()
-    if (!text || isGenerating || !activeSession || !selectedModel) return
+    if (!text || isGenerating || !canCompose || !selectedModel) return
 
     setIsGenerating(true)
 
@@ -355,8 +359,8 @@ export function MainContent({
               value={inputValue}
               onChange={(e) => setInputValue(e.target.value)}
               onKeyDown={handleKeyDown}
-              placeholder={activeSession ? "Ask for follow-up changes" : "Select or create a session first"}
-              disabled={!activeSession}
+              placeholder={canCompose ? "Ask for follow-up changes" : "Select or create a session first"}
+              disabled={!canCompose}
               aria-keyshortcuts="Enter"
               className="w-full bg-transparent text-sm placeholder:text-muted-foreground focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed"
             />
@@ -407,10 +411,10 @@ export function MainContent({
                   <span tabIndex={-1}>
                     <button
                       onClick={handleFilePickerClick}
-                      disabled={!activeSession || isUploadingAttachment}
+                      disabled={!canCompose || isUploadingAttachment}
                       className={cn(
                         "p-1.5 rounded-lg transition-colors",
-                        activeSession && !isUploadingAttachment
+                        canCompose && !isUploadingAttachment
                           ? "hover:bg-[#efe9e4] text-muted-foreground hover:text-foreground"
                           : "text-muted-foreground/40 cursor-not-allowed"
                       )}
@@ -421,7 +425,7 @@ export function MainContent({
                   </span>
                 </TooltipTrigger>
                 <TooltipContent side="top" sideOffset={6}>
-                  {activeSession
+                  {canCompose
                     ? `Pick files from ${activeProject?.path ?? "workspace"}`
                     : "Select a session first"}
                 </TooltipContent>

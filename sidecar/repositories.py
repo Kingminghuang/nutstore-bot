@@ -147,6 +147,18 @@ class AttachmentRecord:
 
 
 @dataclass(frozen=True)
+class DraftAttachmentRecord:
+    id: str
+    workspace_id: str
+    file_name: str
+    mime_type: str
+    size_bytes: int
+    storage_path: str
+    created_at: str
+    updated_at: str
+
+
+@dataclass(frozen=True)
 class RunRecord:
     id: str
     session_id: str
@@ -476,6 +488,10 @@ class SessionsRepository:
             (workspace_id,),
         ).fetchall()
         return [_map_session(row) for row in rows]
+
+    def delete_by_id(self, session_id: str) -> None:
+        self.connection.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+        self.connection.commit()
 
     def update_title(
         self, session_id: str, title: str, title_source: str
@@ -823,6 +839,80 @@ class AttachmentsRepository:
         self.connection.commit()
 
 
+class DraftAttachmentsRepository:
+    def __init__(self, connection: sqlite3.Connection):
+        self.connection = connection
+
+    def create(
+        self,
+        *,
+        workspace_id: str,
+        file_name: str,
+        mime_type: str,
+        size_bytes: int,
+        storage_path: str,
+        draft_attachment_id: str | None = None,
+    ) -> DraftAttachmentRecord:
+        record_id = draft_attachment_id or create_id("draftatt")
+        now = now_iso_timestamp()
+        self.connection.execute(
+            """
+            INSERT INTO draft_attachments (
+                id, workspace_id, file_name, mime_type, size_bytes, storage_path, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                record_id,
+                workspace_id,
+                file_name,
+                mime_type,
+                size_bytes,
+                storage_path,
+                now,
+                now,
+            ),
+        )
+        self.connection.commit()
+        return self.get_by_id(record_id)
+
+    def get_by_id(self, draft_attachment_id: str) -> DraftAttachmentRecord:
+        row = self.connection.execute(
+            "SELECT * FROM draft_attachments WHERE id = ?",
+            (draft_attachment_id,),
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"Draft attachment not found: {draft_attachment_id}")
+        return _map_draft_attachment(row)
+
+    def list_by_workspace_id(self, workspace_id: str) -> list[DraftAttachmentRecord]:
+        rows = self.connection.execute(
+            """
+            SELECT * FROM draft_attachments
+            WHERE workspace_id = ?
+            ORDER BY created_at ASC, id ASC
+            """,
+            (workspace_id,),
+        ).fetchall()
+        return [_map_draft_attachment(row) for row in rows]
+
+    def list_by_ids(self, draft_attachment_ids: list[str]) -> list[DraftAttachmentRecord]:
+        if not draft_attachment_ids:
+            return []
+        placeholders = ",".join("?" for _ in draft_attachment_ids)
+        rows = self.connection.execute(
+            f"SELECT * FROM draft_attachments WHERE id IN ({placeholders})",
+            tuple(draft_attachment_ids),
+        ).fetchall()
+        return [_map_draft_attachment(row) for row in rows]
+
+    def delete_by_id(self, draft_attachment_id: str) -> None:
+        self.connection.execute(
+            "DELETE FROM draft_attachments WHERE id = ?",
+            (draft_attachment_id,),
+        )
+        self.connection.commit()
+
+
 class RunStepsRepository:
     def __init__(self, connection: sqlite3.Connection):
         self.connection = connection
@@ -912,6 +1002,7 @@ class Repositories:
     sessions: SessionsRepository
     messages: MessagesRepository
     attachments: AttachmentsRepository
+    draft_attachments: DraftAttachmentsRepository
     runs: RunsRepository
     run_steps: RunStepsRepository
 
@@ -923,6 +1014,7 @@ def create_repositories(connection: sqlite3.Connection) -> Repositories:
         sessions=SessionsRepository(connection),
         messages=MessagesRepository(connection),
         attachments=AttachmentsRepository(connection),
+        draft_attachments=DraftAttachmentsRepository(connection),
         runs=RunsRepository(connection),
         run_steps=RunStepsRepository(connection),
     )
@@ -1031,6 +1123,19 @@ def _map_attachment(row: sqlite3.Row) -> AttachmentRecord:
         size_bytes=int(row["size_bytes"]),
         storage_path=str(row["storage_path"]),
         status=str(row["status"]),
+        created_at=str(row["created_at"]),
+        updated_at=str(row["updated_at"]),
+    )
+
+
+def _map_draft_attachment(row: sqlite3.Row) -> DraftAttachmentRecord:
+    return DraftAttachmentRecord(
+        id=str(row["id"]),
+        workspace_id=str(row["workspace_id"]),
+        file_name=str(row["file_name"]),
+        mime_type=str(row["mime_type"]),
+        size_bytes=int(row["size_bytes"]),
+        storage_path=str(row["storage_path"]),
         created_at=str(row["created_at"]),
         updated_at=str(row["updated_at"]),
     )

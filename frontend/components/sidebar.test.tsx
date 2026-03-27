@@ -350,4 +350,32 @@ describe("Sidebar workspace controls", () => {
       expect(onRemoveProject).toHaveBeenCalledWith("ws_1")
     })
   })
+
+  it("confirms session removal before deleting", async () => {
+    const onRemoveSession = vi.fn(async () => undefined)
+
+    render(
+      <Sidebar
+        projects={[project]}
+        activeProjectId="ws_1"
+        activeSessionId="sess_1"
+        width={230}
+        onAddProject={vi.fn()}
+        onRenameProject={vi.fn()}
+        onNewSession={vi.fn()}
+        onSessionChange={vi.fn()}
+        onRemoveSession={onRemoveSession}
+        onRemoveProject={vi.fn()}
+        onResizeStart={vi.fn()}
+      />
+    )
+
+    fireEvent.mouseEnter(screen.getByText("Backend driven title"))
+    fireEvent.click(screen.getByLabelText("Remove session Backend driven title"))
+    fireEvent.click(screen.getByRole("button", { name: "Remove session" }))
+
+    await waitFor(() => {
+      expect(onRemoveSession).toHaveBeenCalledWith("sess_1", "ws_1")
+    })
+  })
 })

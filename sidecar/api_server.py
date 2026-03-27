@@ -75,6 +75,7 @@ def create_app(config: ApiServerConfig | None = None) -> FastAPI:
         sessions=repositories.sessions,
         messages=repositories.messages,
         attachments=repositories.attachments,
+        draft_attachments=repositories.draft_attachments,
         attachment_store=AttachmentStore(cfg.ns_bot_home),
     )
     run_service = RunService(
@@ -85,6 +86,8 @@ def create_app(config: ApiServerConfig | None = None) -> FastAPI:
         run_steps=repositories.run_steps,
         session_service=session_service,
         attachments=repositories.attachments,
+        draft_attachments=repositories.draft_attachments,
+        attachment_store=AttachmentStore(cfg.ns_bot_home),
         secret_store=LocalSecretStore(cfg.ns_bot_home),
         event_store=RunEventStore(),
         cancellation_registry=RunCancellationRegistry(),
@@ -216,11 +219,40 @@ def create_app(config: ApiServerConfig | None = None) -> FastAPI:
     ) -> dict[str, object]:
         return session_service.create_session(workspace_id, payload)
 
+    @app.get("/workspaces/{workspace_id}/draft-attachments")
+    def get_workspace_draft_attachments(
+        workspace_id: str,
+    ) -> dict[str, list[dict[str, object]]]:
+        return session_service.list_draft_attachments_payload(workspace_id)
+
+    @app.post("/workspaces/{workspace_id}/draft-attachments")
+    async def create_workspace_draft_attachment(
+        workspace_id: str,
+        file: UploadFile = File(...),
+    ) -> dict[str, object]:
+        payload = await file.read()
+        return session_service.create_draft_attachment(
+            workspace_id,
+            file_name=file.filename or "attachment",
+            mime_type=file.content_type or "application/octet-stream",
+            payload=payload,
+        )
+
+    @app.delete("/workspaces/{workspace_id}/draft-attachments/{draft_attachment_id}", status_code=204)
+    def delete_workspace_draft_attachment(
+        workspace_id: str, draft_attachment_id: str
+    ) -> None:
+        session_service.delete_draft_attachment(workspace_id, draft_attachment_id)
+
     @app.patch("/sessions/{session_id}")
     def update_session(
         session_id: str, payload: dict[str, object]
     ) -> dict[str, object]:
         return session_service.update_session(session_id, payload)
+
+    @app.delete("/sessions/{session_id}", status_code=204)
+    def delete_session(session_id: str) -> None:
+        session_service.delete_session(session_id)
 
     @app.get("/sessions/{session_id}/messages")
     def get_session_messages(

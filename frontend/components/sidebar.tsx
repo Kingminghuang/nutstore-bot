@@ -46,6 +46,7 @@ interface SidebarProps {
   onRenameProject: (projectId: string, name: string, pathLabel?: string) => void | Promise<void>
   onNewSession: (projectId?: string) => void | Promise<void>
   onSessionChange: (sessionId: string, projectId: string) => void
+  onRemoveSession?: (sessionId: string, projectId: string) => void | Promise<void>
   onRemoveProject: (projectId: string) => void | Promise<void>
   onSettingsOpen?: () => void
   onResizeStart: (e: React.MouseEvent) => void
@@ -90,6 +91,7 @@ export function Sidebar({
   onRenameProject,
   onNewSession,
   onSessionChange,
+  onRemoveSession,
   onRemoveProject,
   onSettingsOpen,
   onResizeStart,
@@ -220,6 +222,7 @@ export function Sidebar({
                 isActiveProject={activeProjectId === project.id}
                 onNewSession={() => onNewSession(project.id)}
                 onSessionChange={(sid) => onSessionChange(sid, project.id)}
+                onRemoveSession={(sid) => onRemoveSession?.(sid, project.id)}
                 onRename={(name, pathLabel) => onRenameProject(project.id, name, pathLabel)}
                 onRemove={() => onRemoveProject(project.id)}
               />
@@ -347,6 +350,7 @@ interface ProjectGroupProps {
   activeSessionId: string | null
   onNewSession: () => void | Promise<void>
   onSessionChange: (sessionId: string) => void
+  onRemoveSession?: (sessionId: string) => void | Promise<void>
   onRename: (name: string, pathLabel?: string) => void | Promise<void>
   onRemove: () => void | Promise<void>
 }
@@ -357,6 +361,7 @@ function ProjectGroup({
   activeSessionId,
   onNewSession,
   onSessionChange,
+  onRemoveSession,
   onRename,
   onRemove,
 }: ProjectGroupProps) {
@@ -507,6 +512,7 @@ function ProjectGroup({
             session={session}
             isActive={activeSessionId === session.id}
             onClick={() => onSessionChange(session.id)}
+            onRemove={onRemoveSession ? () => onRemoveSession(session.id) : undefined}
           />
         ))}
 
@@ -611,22 +617,92 @@ interface SessionItemProps {
   session: Session
   isActive: boolean
   onClick: () => void
+  onRemove?: () => void | Promise<void>
 }
 
-function SessionItem({ session, isActive, onClick }: SessionItemProps) {
+function SessionItem({ session, isActive, onClick, onRemove }: SessionItemProps) {
+  const [deleteOpen, setDeleteOpen] = useState(false)
+  const [actionError, setActionError] = useState<string | null>(null)
+  const [isSubmitting, setIsSubmitting] = useState(false)
+
+  const submitDelete = async () => {
+    if (!onRemove) {
+      return
+    }
+    setIsSubmitting(true)
+    setActionError(null)
+    try {
+      await onRemove()
+      setDeleteOpen(false)
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : "Failed to remove session")
+    } finally {
+      setIsSubmitting(false)
+    }
+  }
+
   return (
-    <button
-      onClick={onClick}
-      className={cn(
-        "w-full flex items-center gap-2 pl-7 pr-3 py-1.5 text-sm text-foreground/80 hover:bg-[#efe9e4] rounded-lg transition-colors",
-        isActive && "bg-[#efe9e4]"
-      )}
-    >
-      <span className="flex-1 text-left truncate">{session.title}</span>
-      <span className="text-xs text-muted-foreground flex-shrink-0">
-        {formatRelativeTime(session.lastMessageAt ?? session.updatedAt)}
-      </span>
-    </button>
+    <>
+      <div
+        className={cn(
+          "group/session w-full flex items-center gap-2 pl-7 pr-2 py-1.5 text-sm text-foreground/80 hover:bg-[#efe9e4] rounded-lg transition-colors",
+          isActive && "bg-[#efe9e4]"
+        )}
+      >
+        <button onClick={onClick} className="flex min-w-0 flex-1 items-center gap-2 text-left">
+          <span className="flex-1 text-left truncate">{session.title}</span>
+          <span className="text-xs text-muted-foreground flex-shrink-0">
+            {formatRelativeTime(session.lastMessageAt ?? session.updatedAt)}
+          </span>
+        </button>
+        {onRemove ? (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                onClick={() => {
+                  setActionError(null)
+                  setDeleteOpen(true)
+                }}
+                className="p-1 hover:bg-[#e0d9d3] rounded transition-colors opacity-0 pointer-events-none group-hover/session:opacity-100 group-hover/session:pointer-events-auto group-focus-within/session:opacity-100 group-focus-within/session:pointer-events-auto"
+                aria-label={`Remove session ${session.title}`}
+              >
+                <Trash2 className="w-3.5 h-3.5 text-muted-foreground" />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="top" sideOffset={6}>
+              Remove session
+            </TooltipContent>
+          </Tooltip>
+        ) : null}
+      </div>
+
+      <AlertDialog
+        open={deleteOpen}
+        onOpenChange={(open) => {
+          setDeleteOpen(open)
+          if (!open) {
+            setActionError(null)
+          }
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Remove session?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This removes the session and all persisted messages, runs, and attachments from the local sidecar database.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          {actionError && <p className="text-sm text-destructive">{actionError}</p>}
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={isSubmitting}>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={() => void submitDelete()} disabled={isSubmitting}>
+              {isSubmitting ? "Removing..." : "Remove session"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </>
   )
 }
 

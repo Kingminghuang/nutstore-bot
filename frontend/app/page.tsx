@@ -83,6 +83,16 @@ export type ComposerAttachment = {
   updatedAt: string
 }
 
+export type DraftAttachment = {
+  id: string
+  workspaceId: string
+  fileName: string
+  mimeType: string
+  sizeBytes: number
+  createdAt: string
+  updatedAt: string
+}
+
 export type Project = {
   id: string
   name: string
@@ -219,6 +229,7 @@ function applyRunMessageToMessages(
 export default function Home() {
   const [workspaces, setWorkspaces] = useState<WorkspaceSummary[]>([])
   const [sessionsByWorkspace, setSessionsByWorkspace] = useState<Record<string, Session[]>>({})
+  const [activeDraftWorkspaceId, setActiveDraftWorkspaceId] = useState<string | null>(null)
   const [activeWorkspaceId, setActiveWorkspaceId] = useState<string | null>(null)
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null)
   const [providerCatalog, setProviderCatalog] = useState<ProviderCatalogEntry[]>([])
@@ -235,7 +246,8 @@ export default function Home() {
   const [workspaceError, setWorkspaceError] = useState<string | null>(null)
   const [runError, setRunError] = useState<string | null>(null)
   const [attachmentsBySession, setAttachmentsBySession] = useState<Record<string, ComposerAttachment[]>>({})
-  const [uploadingAttachmentSessionId, setUploadingAttachmentSessionId] = useState<string | null>(null)
+  const [draftAttachmentsByWorkspace, setDraftAttachmentsByWorkspace] = useState<Record<string, DraftAttachment[]>>({})
+  const [uploadingAttachmentTargetId, setUploadingAttachmentTargetId] = useState<string | null>(null)
   const eventSourceRef = useRef<EventSource | null>(null)
   const lastHydrationAttemptSessionIdRef = useRef<string | null>(null)
   const isDragging = useRef(false)
@@ -294,6 +306,15 @@ export default function Home() {
       )
       const nextSessionsByWorkspace = Object.fromEntries(sessionsEntries)
       setSessionsByWorkspace(nextSessionsByWorkspace)
+      setDraftAttachmentsByWorkspace((prev) => {
+        const next: Record<string, DraftAttachment[]> = {}
+        for (const workspace of nextWorkspaces) {
+          if (prev[workspace.id]) {
+            next[workspace.id] = prev[workspace.id]
+          }
+        }
+        return next
+      })
 
       setActiveWorkspaceId((current) => current ?? nextWorkspaces[0]?.id ?? null)
       setActiveSessionId((current) => {
@@ -308,6 +329,12 @@ export default function Home() {
         }
         return nextSessionsByWorkspace[nextWorkspaces[0]?.id ?? ""]?.[0]?.id ?? null
       })
+      setActiveDraftWorkspaceId((current) => {
+        if (!current) {
+          return null
+        }
+        return nextWorkspaces.some((workspace) => workspace.id === current) ? current : null
+      })
     } catch (error) {
       setWorkspaceError(
         error instanceof Error ? error.message : "Failed to load workspaces"
@@ -315,7 +342,9 @@ export default function Home() {
       setWorkspaces([])
       setSessionsByWorkspace({})
       setAttachmentsBySession({})
+      setDraftAttachmentsByWorkspace({})
       setRunStepsByRunId({})
+      setActiveDraftWorkspaceId(null)
       setActiveWorkspaceId(null)
       setActiveSessionId(null)
     }
@@ -346,6 +375,10 @@ export default function Home() {
           null,
     [activeSessionId, activeWorkspaceId, sessionsByWorkspace]
   )
+  const isDraftSessionActive =
+    activeWorkspaceId != null &&
+    activeSessionId == null &&
+    activeDraftWorkspaceId === activeWorkspaceId
 
   const activeSessionHydrationStatus = activeSession?.messageHydrationStatus ?? null
 
@@ -446,6 +479,34 @@ export default function Home() {
       cancelled = true
     }
   }, [activeSessionId, attachmentsBySession])
+
+  useEffect(() => {
+    if (!isDraftSessionActive || !activeWorkspaceId) {
+      return
+    }
+    if (draftAttachmentsByWorkspace[activeWorkspaceId] != null) {
+      return
+    }
+
+    let cancelled = false
+    void sidecarFetch<{ draftAttachments: DraftAttachment[] }>(
+      `/workspaces/${activeWorkspaceId}/draft-attachments`
+    )
+      .then((response) => {
+        if (cancelled) {
+          return
+        }
+        setDraftAttachmentsByWorkspace((prev) => ({
+          ...prev,
+          [activeWorkspaceId]: response.draftAttachments,
+        }))
+      })
+      .catch(() => undefined)
+
+    return () => {
+      cancelled = true
+    }
+  }, [activeWorkspaceId, draftAttachmentsByWorkspace, isDraftSessionActive])
 
   const handleLoadEarlierMessages = useCallback(async () => {
     if (!activeSessionId || !activeWorkspaceId || !activeSession) {
@@ -567,32 +628,29 @@ export default function Home() {
   const handleNewSession = useCallback(
     async (projectId?: string) => {
       const targetId = projectId ?? activeWorkspaceId
-      if (targetId == null || !selectedModel) return
+      if (targetId == null) return
 
-      const session = (await sidecarFetch<ServerSession>(`/workspaces/${targetId}/sessions`, {
-        method: "POST",
-        body: JSON.stringify({
-          connectionId: selectedModel.connectionId,
-          modelId: selectedModel.modelId,
-        }),
-      }))
-
-      setSessionsByWorkspace((prev) => ({
-        ...prev,
-        [targetId]: [withSessionHistoryDefaults(session), ...(prev[targetId] ?? [])],
-      }))
       setActiveWorkspaceId(targetId)
-      setActiveSessionId(session.id)
+      setActiveSessionId(null)
+      setActiveDraftWorkspaceId(targetId)
     },
-    [activeWorkspaceId, selectedModel]
+    [activeWorkspaceId]
   )
 
   const handleSendMessage = useCallback(
     async (text: string) => {
-      if (!activeSessionId || !activeWorkspaceId || !selectedModel) return
+      if (!activeWorkspaceId || !selectedModel) return
+      const isDraftMode =
+        activeSessionId == null && activeDraftWorkspaceId === activeWorkspaceId
 
       setRunError(null)
-      const attachmentIds = (attachmentsBySession[activeSessionId] ?? []).map((item) => item.id)
+      const attachmentIds = activeSessionId
+        ? (attachmentsBySession[activeSessionId] ?? []).map((item) => item.id)
+        : []
+      const draftAttachmentIds = isDraftMode
+        ? (draftAttachmentsByWorkspace[activeWorkspaceId] ?? []).map((item) => item.id)
+        : []
+      const requestSessionId = activeSessionId ?? undefined
 
       try {
         const runResponse = await sidecarFetch<{
@@ -608,48 +666,67 @@ export default function Home() {
           {
             method: "POST",
             body: JSON.stringify({
-              sessionId: activeSessionId,
+              ...(requestSessionId ? { sessionId: requestSessionId } : {}),
               workspaceId: activeWorkspaceId,
               connectionId: selectedModel.connectionId,
               modelId: selectedModel.modelId,
               ...(selectedReasoningEffort
                 ? { reasoningEffort: selectedReasoningEffort }
                 : {}),
-              attachmentIds,
+              ...(attachmentIds.length > 0 ? { attachmentIds } : {}),
+              ...(draftAttachmentIds.length > 0 ? { draftAttachmentIds } : {}),
               input: text,
             }),
           }
         )
 
+        const nextSession = mergeSessionWithLocalHistory(
+          runResponse.session,
+          activeSessionId
+            ? (sessionsByWorkspace[activeWorkspaceId] ?? []).find(
+                (session) => session.id === activeSessionId
+              )
+            : undefined,
+          runResponse.messages.map((message) => ({
+            ...message,
+            role: message.role,
+          }))
+        )
+
+        setSessionsByWorkspace((prev) => {
+          const existing = prev[activeWorkspaceId] ?? []
+          if (activeSessionId) {
+            return {
+              ...prev,
+              [activeWorkspaceId]: existing.map((session) =>
+                session.id === activeSessionId ? { ...nextSession } : session
+              ),
+            }
+          }
+          return {
+            ...prev,
+            [activeWorkspaceId]: [nextSession, ...existing.filter((session) => session.id !== nextSession.id)],
+          }
+        })
         setAttachmentsBySession((prev) => ({
           ...prev,
-          [activeSessionId]: [],
+          [runResponse.session.id]: [],
         }))
-
-        setSessionsByWorkspace((prev) => ({
-          ...prev,
-          [activeWorkspaceId]: (prev[activeWorkspaceId] ?? []).map((session) =>
-            session.id === activeSessionId
-              ? {
-                  ...mergeSessionWithLocalHistory(
-                    runResponse.session,
-                    session,
-                    runResponse.messages.map((message) => ({
-                      ...message,
-                      role: message.role,
-                    }))
-                  ),
-                }
-              : session
-          ),
-        }))
+        if (isDraftMode) {
+          setDraftAttachmentsByWorkspace((prev) => ({
+            ...prev,
+            [activeWorkspaceId]: [],
+          }))
+          setActiveDraftWorkspaceId(null)
+        }
+        setActiveSessionId(runResponse.session.id)
         setRunStepsByRunId((prev) => ({
           ...prev,
           [runResponse.run.id]: [],
         }))
 
         if (runResponse.run.status === "queued" || runResponse.run.status === "running") {
-          startRunEventStream(runResponse.run.id, activeWorkspaceId, activeSessionId)
+          startRunEventStream(runResponse.run.id, activeWorkspaceId, runResponse.session.id)
         }
       } catch (error) {
         if (error instanceof NSBotRequestError && error.payload) {
@@ -659,28 +736,47 @@ export default function Home() {
             messages?: Message[]
           }
           if (payload.session && payload.messages) {
-            setSessionsByWorkspace((prev) => ({
+            const payloadSession = mergeSessionWithLocalHistory(
+              payload.session,
+              activeSessionId
+                ? (sessionsByWorkspace[activeWorkspaceId] ?? []).find(
+                    (session) => session.id === activeSessionId
+                  )
+                : undefined,
+              payload.messages.map((message) => ({
+                ...message,
+                role: message.role,
+              }))
+            )
+            setSessionsByWorkspace((prev) => {
+              const existing = prev[activeWorkspaceId] ?? []
+              if (activeSessionId) {
+                return {
+                  ...prev,
+                  [activeWorkspaceId]: existing.map((session) =>
+                    session.id === activeSessionId ? payloadSession : session
+                  ),
+                }
+              }
+              return {
+                ...prev,
+                [activeWorkspaceId]: [payloadSession, ...existing.filter((session) => session.id !== payloadSession.id)],
+              }
+            })
+            setActiveSessionId(payload.session.id)
+            setActiveDraftWorkspaceId(null)
+          }
+          if (activeSessionId) {
+            setAttachmentsBySession((prev) => ({
               ...prev,
-              [activeWorkspaceId]: (prev[activeWorkspaceId] ?? []).map((session) =>
-                session.id === activeSessionId
-                  ? {
-                      ...mergeSessionWithLocalHistory(
-                        payload.session,
-                        session,
-                        payload.messages.map((message) => ({
-                          ...message,
-                          role: message.role,
-                        }))
-                      ),
-                    }
-                  : session
-              ),
+              [activeSessionId]: [],
+            }))
+          } else if (isDraftMode) {
+            setDraftAttachmentsByWorkspace((prev) => ({
+              ...prev,
+              [activeWorkspaceId]: [],
             }))
           }
-          setAttachmentsBySession((prev) => ({
-            ...prev,
-            [activeSessionId]: [],
-          }))
           setRunError(payload.detail ?? error.message)
         } else {
           setRunError(error instanceof Error ? error.message : "Failed to run request")
@@ -689,9 +785,12 @@ export default function Home() {
       }
     },
     [
+      activeDraftWorkspaceId,
       activeSessionId,
       activeWorkspaceId,
       attachmentsBySession,
+      draftAttachmentsByWorkspace,
+      sessionsByWorkspace,
       selectedModel,
       selectedReasoningEffort,
     ]
@@ -699,17 +798,28 @@ export default function Home() {
 
   const handleAttachFiles = useCallback(
     async (files: File[]) => {
-      if (!activeSessionId) {
+      const isDraftMode =
+        activeSessionId == null &&
+        activeWorkspaceId != null &&
+        activeDraftWorkspaceId === activeWorkspaceId
+
+      if (!activeSessionId && !isDraftMode) {
         return
       }
-      setUploadingAttachmentSessionId(activeSessionId)
+
+      const uploadTargetId = activeSessionId
+        ? `session:${activeSessionId}`
+        : `draft:${activeWorkspaceId}`
+      setUploadingAttachmentTargetId(uploadTargetId)
 
       try {
         const uploads = files.map(async (file) => {
           const formData = new FormData()
           formData.append("file", file)
-          return sidecarFetch<ComposerAttachment>(
-            `/sessions/${activeSessionId}/attachments`,
+          return sidecarFetch<ComposerAttachment | DraftAttachment>(
+            activeSessionId
+              ? `/sessions/${activeSessionId}/attachments`
+              : `/workspaces/${activeWorkspaceId}/draft-attachments`,
             {
               method: "POST",
               body: formData,
@@ -718,40 +828,79 @@ export default function Home() {
         })
 
         const created = await Promise.all(uploads)
-        setAttachmentsBySession((prev) => {
-          const existing = prev[activeSessionId] ?? []
-          const existingIds = new Set(existing.map((item) => item.id))
-          return {
-            ...prev,
-            [activeSessionId]: [...existing, ...created.filter((item) => !existingIds.has(item.id))],
-          }
-        })
+        if (activeSessionId) {
+          setAttachmentsBySession((prev) => {
+            const existing = prev[activeSessionId] ?? []
+            const existingIds = new Set(existing.map((item) => item.id))
+            const normalized = created as ComposerAttachment[]
+            return {
+              ...prev,
+              [activeSessionId]: [
+                ...existing,
+                ...normalized.filter((item) => !existingIds.has(item.id)),
+              ],
+            }
+          })
+        } else if (activeWorkspaceId) {
+          setDraftAttachmentsByWorkspace((prev) => {
+            const existing = prev[activeWorkspaceId] ?? []
+            const existingIds = new Set(existing.map((item) => item.id))
+            const normalized = created as DraftAttachment[]
+            return {
+              ...prev,
+              [activeWorkspaceId]: [
+                ...existing,
+                ...normalized.filter((item) => !existingIds.has(item.id)),
+              ],
+            }
+          })
+        }
       } finally {
-        setUploadingAttachmentSessionId((current) =>
-          current === activeSessionId ? null : current
+        setUploadingAttachmentTargetId((current) =>
+          current === uploadTargetId ? null : current
         )
       }
     },
-    [activeSessionId]
+    [activeDraftWorkspaceId, activeSessionId, activeWorkspaceId]
   )
 
   const handleRemoveAttachment = useCallback(
     async (attachmentId: string) => {
-      if (!activeSessionId) {
+      const isDraftMode =
+        activeSessionId == null &&
+        activeWorkspaceId != null &&
+        activeDraftWorkspaceId === activeWorkspaceId
+      if (!activeSessionId && !isDraftMode) {
+        return
+      }
+      if (activeSessionId) {
+        await sidecarFetch<void>(
+          `/sessions/${activeSessionId}/attachments/${attachmentId}`,
+          { method: "DELETE" }
+        )
+        setAttachmentsBySession((prev) => ({
+          ...prev,
+          [activeSessionId]: (prev[activeSessionId] ?? []).filter(
+            (attachment) => attachment.id !== attachmentId
+          ),
+        }))
+        return
+      }
+      if (!activeWorkspaceId) {
         return
       }
       await sidecarFetch<void>(
-        `/sessions/${activeSessionId}/attachments/${attachmentId}`,
+        `/workspaces/${activeWorkspaceId}/draft-attachments/${attachmentId}`,
         { method: "DELETE" }
       )
-      setAttachmentsBySession((prev) => ({
+      setDraftAttachmentsByWorkspace((prev) => ({
         ...prev,
-        [activeSessionId]: (prev[activeSessionId] ?? []).filter(
+        [activeWorkspaceId]: (prev[activeWorkspaceId] ?? []).filter(
           (attachment) => attachment.id !== attachmentId
         ),
       }))
     },
-    [activeSessionId]
+    [activeDraftWorkspaceId, activeSessionId, activeWorkspaceId]
   )
 
   const startRunEventStream = useCallback(
@@ -879,12 +1028,49 @@ export default function Home() {
         delete next[projectId]
         return next
       })
+      setDraftAttachmentsByWorkspace((prev) => {
+        const next = { ...prev }
+        delete next[projectId]
+        return next
+      })
       if (activeWorkspaceId === projectId) {
+        setActiveDraftWorkspaceId(null)
         setActiveWorkspaceId(null)
         setActiveSessionId(null)
       }
     },
     [activeWorkspaceId]
+  )
+
+  const handleRemoveSession = useCallback(
+    async (sessionId: string, workspaceId: string) => {
+      await sidecarFetch<void>(`/sessions/${sessionId}`, { method: "DELETE" })
+
+      let nextActiveSessionId: string | null = activeSessionId
+      setSessionsByWorkspace((prev) => {
+        const remaining = (prev[workspaceId] ?? []).filter((session) => session.id !== sessionId)
+        if (activeWorkspaceId === workspaceId && activeSessionId === sessionId) {
+          nextActiveSessionId = remaining[0]?.id ?? null
+        }
+        return {
+          ...prev,
+          [workspaceId]: remaining,
+        }
+      })
+      setAttachmentsBySession((prev) => {
+        const next = { ...prev }
+        delete next[sessionId]
+        return next
+      })
+
+      if (activeWorkspaceId === workspaceId && activeSessionId === sessionId) {
+        eventSourceRef.current?.close()
+        eventSourceRef.current = null
+        setActiveSessionId(nextActiveSessionId)
+        setActiveDraftWorkspaceId(nextActiveSessionId == null ? workspaceId : null)
+      }
+    },
+    [activeSessionId, activeWorkspaceId]
   )
 
   const projects = useMemo<Project[]>(
@@ -984,9 +1170,13 @@ export default function Home() {
         onSessionChange={(sessionId, projectId) => {
           setActiveWorkspaceId(projectId)
           setActiveSessionId(sessionId)
+          setActiveDraftWorkspaceId(null)
         }}
         onRemoveProject={(projectId) => {
           void handleRemoveProject(projectId)
+        }}
+        onRemoveSession={(sessionId, projectId) => {
+          void handleRemoveSession(sessionId, projectId)
         }}
         onSettingsOpen={() => setSettingsOpen(true)}
         onResizeStart={handleSidebarResizeStart}
@@ -994,6 +1184,7 @@ export default function Home() {
       <MainContent
         activeProject={activeProject}
         activeSession={activeSession}
+        isDraftSession={isDraftSessionActive}
         runStepsByRunId={runStepsByRunId}
         onSendMessage={handleSendMessage}
         modelOptionGroups={modelOptionGroups}
@@ -1007,9 +1198,19 @@ export default function Home() {
         hasMoreHistory={activeSession?.hasMoreHistory ?? false}
         isLoadingHistory={activeSession?.isLoadingHistory ?? false}
         onLoadEarlierMessages={handleLoadEarlierMessages}
-        composerAttachments={activeSessionId ? attachmentsBySession[activeSessionId] ?? [] : []}
+        composerAttachments={
+          activeSessionId
+            ? attachmentsBySession[activeSessionId] ?? []
+            : activeWorkspaceId != null && activeDraftWorkspaceId === activeWorkspaceId
+              ? draftAttachmentsByWorkspace[activeWorkspaceId] ?? []
+              : []
+        }
         isUploadingAttachment={
-          activeSessionId != null && uploadingAttachmentSessionId === activeSessionId
+          activeSessionId != null
+            ? uploadingAttachmentTargetId === `session:${activeSessionId}`
+            : activeWorkspaceId != null && activeDraftWorkspaceId === activeWorkspaceId
+              ? uploadingAttachmentTargetId === `draft:${activeWorkspaceId}`
+              : false
         }
         onAttachFiles={handleAttachFiles}
         onRemoveAttachment={handleRemoveAttachment}
@@ -1039,10 +1240,19 @@ async function sidecarFetch<T>(path: string, init?: RequestInit): Promise<T> {
 
   if (!response.ok) {
     const payload = (await response.json().catch(() => null)) as Record<string, unknown> | null
+    const isSessionDeleteNotAllowed =
+      response.status === 405 &&
+      init?.method === "DELETE" &&
+      path.startsWith("/sessions/")
+    const fallbackMessage = isSessionDeleteNotAllowed
+      ? "Session deletion is not supported by the connected sidecar yet. Please restart or upgrade the sidecar service, then try again."
+      : `Request failed with status ${response.status}`
     throw new NSBotRequestError(
       typeof payload?.detail === "string"
-        ? payload.detail
-        : `Request failed with status ${response.status}`,
+        ? payload.detail === "Method Not Allowed" && isSessionDeleteNotAllowed
+          ? fallbackMessage
+          : payload.detail
+        : fallbackMessage,
       response.status,
       payload
     )
