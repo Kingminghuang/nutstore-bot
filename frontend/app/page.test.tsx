@@ -18,27 +18,63 @@ const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => 
   const decodedPath = decodedPathMatch ? decodeURIComponent(decodedPathMatch[1]) : ""
   if (url.includes("path=%2Fworkspaces%2Fws_1%2Fsessions") && init?.method !== "POST") {
     workspaceSessionsFetchCount += 1
+    const sessions = [
+      {
+        id: "sess_1",
+        workspaceId: "ws_1",
+        title: "Backend driven title",
+        titleSource: runCompleted ? "model" : useStreamingRun ? "heuristic" : "model",
+        createdAt: "2026-03-24T12:00:00Z",
+        updatedAt: runCompleted ? "2026-03-24T12:12:00Z" : "2026-03-24T12:10:00Z",
+        lastMessageAt: runCompleted ? "2026-03-24T12:12:00Z" : "2026-03-24T12:10:00Z",
+        messageCount: runCompleted ? 3 : useStreamingRun ? 1 : 2,
+        lastMessagePreview: runCompleted
+          ? "Run completed through sidecar."
+          : useStreamingRun
+            ? "Run through sidecar"
+            : "I split provider catalog from persisted connections",
+        activeConnectionId: "prov_openai",
+        activeModelId: "gpt-5.4-mini",
+      },
+    ]
+    if (includeEmptySession) {
+      sessions.unshift({
+        id: "sess_2",
+        workspaceId: "ws_1",
+        title: "Fresh session",
+        titleSource: "placeholder",
+        createdAt: "2026-03-24T12:30:00Z",
+        updatedAt: "2026-03-24T12:30:00Z",
+        lastMessageAt: null,
+        messageCount: 0,
+        lastMessagePreview: null,
+        activeConnectionId: "prov_openai",
+        activeModelId: "gpt-5.4-mini",
+      })
+    }
     return new Response(
       JSON.stringify({
-        sessions: [
-          {
-            id: "sess_1",
-            workspaceId: "ws_1",
-            title: "Backend driven title",
-            titleSource: runCompleted ? "model" : useStreamingRun ? "heuristic" : "model",
-            createdAt: "2026-03-24T12:00:00Z",
-            updatedAt: runCompleted ? "2026-03-24T12:12:00Z" : "2026-03-24T12:10:00Z",
-            lastMessageAt: runCompleted ? "2026-03-24T12:12:00Z" : "2026-03-24T12:10:00Z",
-            messageCount: runCompleted ? 3 : useStreamingRun ? 1 : 2,
-            lastMessagePreview: runCompleted
-              ? "Run completed through sidecar."
-              : useStreamingRun
-                ? "Run through sidecar"
-                : "I split provider catalog from persisted connections",
-            activeConnectionId: "prov_openai",
-            activeModelId: "gpt-5.4-mini",
-          },
-        ],
+        sessions,
+      }),
+      { status: 200 }
+    )
+  }
+
+  if (url.includes("path=%2Fworkspaces%2Fws_1%2Fsessions") && init?.method === "POST") {
+    includeEmptySession = true
+    return new Response(
+      JSON.stringify({
+        id: "sess_2",
+        workspaceId: "ws_1",
+        title: "Fresh session",
+        titleSource: "placeholder",
+        createdAt: "2026-03-24T12:30:00Z",
+        updatedAt: "2026-03-24T12:30:00Z",
+        lastMessageAt: null,
+        messageCount: 0,
+        lastMessagePreview: null,
+        activeConnectionId: "prov_openai",
+        activeModelId: "gpt-5.4-mini",
       }),
       { status: 200 }
     )
@@ -197,7 +233,36 @@ const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => 
     )
   }
 
+  if (decodedPath.startsWith("/sessions/sess_2/messages")) {
+    emptySessionMessagesFetchCount += 1
+    if (failFirstEmptySessionMessagesRequest && emptySessionMessagesFetchCount === 1) {
+      return new Response(JSON.stringify({ detail: "Temporary fetch failure" }), { status: 500 })
+    }
+    return new Response(
+      JSON.stringify({
+        messages: [],
+        pagination: {
+          hasMore: false,
+          nextBeforeSequence: null,
+        },
+      }),
+      { status: 200 }
+    )
+  }
+
   if (decodedPath.startsWith("/sessions/sess_1/attachments")) {
+    if (init?.method === "DELETE") {
+      return new Response(null, { status: 204 })
+    }
+    return new Response(
+      JSON.stringify({
+        attachments: [],
+      }),
+      { status: 200 }
+    )
+  }
+
+  if (decodedPath.startsWith("/sessions/sess_2/attachments")) {
     if (init?.method === "DELETE") {
       return new Response(null, { status: 204 })
     }
@@ -486,6 +551,9 @@ let forceRunFailure = false
 let runFailureReason = "Provider connection is missing an API key"
 let useStreamingRun = false
 let usePaginatedHistory = false
+let includeEmptySession = false
+let emptySessionMessagesFetchCount = 0
+let failFirstEmptySessionMessagesRequest = false
 
 global.fetch = fetchMock as typeof fetch
 
@@ -497,6 +565,9 @@ describe("Home page", () => {
     runFailureReason = "Provider connection is missing an API key"
     useStreamingRun = false
     usePaginatedHistory = false
+    includeEmptySession = false
+    emptySessionMessagesFetchCount = 0
+    failFirstEmptySessionMessagesRequest = false
     MockEventSource.instances = []
     fetchMock.mockClear()
     sidecarClientMocks.getRunSteps.mockReset()
@@ -993,6 +1064,47 @@ describe("Home page", () => {
       expect(JSON.parse(String(runCalls[0][1]?.body))).toMatchObject({
         reasoningEffort: "high",
       })
+    })
+  })
+
+  it("hydrates a newly created empty session only once", async () => {
+    render(<Home />)
+
+    await waitFor(() => {
+      expect(screen.getByText("OpenAI - gpt-5.4-mini")).toBeInTheDocument()
+    })
+
+    fireEvent.click(screen.getByRole("button", { name: "New session" }))
+
+    await waitFor(() => {
+      expect(screen.getAllByText("Fresh session").length).toBeGreaterThan(0)
+      expect(emptySessionMessagesFetchCount).toBe(1)
+    })
+
+    await new Promise((resolve) => setTimeout(resolve, 30))
+    expect(emptySessionMessagesFetchCount).toBe(1)
+  })
+
+  it("retries empty-session hydration after switching away and back", async () => {
+    failFirstEmptySessionMessagesRequest = true
+    render(<Home />)
+
+    await waitFor(() => {
+      expect(screen.getByText("OpenAI - gpt-5.4-mini")).toBeInTheDocument()
+    })
+
+    fireEvent.click(screen.getByRole("button", { name: "New session" }))
+
+    await waitFor(() => {
+      expect(screen.getAllByText("Fresh session").length).toBeGreaterThan(0)
+      expect(emptySessionMessagesFetchCount).toBe(1)
+    })
+
+    fireEvent.click(screen.getByText("Backend driven title"))
+    fireEvent.click(screen.getByText("Fresh session"))
+
+    await waitFor(() => {
+      expect(emptySessionMessagesFetchCount).toBe(2)
     })
   })
 

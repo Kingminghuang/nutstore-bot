@@ -53,6 +53,7 @@ export type Session = {
   hasMoreHistory: boolean
   nextBeforeSequence: number | null
   isLoadingHistory: boolean
+  messageHydrationStatus: "idle" | "loading" | "loaded"
 }
 
 type MessagesPageResponse = {
@@ -112,6 +113,7 @@ function withSessionHistoryDefaults(
     hasMoreHistory: false,
     nextBeforeSequence: null,
     isLoadingHistory: false,
+    messageHydrationStatus: "idle",
   }
 }
 
@@ -126,6 +128,7 @@ function mergeSessionWithLocalHistory(
     hasMoreHistory: existing?.hasMoreHistory ?? false,
     nextBeforeSequence: existing?.nextBeforeSequence ?? null,
     isLoadingHistory: existing?.isLoadingHistory ?? false,
+    messageHydrationStatus: messages.length > 0 ? "loaded" : (existing?.messageHydrationStatus ?? "loaded"),
   }
 }
 
@@ -234,6 +237,7 @@ export default function Home() {
   const [attachmentsBySession, setAttachmentsBySession] = useState<Record<string, ComposerAttachment[]>>({})
   const [uploadingAttachmentSessionId, setUploadingAttachmentSessionId] = useState<string | null>(null)
   const eventSourceRef = useRef<EventSource | null>(null)
+  const lastHydrationAttemptSessionIdRef = useRef<string | null>(null)
   const isDragging = useRef(false)
 
   const refreshProviderState = useCallback(async () => {
@@ -343,24 +347,42 @@ export default function Home() {
     [activeSessionId, activeWorkspaceId, sessionsByWorkspace]
   )
 
+  const activeSessionHydrationStatus = activeSession?.messageHydrationStatus ?? null
+
   useEffect(() => {
-    if (!activeSessionId || !activeWorkspaceId || activeSession == null) {
+    lastHydrationAttemptSessionIdRef.current = null
+  }, [activeSessionId])
+
+  useEffect(() => {
+    if (!activeSessionId || !activeWorkspaceId) {
       return
     }
 
-    if (activeSession.messages.length > 0) {
+    if (activeSessionHydrationStatus !== "idle") {
       return
     }
 
-    let cancelled = false
+    if (lastHydrationAttemptSessionIdRef.current === activeSessionId) {
+      return
+    }
+
+    lastHydrationAttemptSessionIdRef.current = activeSessionId
+
+    setSessionsByWorkspace((prev) =>
+      updateSessionInWorkspace(prev, activeWorkspaceId, activeSessionId, (session) =>
+        session.messageHydrationStatus === "idle"
+          ? {
+              ...session,
+              messageHydrationStatus: "loading",
+            }
+          : session
+      )
+    )
 
     void sidecarFetch<MessagesPageResponse>(
       `/sessions/${activeSessionId}/messages?limit=${MESSAGE_PAGE_SIZE}`
     )
       .then((response) => {
-        if (cancelled) {
-          return
-        }
         const runIds = getMessageRunIds(response.messages)
         setRunStepsByRunId((prev) => {
           const next = { ...prev }
@@ -381,17 +403,21 @@ export default function Home() {
                   hasMoreHistory: response.pagination?.hasMore ?? false,
                   nextBeforeSequence: response.pagination?.nextBeforeSequence ?? null,
                   isLoadingHistory: false,
+                  messageHydrationStatus: "loaded",
                 }
               : session
           ),
         }))
       })
-      .catch(() => undefined)
-
-    return () => {
-      cancelled = true
-    }
-  }, [activeSession, activeSessionId, activeWorkspaceId])
+      .catch(() => {
+        setSessionsByWorkspace((prev) =>
+          updateSessionInWorkspace(prev, activeWorkspaceId, activeSessionId, (session) => ({
+            ...session,
+            messageHydrationStatus: "idle",
+          }))
+        )
+      })
+  }, [activeSessionHydrationStatus, activeSessionId, activeWorkspaceId])
 
   useEffect(() => {
     if (!activeSessionId) {
