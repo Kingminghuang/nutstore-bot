@@ -1,9 +1,16 @@
 import argparse
+from http.server import BaseHTTPRequestHandler, HTTPServer
 import json
 import os
+from pathlib import Path
 import sys
+import time
+from urllib.parse import parse_qs, urlencode, urlparse
 import uuid
+import webbrowser
 from typing import Any
+
+import requests
 
 from local_paths import nsbot_home
 from provider_service import ProviderService
@@ -13,7 +20,12 @@ from secret_store import LocalSecretStore
 from storage import connect_database
 
 
-COMMANDS = {"run", "providers", "models", "help"}
+COMMANDS = {"run", "providers", "models", "auth", "help"}
+NUTSTORE_CUSTOM_SLUG = "nutstore"
+NUTSTORE_DISPLAY_NAME = "Nut Store"
+AUTH_PENDING_FILE = "auth-nutstore-pending.json"
+AUTH_PENDING_TTL_SECONDS = 15 * 60
+AUTH_REQUEST_TIMEOUT_SECONDS = 30
 
 
 def _normalize_provider_ref(bundle: dict[str, Any]) -> str:
@@ -27,6 +39,235 @@ def _normalize_provider_ref(bundle: dict[str, Any]) -> str:
 
 def _print_json(payload: dict[str, Any]) -> None:
     print(json.dumps(payload, ensure_ascii=False, indent=2))
+
+
+def _normalize_base_url(value: str) -> str:
+    normalized = str(value or "").strip().rstrip("/")
+    if normalized == "":
+        raise ValueError("gateway-base-url is required")
+    parsed = urlparse(normalized)
+    if parsed.scheme not in {"http", "https"} or parsed.netloc == "":
+        raise ValueError("gateway-base-url must be an absolute http(s) URL")
+    return normalized
+
+
+def _pending_auth_file(ns_bot_home_value: str) -> Path:
+    return Path(ns_bot_home_value).expanduser().resolve() / AUTH_PENDING_FILE
+
+
+def _save_pending_auth(ns_bot_home_value: str, payload: dict[str, Any]) -> None:
+    path = _pending_auth_file(ns_bot_home_value)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as handle:
+        json.dump(payload, handle, ensure_ascii=False, indent=2)
+
+
+def _load_pending_auth(ns_bot_home_value: str) -> dict[str, Any]:
+    path = _pending_auth_file(ns_bot_home_value)
+    if not path.exists():
+        raise ValueError("No pending auth login found. Run `auth login` first.")
+    with path.open("r", encoding="utf-8") as handle:
+        payload = json.load(handle)
+    created_epoch = float(payload.get("createdEpoch") or 0)
+    if created_epoch <= 0:
+        _clear_pending_auth(ns_bot_home_value)
+        raise ValueError(
+            "Pending auth login metadata is invalid. Run `auth login` again."
+        )
+    if (time.time() - created_epoch) > AUTH_PENDING_TTL_SECONDS:
+        _clear_pending_auth(ns_bot_home_value)
+        raise ValueError("Pending auth login expired. Run `auth login` again.")
+    return payload
+
+
+def _clear_pending_auth(ns_bot_home_value: str) -> None:
+    path = _pending_auth_file(ns_bot_home_value)
+    if path.exists():
+        path.unlink()
+
+
+def _build_authorize_url(
+    *, gateway_base_url: str, redirect_uri: str, state: str, nonce: str
+) -> str:
+    query = urlencode(
+        {
+            "redirect_uri": redirect_uri,
+            "state": state,
+            "nonce": nonce,
+        }
+    )
+    return f"{gateway_base_url}/d/openid/auth?{query}"
+
+
+def _extract_code_and_state(raw_input: str) -> tuple[str, str | None]:
+    value = str(raw_input or "").strip()
+    if value == "":
+        raise ValueError("OAuth input is required")
+    if "://" not in value:
+        return value, None
+    parsed = urlparse(value)
+    params = parse_qs(parsed.query)
+    code = str((params.get("code") or [""])[0]).strip()
+    state = str((params.get("state") or [""])[0]).strip() or None
+    if code == "":
+        raise ValueError("OAuth callback URL is missing code")
+    return code, state
+
+
+def _wait_for_local_callback(
+    *, redirect_uri: str, timeout_seconds: int
+) -> tuple[str, str | None] | None:
+    parsed = urlparse(redirect_uri)
+    host = parsed.hostname or ""
+    if parsed.scheme != "http" or host not in {"localhost", "127.0.0.1"}:
+        return None
+    if parsed.port is None:
+        raise ValueError(
+            "redirect URI must include an explicit port for local callback"
+        )
+
+    expected_path = parsed.path or "/"
+    callback_payload: dict[str, str | None] = {"code": None, "state": None}
+
+    class CallbackHandler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802
+            request_url = urlparse(self.path)
+            if request_url.path != expected_path:
+                self.send_response(404)
+                self.end_headers()
+                return
+
+            params = parse_qs(request_url.query)
+            code = str((params.get("code") or [""])[0]).strip()
+            state = str((params.get("state") or [""])[0]).strip() or None
+            if code == "":
+                self.send_response(400)
+                self.end_headers()
+                self.wfile.write(b"Missing code")
+                return
+
+            callback_payload["code"] = code
+            callback_payload["state"] = state
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(
+                b"<html><body><h2>Nut Store login complete</h2><p>You can close this tab.</p></body></html>"
+            )
+
+        def log_message(self, format: str, *args: Any) -> None:  # noqa: A003
+            return
+
+    bind_host = "127.0.0.1"
+    try:
+        server = HTTPServer((bind_host, parsed.port), CallbackHandler)
+    except OSError as exc:
+        raise ValueError(
+            f"Failed to bind callback listener at {bind_host}:{parsed.port}: {exc}"
+        ) from exc
+
+    deadline = time.monotonic() + max(timeout_seconds, 1)
+    try:
+        while callback_payload.get("code") is None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            server.timeout = min(1.0, remaining)
+            server.handle_request()
+    finally:
+        server.server_close()
+
+    code = callback_payload.get("code")
+    if code is None:
+        return None
+    return code, callback_payload.get("state")
+
+
+def _exchange_oidc_code(
+    *,
+    gateway_base_url: str,
+    code: str,
+    redirect_uri: str,
+    nonce: str,
+) -> dict[str, Any]:
+    response = requests.post(
+        f"{gateway_base_url}/v1/auth/oidc/exchange",
+        json={
+            "code": code,
+            "redirect_uri": redirect_uri,
+            "nonce": nonce,
+        },
+        timeout=AUTH_REQUEST_TIMEOUT_SECONDS,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    access_token = str(payload.get("access_token") or "").strip()
+    if access_token == "":
+        raise ValueError("Gateway exchange response missing access_token")
+    return payload
+
+
+def _find_nutstore_bundle(
+    bundles: list[ProviderConnectionBundle],
+) -> ProviderConnectionBundle | None:
+    for bundle in bundles:
+        if bundle.connection.kind != "custom":
+            continue
+        if (bundle.connection.custom_slug or "") != NUTSTORE_CUSTOM_SLUG:
+            continue
+        return bundle
+    return None
+
+
+def _upsert_nutstore_provider(
+    *,
+    repositories: Any,
+    provider_service: ProviderService,
+    gateway_base_url: str,
+    access_token: str,
+    model_id: str,
+) -> dict[str, Any]:
+    existing = _find_nutstore_bundle(repositories.providers.list_bundles())
+    base_url = f"{gateway_base_url}/v1"
+
+    custom_models: list[dict[str, Any]] = []
+    if existing is not None:
+        custom_models = [
+            {
+                "id": model.id,
+                "modelId": model.model_id,
+                "displayName": model.display_name,
+                "enabled": model.enabled,
+            }
+            for model in existing.models
+            if model.source == "custom"
+        ]
+
+    model_ids = {str(model.get("modelId") or "") for model in custom_models}
+    if model_id not in model_ids:
+        custom_models.append(
+            {
+                "modelId": model_id,
+                "displayName": model_id,
+                "enabled": True,
+            }
+        )
+
+    payload = {
+        "kind": "custom",
+        "customSlug": NUTSTORE_CUSTOM_SLUG,
+        "displayName": NUTSTORE_DISPLAY_NAME,
+        "baseUrl": base_url,
+        "apiKey": access_token,
+        "preferredModelId": model_id,
+        "customModels": custom_models,
+        "healthStatus": "connected",
+        "healthMessage": "Authenticated via OIDC",
+    }
+
+    if existing is None:
+        return provider_service.create_provider(payload)
+    return provider_service.update_provider(existing.connection.id, payload)
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -91,6 +332,73 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     models_remove.add_argument("--connection-id", type=str, required=True)
     models_remove.add_argument("--model", type=str, required=True)
+
+    auth = subparsers.add_parser("auth", help="Authenticate Nut Store gateway")
+    auth_sub = auth.add_subparsers(dest="auth_command", required=True)
+
+    auth_login = auth_sub.add_parser("login", help="Start Nut Store OAuth login")
+    auth_login.add_argument(
+        "--gateway-base-url",
+        type=str,
+        default=os.getenv("NS_GATEWAY_BASE_URL", "").strip(),
+        help="Gateway base URL used for authorize/exchange endpoints",
+    )
+    auth_login.add_argument(
+        "--model",
+        type=str,
+        default="gpt-5.4",
+        help="Preferred model id for Nut Store connection",
+    )
+    auth_login.add_argument(
+        "--redirect-uri",
+        type=str,
+        default="",
+        help="OAuth redirect URI. Defaults to local callback URL",
+    )
+    auth_login.add_argument(
+        "--callback-port",
+        type=int,
+        default=1457,
+        help="Port used for local callback listener",
+    )
+    auth_login.add_argument(
+        "--callback-timeout-sec",
+        type=int,
+        default=120,
+        help="Seconds to wait for browser callback before timeout",
+    )
+    auth_login.add_argument(
+        "--no-open",
+        action="store_true",
+        help="Do not auto-open browser, print authorize URL only",
+    )
+    auth_login.add_argument(
+        "--no-listen",
+        action="store_true",
+        help="Skip local callback listener and complete via paste-redirect",
+    )
+
+    auth_paste = auth_sub.add_parser(
+        "paste-redirect", help="Complete OAuth with pasted callback URL or code"
+    )
+    auth_paste.add_argument(
+        "--input",
+        type=str,
+        required=True,
+        help="Full callback URL or raw OAuth code",
+    )
+    auth_paste.add_argument(
+        "--gateway-base-url",
+        type=str,
+        default="",
+        help="Optional override for gateway base URL",
+    )
+    auth_paste.add_argument(
+        "--model",
+        type=str,
+        default="",
+        help="Optional override for preferred model id",
+    )
 
     run = subparsers.add_parser("run", help="Execute one task")
     run.add_argument("user_input", type=str, help="Task prompt")
@@ -557,6 +865,183 @@ def _handle_models_command(args: argparse.Namespace) -> int:
         database.close()
 
 
+def _handle_auth_login_command(args: argparse.Namespace) -> int:
+    gateway_base_url = _normalize_base_url(args.gateway_base_url)
+    model_id = str(args.model or "").strip() or "gpt-5.4"
+    redirect_uri = str(args.redirect_uri or "").strip() or (
+        f"http://localhost:{int(args.callback_port)}/auth/callback"
+    )
+    timeout_seconds = int(args.callback_timeout_sec)
+    if timeout_seconds <= 0:
+        raise ValueError("callback-timeout-sec must be greater than 0")
+
+    state = uuid.uuid4().hex
+    nonce = uuid.uuid4().hex
+    authorize_url = _build_authorize_url(
+        gateway_base_url=gateway_base_url,
+        redirect_uri=redirect_uri,
+        state=state,
+        nonce=nonce,
+    )
+    _save_pending_auth(
+        args.ns_bot_home,
+        {
+            "provider": NUTSTORE_CUSTOM_SLUG,
+            "gatewayBaseUrl": gateway_base_url,
+            "redirectUri": redirect_uri,
+            "state": state,
+            "nonce": nonce,
+            "model": model_id,
+            "createdAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "createdEpoch": time.time(),
+        },
+    )
+
+    print("Open this URL in your browser and authorize access:", file=sys.stderr)
+    print(authorize_url, file=sys.stderr)
+
+    if not args.no_open:
+        try:
+            webbrowser.open(authorize_url)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[!] Failed to open browser automatically: {exc}", file=sys.stderr)
+
+    if args.no_listen:
+        _print_json(
+            {
+                "ok": True,
+                "status": "pending",
+                "authorizeUrl": authorize_url,
+                "redirectUri": redirect_uri,
+                "next": 'Run `auth paste-redirect --input "<callback-url-or-code>"`',
+            }
+        )
+        return 0
+
+    print(f"Waiting for callback at {redirect_uri} ...", file=sys.stderr)
+    callback = _wait_for_local_callback(
+        redirect_uri=redirect_uri,
+        timeout_seconds=timeout_seconds,
+    )
+    if callback is None:
+        print("Callback capture timed out.", file=sys.stderr)
+        print(
+            'Run `auth paste-redirect --input "<callback-url-or-code>"`',
+            file=sys.stderr,
+        )
+        return 1
+
+    code, callback_state = callback
+    if callback_state is not None and callback_state != state:
+        raise ValueError("OAuth state mismatch")
+
+    exchange_payload = _exchange_oidc_code(
+        gateway_base_url=gateway_base_url,
+        code=code,
+        redirect_uri=redirect_uri,
+        nonce=nonce,
+    )
+
+    database, repositories, _secret_store, provider_service = _build_services(
+        args.ns_bot_home
+    )
+    try:
+        bundle = _upsert_nutstore_provider(
+            repositories=repositories,
+            provider_service=provider_service,
+            gateway_base_url=gateway_base_url,
+            access_token=str(exchange_payload["access_token"]),
+            model_id=model_id,
+        )
+    finally:
+        database.close()
+
+    _clear_pending_auth(args.ns_bot_home)
+    _print_json(
+        {
+            "ok": True,
+            "connectionId": str(bundle.get("id") or ""),
+            "providerId": _normalize_provider_ref(bundle),
+            "modelId": model_id,
+            "tokenType": exchange_payload.get("token_type"),
+            "expiresIn": exchange_payload.get("expires_in"),
+        }
+    )
+    return 0
+
+
+def _handle_auth_paste_redirect_command(args: argparse.Namespace) -> int:
+    pending = _load_pending_auth(args.ns_bot_home)
+    gateway_base_url = _normalize_base_url(
+        str(args.gateway_base_url or "").strip()
+        or str(pending.get("gatewayBaseUrl") or "")
+    )
+    redirect_uri = str(pending.get("redirectUri") or "").strip()
+    if redirect_uri == "":
+        raise ValueError(
+            "Pending auth login metadata is invalid. Missing redirect URI."
+        )
+    expected_state = str(pending.get("state") or "").strip()
+    nonce = str(pending.get("nonce") or "").strip()
+    if expected_state == "" or nonce == "":
+        raise ValueError(
+            "Pending auth login metadata is invalid. Run `auth login` again."
+        )
+    model_id = (
+        str(args.model or "").strip()
+        or str(pending.get("model") or "").strip()
+        or "gpt-5.4"
+    )
+
+    code, callback_state = _extract_code_and_state(args.input)
+    if callback_state is not None and callback_state != expected_state:
+        raise ValueError(
+            f"OAuth state mismatch: expected {expected_state}, got {callback_state}"
+        )
+
+    exchange_payload = _exchange_oidc_code(
+        gateway_base_url=gateway_base_url,
+        code=code,
+        redirect_uri=redirect_uri,
+        nonce=nonce,
+    )
+
+    database, repositories, _secret_store, provider_service = _build_services(
+        args.ns_bot_home
+    )
+    try:
+        bundle = _upsert_nutstore_provider(
+            repositories=repositories,
+            provider_service=provider_service,
+            gateway_base_url=gateway_base_url,
+            access_token=str(exchange_payload["access_token"]),
+            model_id=model_id,
+        )
+    finally:
+        database.close()
+
+    _clear_pending_auth(args.ns_bot_home)
+    _print_json(
+        {
+            "ok": True,
+            "connectionId": str(bundle.get("id") or ""),
+            "providerId": _normalize_provider_ref(bundle),
+            "modelId": model_id,
+            "tokenType": exchange_payload.get("token_type"),
+            "expiresIn": exchange_payload.get("expires_in"),
+        }
+    )
+    return 0
+
+
+def _handle_auth_command(args: argparse.Namespace) -> int:
+    if args.auth_command == "login":
+        return _handle_auth_login_command(args)
+    if args.auth_command == "paste-redirect":
+        return _handle_auth_paste_redirect_command(args)
+    raise ValueError(f"Unknown auth command: {args.auth_command}")
+
+
 def _resolve_run_target(
     args: argparse.Namespace,
 ) -> tuple[RuntimeWorkerConfig, dict[str, Any]]:
@@ -780,6 +1265,8 @@ def main(argv: list[str] | None = None) -> int:
             return _handle_providers_command(args)
         if args.command == "models":
             return _handle_models_command(args)
+        if args.command == "auth":
+            return _handle_auth_command(args)
         if args.command == "run":
             return _handle_run_command(args)
         if args.command == "help":

@@ -229,7 +229,7 @@ class CliProviderModelTests(unittest.TestCase):
         self.assertEqual(payload["resolved"]["mode"], "direct")
         self.assertEqual(payload["resolved"]["runtimeProvider"], "custom")
         self.assertEqual(payload["resolved"]["modelId"], "demo-direct-model")
-        self.assertEqual(payload["runtime"]["hasDirectApiKey"], True)
+        self.assertEqual(payload["runtime"]["hasApiKey"], True)
 
 
 if __name__ == "__main__":
