@@ -9,7 +9,7 @@ type DiscoveryFilePayload = {
   token: string
 }
 
-export async function readSidecarDiscovery(): Promise<DiscoveryFilePayload> {
+export async function readNSBotDiscovery(): Promise<DiscoveryFilePayload> {
   const discoveryPath = resolveDiscoveryPath()
   const payload = JSON.parse(
     await readFile(discoveryPath, "utf-8")
@@ -25,11 +25,11 @@ export async function readSidecarDiscovery(): Promise<DiscoveryFilePayload> {
   }
 }
 
-export async function proxySidecarRequest(
+export async function proxyNSBotRequest(
   routePath: string,
   init?: RequestInit
 ): Promise<Response> {
-  const discovery = await readSidecarDiscovery()
+  const discovery = await readNSBotDiscovery()
   const headers = new Headers(init?.headers)
   headers.set("Authorization", `Bearer ${discovery.token}`)
 

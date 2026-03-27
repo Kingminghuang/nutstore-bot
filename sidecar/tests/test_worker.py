@@ -78,10 +78,10 @@ class WorkerRequestParsingTests(unittest.TestCase):
                 "metadata": {"workspacePath": "/tmp/ws3", "sessionKey": "s3"},
                 "config": {
                     "modelId": "gpt-5.4",
-                    "directProvider": "openai",
-                    "directBaseUrl": "https://api.openai.com/v1",
-                    "directApiKey": "sk-test",
-                    "directModelId": "gpt-4.1",
+                    "provider": "openai",
+                    "baseUrl": "https://api.openai.com/v1",
+                    "apiKey": "sk-test",
+                    "model": "gpt-4.1",
                     "directRequestTimeoutMs": 45000,
                     "nsBotHome": "/tmp/.nsbot",
                     "workspacePathDefault": "/tmp",
@@ -91,10 +91,10 @@ class WorkerRequestParsingTests(unittest.TestCase):
         )
 
         req = parse_request(raw)
-        self.assertEqual(req.config.direct_provider, "openai")
-        self.assertEqual(req.config.direct_base_url, "https://api.openai.com/v1")
-        self.assertEqual(req.config.direct_api_key, "sk-test")
-        self.assertEqual(req.config.direct_model_id, "gpt-4.1")
+        self.assertEqual(req.config.provider, "openai")
+        self.assertEqual(req.config.base_url, "https://api.openai.com/v1")
+        self.assertEqual(req.config.api_key, "sk-test")
+        self.assertEqual(req.config.model, "gpt-4.1")
         self.assertEqual(req.config.direct_request_timeout_ms, 45000)
 
     def test_parse_request_uses_platform_nsbot_home_default(self) -> None:

@@ -52,12 +52,12 @@ export type RunStepsResponse = {
   steps: RunHistoryStep[]
 }
 
-class SidecarClientError extends Error {
+class NSBotClientError extends Error {
   status: number
 
   constructor(message: string, status: number) {
     super(message)
-    this.name = "SidecarClientError"
+    this.name = "NSBotClientError"
     this.status = status
   }
 }
@@ -134,7 +134,7 @@ async function sidecarFetch<T>(path: string, init?: RequestInit): Promise<T> {
 
   if (!response.ok) {
     const message = await readErrorMessage(response)
-    throw new SidecarClientError(message, response.status)
+    throw new NSBotClientError(message, response.status)
   }
 
   if (response.status === 204) {

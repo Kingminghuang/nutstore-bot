@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
 
-import { proxySidecarRequest } from "@/lib/sidecar-server"
+import { proxyNSBotRequest } from "@/lib/sidecar-server"
 import { redactSensitive } from "@/lib/redaction"
 
 export async function GET(request: NextRequest) {
@@ -38,7 +38,7 @@ async function handleProxyRequest(request: NextRequest) {
         ? await request.text()
         : await request.arrayBuffer()
 
-  const response = await proxySidecarRequest(routePath, {
+  const response = await proxyNSBotRequest(routePath, {
     method: request.method,
     headers,
     body,

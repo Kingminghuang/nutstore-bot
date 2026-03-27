@@ -128,7 +128,7 @@ export function MainContent({
 
     return (
       getModelOptionLabel(selectedModel, modelOptionGroups) ??
-      (providerError ? "Sidecar unavailable" : "No configured providers")
+      (providerError ? "NSBot unavailable" : "No configured providers")
     )
   }, [isLoadingModels, modelOptionGroups, providerError, selectedModel])
 

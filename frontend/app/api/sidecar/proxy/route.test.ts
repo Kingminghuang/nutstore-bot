@@ -1,10 +1,10 @@
 import { NextRequest } from "next/server"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
-const proxySidecarRequestMock = vi.fn()
+const proxyNSBotRequestMock = vi.fn()
 
 vi.mock("@/lib/sidecar-server", () => ({
-  proxySidecarRequest: proxySidecarRequestMock,
+  proxyNSBotRequest: proxyNSBotRequestMock,
 }))
 
 describe("sidecar proxy route", () => {
@@ -14,7 +14,7 @@ describe("sidecar proxy route", () => {
   })
 
   it("passes request body and content-type through the proxy helper", async () => {
-    proxySidecarRequestMock.mockResolvedValueOnce(
+    proxyNSBotRequestMock.mockResolvedValueOnce(
       new Response(JSON.stringify({ ok: true }), {
         status: 200,
         headers: { "content-type": "application/json" },
@@ -32,7 +32,7 @@ describe("sidecar proxy route", () => {
 
     const response = await POST(request)
 
-    expect(proxySidecarRequestMock).toHaveBeenCalledWith(
+    expect(proxyNSBotRequestMock).toHaveBeenCalledWith(
       "/runs",
       expect.objectContaining({
         method: "POST",
@@ -45,7 +45,7 @@ describe("sidecar proxy route", () => {
   })
 
   it("forwards multipart uploads as binary payload", async () => {
-    proxySidecarRequestMock.mockResolvedValueOnce(
+    proxyNSBotRequestMock.mockResolvedValueOnce(
       new Response(JSON.stringify({ ok: true }), {
         status: 200,
         headers: { "content-type": "application/json" },
@@ -65,7 +65,7 @@ describe("sidecar proxy route", () => {
 
     await POST(request)
 
-    const init = proxySidecarRequestMock.mock.calls[0][1] as RequestInit
+    const init = proxyNSBotRequestMock.mock.calls[0][1] as RequestInit
     expect(init.body).toBeInstanceOf(ArrayBuffer)
   })
 })

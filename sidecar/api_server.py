@@ -56,7 +56,7 @@ class ApiServerConfig:
 
 def ensure_local_host(host: str) -> None:
     if host not in {DEFAULT_HOST, "localhost"}:
-        raise ValueError("Sidecar host must bind to localhost")
+        raise ValueError("NSBot host must bind to localhost")
 
 
 def create_app(config: ApiServerConfig | None = None) -> FastAPI:
@@ -100,7 +100,7 @@ def create_app(config: ApiServerConfig | None = None) -> FastAPI:
             if isinstance(db, sqlite3.Connection):
                 db.close()
 
-    app = FastAPI(title="Nutstore Bot Sidecar", version=cfg.version, lifespan=lifespan)
+    app = FastAPI(title="Nutstore Bot NSBot", version=cfg.version, lifespan=lifespan)
     app.state.api_server_config = cfg
     app.state.local_auth = auth_config
     app.state.database = database

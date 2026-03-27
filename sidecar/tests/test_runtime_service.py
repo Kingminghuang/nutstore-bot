@@ -136,10 +136,10 @@ class RuntimeServiceTests(unittest.TestCase):
     def test_direct_mode_execution(self) -> None:
         cfg = replace(
             self._config(),
-            direct_provider="openai",
-            direct_base_url="https://api.openai.com/v1",
-            direct_api_key="sk-test",
-            direct_model_id="gpt-4.1",
+            provider="openai",
+            base_url="https://api.openai.com/v1",
+            api_key="sk-test",
+            model="gpt-4.1",
         )
 
         service = CodeAgentRuntimeService(
@@ -163,10 +163,10 @@ class RuntimeServiceTests(unittest.TestCase):
 
         cfg = replace(
             self._config(),
-            direct_provider="openai",
-            direct_base_url="https://api.openai.com/v1",
-            direct_api_key="sk-test",
-            direct_model_id="gpt-4.1",
+            provider="openai",
+            base_url="https://api.openai.com/v1",
+            api_key="sk-test",
+            model="gpt-4.1",
             direct_reasoning_effort="high",
         )
 
@@ -191,10 +191,10 @@ class RuntimeServiceTests(unittest.TestCase):
     def test_direct_mode_requires_api_key(self) -> None:
         cfg = replace(
             self._config(),
-            direct_provider="openai",
-            direct_base_url="https://api.openai.com/v1",
-            direct_api_key="",
-            direct_model_id="gpt-4.1",
+            provider="openai",
+            base_url="https://api.openai.com/v1",
+            api_key="",
+            model="gpt-4.1",
         )
 
         service = CodeAgentRuntimeService(cfg)
@@ -211,13 +211,13 @@ class RuntimeServiceTests(unittest.TestCase):
 
         self.assertEqual(ctx.exception.code, "missing_api_key")
 
-    def test_direct_provider_error_passthrough(self) -> None:
+    def test_provider_error_passthrough(self) -> None:
         cfg = replace(
             self._config(),
-            direct_provider="openai",
-            direct_base_url="https://api.openai.com/v1",
-            direct_api_key="sk-test",
-            direct_model_id="gpt-4.1",
+            provider="openai",
+            base_url="https://api.openai.com/v1",
+            api_key="sk-test",
+            model="gpt-4.1",
         )
 
         def direct_failure_factory() -> Model:
@@ -227,7 +227,7 @@ class RuntimeServiceTests(unittest.TestCase):
 
         with self.assertRaises(RuntimeProcessError) as ctx:
             service.process(
-                run_id="run-direct-provider-failure",
+                run_id="run-provider-failure",
                 user_input="task",
                 auth_context={},
                 metadata=RunMetadata(

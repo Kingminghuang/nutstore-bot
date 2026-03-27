@@ -43,22 +43,22 @@ class SessionService:
 
     def create_workspace(self, payload: dict[str, Any]) -> dict[str, Any]:
         name = _normalize_required_string(
-            payload.get("name"), detail="Workspace name is required"
+            payload.get("name"), detail="Directory name is required"
         )
         real_path = _normalize_required_string(
             payload.get("realPath", payload.get("real_path")),
-            detail="Workspace path is required",
+            detail="Directory path is required",
         )
         path_label = _normalize_required_string(
             payload.get("pathLabel", payload.get("path_label", real_path)),
-            detail="Workspace path label is required",
+            detail="Directory path label is required",
         )
 
         resolved_path = Path(real_path).expanduser().resolve()
         if not resolved_path.exists() or not resolved_path.is_dir():
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Workspace path must point to an existing directory",
+                detail="Directory path must point to an existing directory",
             )
 
         try:
@@ -70,7 +70,7 @@ class SessionService:
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Workspace path is already registered",
+                detail="Directory path is already registered",
             ) from exc
 
         return serialize_workspace(workspace)
@@ -97,7 +97,7 @@ class SessionService:
             if not resolved.exists() or not resolved.is_dir():
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="Workspace path must point to an existing directory",
+                    detail="Directory path must point to an existing directory",
                 )
             resolved_real_path = str(resolved)
 
@@ -111,7 +111,7 @@ class SessionService:
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Workspace path is already registered",
+                detail="Directory path is already registered",
             ) from exc
 
         return serialize_workspace(workspace)

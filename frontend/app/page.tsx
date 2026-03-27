@@ -626,7 +626,7 @@ export default function Home() {
           startRunEventStream(runResponse.run.id, activeWorkspaceId, activeSessionId)
         }
       } catch (error) {
-        if (error instanceof SidecarRequestError && error.payload) {
+        if (error instanceof NSBotRequestError && error.payload) {
           const payload = error.payload as {
             detail?: string
             session?: ServerSession
@@ -1013,7 +1013,7 @@ async function sidecarFetch<T>(path: string, init?: RequestInit): Promise<T> {
 
   if (!response.ok) {
     const payload = (await response.json().catch(() => null)) as Record<string, unknown> | null
-    throw new SidecarRequestError(
+    throw new NSBotRequestError(
       typeof payload?.detail === "string"
         ? payload.detail
         : `Request failed with status ${response.status}`,
@@ -1029,13 +1029,13 @@ async function sidecarFetch<T>(path: string, init?: RequestInit): Promise<T> {
   return (await response.json()) as T
 }
 
-class SidecarRequestError extends Error {
+class NSBotRequestError extends Error {
   status: number
   payload: Record<string, unknown> | null
 
   constructor(message: string, status: number, payload: Record<string, unknown> | null) {
     super(message)
-    this.name = "SidecarRequestError"
+    this.name = "NSBotRequestError"
     this.status = status
     this.payload = payload
   }

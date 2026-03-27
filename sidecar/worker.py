@@ -73,20 +73,28 @@ def parse_request(raw: str) -> RuntimeRequest:
         ),
         config=RuntimeWorkerConfig(
             model_id=str(_pick(config_data, "model_id", "modelId") or "gpt-5.4"),
-            direct_provider=str(
-                _pick(config_data, "direct_provider", "directProvider") or ""
+            provider=str(
+                _pick(config_data, "provider", "providerId")
+                or _pick(config_data, "provider", "provider")
+                or ""
             ).strip()
             or None,
-            direct_base_url=str(
-                _pick(config_data, "direct_base_url", "directBaseUrl") or ""
+            base_url=str(
+                _pick(config_data, "base_url", "baseUrl")
+                or _pick(config_data, "base_url", "baseUrl")
+                or ""
             ).strip()
             or None,
-            direct_api_key=str(
-                _pick(config_data, "direct_api_key", "directApiKey") or ""
+            api_key=str(
+                _pick(config_data, "api_key", "apiKey")
+                or _pick(config_data, "api_key", "apiKey")
+                or ""
             ).strip()
             or None,
-            direct_model_id=str(
-                _pick(config_data, "direct_model_id", "directModelId") or ""
+            model=str(
+                _pick(config_data, "model", "selectedModelId")
+                or _pick(config_data, "model", "model")
+                or ""
             ).strip()
             or None,
             direct_request_timeout_ms=int(

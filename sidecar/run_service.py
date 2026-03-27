@@ -224,10 +224,10 @@ class RunService:
                 model_id=model_id,
                 ns_bot_home=str(nsbot_home(self.ns_bot_home)),
                 workspace_path_default=workspace.real_path,
-                direct_provider=bundle.connection.runtime_provider,
-                direct_base_url=bundle.connection.base_url,
-                direct_api_key=api_key,
-                direct_model_id=model_id,
+                provider=bundle.connection.runtime_provider,
+                base_url=bundle.connection.base_url,
+                api_key=api_key,
+                model=model_id,
                 direct_reasoning_effort=resolved_reasoning_effort,
             )
             metadata = RunMetadata(

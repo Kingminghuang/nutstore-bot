@@ -30,9 +30,10 @@ const project = {
 describe("Sidebar workspace controls", () => {
   afterEach(() => {
     delete (window as Window & { __NSBOT_SHELL__?: unknown }).__NSBOT_SHELL__
+    delete (window as Window & { showDirectoryPicker?: unknown }).showDirectoryPicker
   })
 
-  it("opens add workspace dialog and submits manual values", async () => {
+  it("opens Add directory dialog and submits manual values", async () => {
     const onAddProject = vi.fn(async () => undefined)
 
     render(
@@ -51,13 +52,13 @@ describe("Sidebar workspace controls", () => {
     )
 
     fireEvent.click(screen.getByLabelText("Add a new directory"))
-    fireEvent.change(screen.getByLabelText("Workspace name"), {
+    fireEvent.change(screen.getByLabelText("Directory name"), {
       target: { value: "repo-a" },
     })
-    fireEvent.change(screen.getByLabelText("Workspace path"), {
+    fireEvent.change(screen.getByLabelText("Directory path"), {
       target: { value: "/tmp/repo-a" },
     })
-    fireEvent.click(screen.getByRole("button", { name: "Add workspace" }))
+    fireEvent.click(screen.getByRole("button", { name: "Add directory" }))
 
     await waitFor(() => {
       expect(onAddProject).toHaveBeenCalledWith("repo-a", "/tmp/repo-a")
@@ -87,7 +88,7 @@ describe("Sidebar workspace controls", () => {
     })
   })
 
-  it("uses the product shell workspace picker when available", async () => {
+  it("uses directory picker mode when available and submits picked values", async () => {
     const onAddProject = vi.fn(async () => undefined)
     ;(window as Window & {
       __NSBOT_SHELL__?: {
@@ -121,15 +122,88 @@ describe("Sidebar workspace controls", () => {
     )
 
     fireEvent.click(screen.getByLabelText("Add a new directory"))
-    fireEvent.click(screen.getByRole("button", { name: "Pick folder" }))
+    expect(screen.queryByLabelText("Directory name")).not.toBeInTheDocument()
+    expect(screen.queryByLabelText("Directory path")).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: "Select directory" }))
 
     await waitFor(() => {
-      expect(screen.getByLabelText("Workspace name")).toHaveValue("repo-from-shell")
-      expect(screen.getByLabelText("Workspace path")).toHaveValue("/Users/demo/repo-from-shell")
+      expect(screen.getByText("repo-from-shell")).toBeInTheDocument()
+      expect(screen.getByText("/Users/demo/repo-from-shell")).toBeInTheDocument()
+    })
+
+    fireEvent.click(screen.getByRole("button", { name: "Add directory" }))
+    await waitFor(() => {
+      expect(onAddProject).toHaveBeenCalledWith("repo-from-shell", "/Users/demo/repo-from-shell")
     })
   })
 
-  it("explains the manual fallback when no product shell picker exists", async () => {
+  it("falls back to __NSBOT_SHELL__.window.showDirectoryPicker when direct shell picker is unavailable", async () => {
+    const onAddProject = vi.fn(async () => undefined)
+    const shellWindowPicker = vi.fn(async () => ({
+      name: "repo-from-shell-window",
+      realPath: "/Users/demo/repo-from-shell-window",
+      pathLabel: "/Users/demo/repo-from-shell-window",
+    }))
+    const browserPicker = vi.fn(async () => ({
+      name: "repo-from-browser-window",
+      realPath: "/Users/demo/repo-from-browser-window",
+      pathLabel: "/Users/demo/repo-from-browser-window",
+    }))
+
+    ;(window as Window & { __NSBOT_SHELL__?: unknown }).__NSBOT_SHELL__ = {
+      window: {
+        showDirectoryPicker: shellWindowPicker,
+      },
+    }
+    ;(window as Window & { showDirectoryPicker?: unknown }).showDirectoryPicker = browserPicker
+
+    render(
+      <Sidebar
+        projects={[]}
+        activeProjectId={null}
+        activeSessionId={null}
+        width={230}
+        onAddProject={onAddProject}
+        onRenameProject={vi.fn()}
+        onNewSession={vi.fn()}
+        onSessionChange={vi.fn()}
+        onRemoveProject={vi.fn()}
+        onResizeStart={vi.fn()}
+      />
+    )
+
+    fireEvent.click(screen.getByLabelText("Add a new directory"))
+    fireEvent.click(screen.getByRole("button", { name: "Select directory" }))
+    await waitFor(() => {
+      expect(onAddProject).not.toHaveBeenCalled()
+      expect(screen.getByText("/Users/demo/repo-from-shell-window")).toBeInTheDocument()
+    })
+    fireEvent.click(screen.getByRole("button", { name: "Add directory" }))
+    await waitFor(() => {
+      expect(onAddProject).toHaveBeenCalledWith(
+        "repo-from-shell-window",
+        "/Users/demo/repo-from-shell-window"
+      )
+    })
+    expect(shellWindowPicker).toHaveBeenCalledTimes(1)
+    expect(browserPicker).not.toHaveBeenCalled()
+  })
+
+  it("keeps add directory disabled when picker is available but no folder is chosen", async () => {
+    ;(window as Window & {
+      __NSBOT_SHELL__?: {
+        pickWorkspaceDirectory: () => Promise<{
+          name: string
+          realPath: string
+          pathLabel: string
+        }>
+      }
+    }).__NSBOT_SHELL__ = {
+      pickWorkspaceDirectory: vi.fn(async () => {
+        throw new Error("cancelled")
+      }),
+    }
+
     render(
       <Sidebar
         projects={[]}
@@ -146,15 +220,75 @@ describe("Sidebar workspace controls", () => {
     )
 
     fireEvent.click(screen.getByLabelText("Add a new directory"))
-    fireEvent.click(screen.getByRole("button", { name: "Use product shell" }))
+    expect(screen.getByRole("button", { name: "Add directory" })).toBeDisabled()
+    fireEvent.click(screen.getByRole("button", { name: "Select directory" }))
+    expect(screen.getByRole("button", { name: "Add directory" })).toBeDisabled()
+  })
+
+  it("shows manual fallback fields with user-friendly guidance when picker is unavailable", async () => {
+    render(
+      <Sidebar
+        projects={[]}
+        activeProjectId={null}
+        activeSessionId={null}
+        width={230}
+        onAddProject={vi.fn()}
+        onRenameProject={vi.fn()}
+        onNewSession={vi.fn()}
+        onSessionChange={vi.fn()}
+        onRemoveProject={vi.fn()}
+        onResizeStart={vi.fn()}
+      />
+    )
+
+    fireEvent.click(screen.getByLabelText("Add a new directory"))
+    expect(screen.getByLabelText("Directory name")).toBeInTheDocument()
+    expect(screen.getByLabelText("Directory path")).toBeInTheDocument()
 
     await waitFor(() => {
       expect(
         screen.getByText(
-          "Folder picking is available in the product shell. Paste a trusted local path here while running in the browser."
+          "This environment doesn't support direct folder selection. Please enter the directory name and path manually."
         )
       ).toBeInTheDocument()
     })
+    expect(screen.queryByRole("button", { name: "Use product shell" })).not.toBeInTheDocument()
+  })
+
+  it("falls back to manual inputs when browser showDirectoryPicker cannot provide a usable path", async () => {
+    ;(window as Window & { showDirectoryPicker?: unknown }).showDirectoryPicker = vi.fn(
+      async () => ({
+        name: "browser-picked-folder",
+      })
+    )
+
+    render(
+      <Sidebar
+        projects={[]}
+        activeProjectId={null}
+        activeSessionId={null}
+        width={230}
+        onAddProject={vi.fn()}
+        onRenameProject={vi.fn()}
+        onNewSession={vi.fn()}
+        onSessionChange={vi.fn()}
+        onRemoveProject={vi.fn()}
+        onResizeStart={vi.fn()}
+      />
+    )
+
+    fireEvent.click(screen.getByLabelText("Add a new directory"))
+    expect(screen.queryByLabelText("Directory name")).not.toBeInTheDocument()
+    expect(screen.queryByLabelText("Directory path")).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: "Select directory" }))
+
+    await waitFor(() => {
+      expect(
+        screen.getByText("Unable to automatically read the directory path; please manually enter the directory name and path.")
+      ).toBeInTheDocument()
+    })
+    expect(screen.getByLabelText("Directory name")).toBeInTheDocument()
+    expect(screen.getByLabelText("Directory path")).toBeInTheDocument()
   })
 
   it("opens rename dialog and submits backend rename", async () => {
@@ -177,7 +311,7 @@ describe("Sidebar workspace controls", () => {
 
     fireEvent.mouseEnter(screen.getByText("nutstore-bot"))
     fireEvent.click(screen.getByLabelText("Rename workspace nutstore-bot"))
-    fireEvent.change(screen.getByLabelText("Workspace name"), {
+    fireEvent.change(screen.getByLabelText("Directory name"), {
       target: { value: "renamed-workspace" },
     })
     fireEvent.change(screen.getByLabelText("Path label"), {

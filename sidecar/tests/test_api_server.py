@@ -1360,6 +1360,48 @@ class ApiServerTests(unittest.TestCase):
         self.assertEqual(listing.status_code, 200)
         self.assertEqual(listing.json()["connections"], [])
 
+    def test_update_provider_preserves_health_status_fields(self) -> None:
+        self._set_validation_model_factory(lambda config: FakeValidationSuccessModel())
+        created = self.client.post(
+            "/providers",
+            headers={"Authorization": "Bearer test-token"},
+            json={
+                "kind": "builtin",
+                "catalogProviderId": "openai",
+                "displayName": "OpenAI",
+                "apiKey": "sk-test",
+                "preferredModelId": "gpt-5.4",
+            },
+        )
+        provider_id = created.json()["id"]
+
+        validated = self.client.post(
+            f"/providers/{provider_id}/validate",
+            headers={"Authorization": "Bearer test-token"},
+            json={},
+        )
+        self.assertEqual(validated.status_code, 200)
+        self.assertEqual(validated.json()["healthStatus"], "connected")
+
+        updated = self.client.patch(
+            f"/providers/{provider_id}",
+            headers={"Authorization": "Bearer test-token"},
+            json={"preferredModelId": "gpt-5.4-mini"},
+        )
+        self.assertEqual(updated.status_code, 200)
+        self.assertEqual(updated.json()["healthStatus"], "connected")
+        self.assertEqual(updated.json()["healthMessage"], "Validation succeeded")
+        self.assertIsNotNone(updated.json()["lastValidatedAt"])
+
+        options = self.client.get(
+            "/model-options",
+            headers={"Authorization": "Bearer test-token"},
+        )
+        self.assertEqual(options.status_code, 200)
+        groups = options.json()["groups"]
+        self.assertEqual(len(groups), 1)
+        self.assertEqual(groups[0]["connectionId"], provider_id)
+
     def test_post_run_uses_session_id_as_runtime_session_key_and_persists_output(
         self,
     ) -> None:
@@ -1416,9 +1458,9 @@ class ApiServerTests(unittest.TestCase):
         self.assertEqual(metadata.workspace_path, workspace["realPath"])
 
         config = cast(RuntimeWorkerConfig, captured["config"])
-        self.assertEqual(config.direct_provider, "openai")
-        self.assertEqual(config.direct_model_id, "gpt-5.4")
-        self.assertEqual(config.direct_api_key, "sk-test")
+        self.assertEqual(config.provider, "openai")
+        self.assertEqual(config.model, "gpt-5.4")
+        self.assertEqual(config.api_key, "sk-test")
         self.assertEqual(config.direct_reasoning_effort, "medium")
 
         messages_response = self.client.get(
@@ -1640,10 +1682,10 @@ class ApiServerTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
 
         config = cast(RuntimeWorkerConfig, captured["config"])
-        self.assertEqual(config.direct_provider, "custom")
-        self.assertEqual(config.direct_base_url, "https://llm.example.com/v1")
-        self.assertEqual(config.direct_api_key, "sk-custom-test")
-        self.assertEqual(config.direct_model_id, "team-model")
+        self.assertEqual(config.provider, "custom")
+        self.assertEqual(config.base_url, "https://llm.example.com/v1")
+        self.assertEqual(config.api_key, "sk-custom-test")
+        self.assertEqual(config.model, "team-model")
         self.assertEqual(config.workspace_path_default, workspace["realPath"])
         self.assertEqual(config.ns_bot_home, str(nsbot_home(str(self.temp_dir))))
 

@@ -31,7 +31,7 @@ describe("sidecar-client proxy requests", () => {
     )
   })
 
-  it("throws SidecarClientError for non-ok responses", async () => {
+  it("throws NSBotClientError for non-ok responses", async () => {
     const fetchMock = vi.fn().mockResolvedValueOnce(
       new Response(JSON.stringify({ detail: "Unauthorized" }), {
         status: 401,
@@ -43,7 +43,7 @@ describe("sidecar-client proxy requests", () => {
 
     const { getProviders } = await import("@/lib/sidecar-client")
     await expect(getProviders()).rejects.toMatchObject({
-      name: "SidecarClientError",
+      name: "NSBotClientError",
       status: 401,
       message: "Unauthorized",
     })
@@ -90,7 +90,7 @@ describe("sidecar-client proxy requests", () => {
         headers: [],
       })
     ).rejects.toMatchObject({
-      name: "SidecarClientError",
+      name: "NSBotClientError",
       status: 422,
       message: "body: Input should be a valid dictionary",
     })
@@ -113,7 +113,7 @@ describe("sidecar-client proxy requests", () => {
 
     const { getProviders } = await import("@/lib/sidecar-client")
     await expect(getProviders()).rejects.toMatchObject({
-      name: "SidecarClientError",
+      name: "NSBotClientError",
       status: 400,
       message: 'invalid payload: {"apiKey":"[REDACTED]"}',
     })

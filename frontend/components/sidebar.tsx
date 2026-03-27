@@ -62,8 +62,21 @@ type ProductShellWorkspaceSelection = {
   pathLabel?: string
 }
 
+type DirectoryPickerSelection = {
+  name?: string
+  path?: string
+  fullPath?: string
+  realPath?: string
+  pathLabel?: string
+}
+
+type DirectoryPicker = () => Promise<DirectoryPickerSelection>
+
 type ProductShellBridge = {
   pickWorkspaceDirectory?: () => Promise<ProductShellWorkspaceSelection>
+  window?: {
+    showDirectoryPicker?: DirectoryPicker
+  }
 }
 
 const SESSION_LIMIT = 5
@@ -84,43 +97,60 @@ export function Sidebar({
   const [workspaceDialogOpen, setWorkspaceDialogOpen] = useState(false)
   const [workspaceDialogError, setWorkspaceDialogError] = useState<string | null>(null)
   const [workspaceDialogSubmitting, setWorkspaceDialogSubmitting] = useState(false)
+  const [forceManualWorkspaceEntry, setForceManualWorkspaceEntry] = useState(false)
   const [workspaceDraft, setWorkspaceDraft] = useState<WorkspaceDraft>({ name: "", path: "" })
 
   const productShellBridge =
     typeof window === "undefined"
       ? null
       : ((window as Window & { __NSBOT_SHELL__?: ProductShellBridge }).__NSBOT_SHELL__ ?? null)
-  const canUseProductShellPicker =
-    typeof productShellBridge?.pickWorkspaceDirectory === "function"
+  const resolvedDirectoryPicker = resolveDirectoryPicker(productShellBridge)
+  const canUseDirectoryPicker = resolvedDirectoryPicker !== null && !forceManualWorkspaceEntry
+  const isManualWorkspaceEntry = !canUseDirectoryPicker
+  const manualEntryHint =
+    resolvedDirectoryPicker === null
+      ? "This environment doesn't support direct folder selection. Please enter the directory name and path manually."
+      : "Please enter the directory name and path manually."
 
   const handleAddProjectClick = () => {
+    setForceManualWorkspaceEntry(false)
+    setWorkspaceDraft({ name: "", path: "" })
     setWorkspaceDialogError(null)
     setWorkspaceDialogOpen(true)
   }
 
   const handleDirectoryPicker = async () => {
-    const picker = productShellBridge?.pickWorkspaceDirectory
+    const picker = resolveDirectoryPicker(productShellBridge)
     if (!picker) {
-      setWorkspaceDialogError(
-        "Folder picking is available in the product shell. Paste a trusted local path here while running in the browser."
-      )
+      setWorkspaceDialogError("Your current environment can't open a folder picker.")
       return
     }
 
     try {
       const selection = await picker()
-      const path = selection.pathLabel?.trim() || selection.realPath.trim()
-      const name = selection.name?.trim() || basename(selection.realPath) || "Workspace"
       setWorkspaceDialogError(null)
-      setWorkspaceDraft({ name, path })
-    } catch {
-      // User cancelled.
+      setWorkspaceDraft(selection)
+    } catch (error) {
+      if (isDirectoryPickerCancelled(error)) {
+        return
+      }
+      setForceManualWorkspaceEntry(true)
+      setWorkspaceDialogError(
+        error instanceof Error
+          ? error.message
+          : "Unable to automatically read the directory path; please manually enter the directory name and path."
+      )
     }
   }
 
   const submitWorkspace = async () => {
-    if (!workspaceDraft.name.trim() || !workspaceDraft.path.trim()) {
-      setWorkspaceDialogError("Workspace name and path are required.")
+    if (isManualWorkspaceEntry && (!workspaceDraft.name.trim() || !workspaceDraft.path.trim())) {
+      setWorkspaceDialogError("Please enter both directory name and directory path.")
+      return
+    }
+
+    if (!isManualWorkspaceEntry && (!workspaceDraft.name.trim() || !workspaceDraft.path.trim())) {
+      setWorkspaceDialogError("Please choose a directory first.")
       return
     }
 
@@ -132,7 +162,7 @@ export function Sidebar({
       setWorkspaceDialogOpen(false)
     } catch (error) {
       setWorkspaceDialogError(
-        error instanceof Error ? error.message : "Failed to add workspace"
+        error instanceof Error ? error.message : "Failed to Add directory"
       )
     } finally {
       setWorkspaceDialogSubmitting(false)
@@ -225,52 +255,60 @@ export function Sidebar({
       <Dialog open={workspaceDialogOpen} onOpenChange={setWorkspaceDialogOpen}>
         <DialogContent className="sm:max-w-md" showCloseButton={!workspaceDialogSubmitting}>
           <DialogHeader>
-            <DialogTitle>Add workspace</DialogTitle>
+            <DialogTitle>Add directory</DialogTitle>
             <DialogDescription>
-              Register a trusted local workspace for sessions and runs.
+              Register a trusted local directory for sessions and runs.
             </DialogDescription>
           </DialogHeader>
 
           <div className="space-y-4">
-            <div className="space-y-2">
-              <label className="text-sm font-medium" htmlFor="workspace-name-input">Workspace name</label>
-              <input
-                id="workspace-name-input"
-                value={workspaceDraft.name}
-                onChange={(event) =>
-                  setWorkspaceDraft((prev) => ({ ...prev, name: event.target.value }))
-                }
-                className="w-full rounded-lg border border-[#e8e4e0] bg-background px-3 py-2 text-sm"
-                placeholder="nutstore-bot"
-              />
-            </div>
-            <div className="space-y-2">
-              <div className="flex items-center justify-between gap-3">
-                <label className="text-sm font-medium" htmlFor="workspace-path-input">Workspace path</label>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={() => void handleDirectoryPicker()}
-                >
-                  {canUseProductShellPicker ? "Pick folder" : "Use product shell"}
+            {isManualWorkspaceEntry ? (
+              <>
+                <p className="text-xs text-muted-foreground">
+                  {manualEntryHint}
+                </p>
+                <div className="space-y-2">
+                  <label className="text-sm font-medium" htmlFor="workspace-name-input">Directory name</label>
+                  <input
+                    id="workspace-name-input"
+                    value={workspaceDraft.name}
+                    onChange={(event) =>
+                      setWorkspaceDraft((prev) => ({ ...prev, name: event.target.value }))
+                    }
+                    className="w-full rounded-lg border border-[#e8e4e0] bg-background px-3 py-2 text-sm"
+                    placeholder="nutstore-bot"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-medium" htmlFor="workspace-path-input">Directory path</label>
+                  <input
+                    id="workspace-path-input"
+                    value={workspaceDraft.path}
+                    onChange={(event) =>
+                      setWorkspaceDraft((prev) => ({ ...prev, path: event.target.value }))
+                    }
+                    className="w-full rounded-lg border border-[#e8e4e0] bg-background px-3 py-2 text-sm"
+                    placeholder="/path/to/workspace"
+                  />
+                </div>
+              </>
+            ) : (
+              <>
+                <Button type="button" variant="outline" onClick={() => void handleDirectoryPicker()}>
+                  Select directory
                 </Button>
-              </div>
-              <input
-                id="workspace-path-input"
-                value={workspaceDraft.path}
-                onChange={(event) =>
-                  setWorkspaceDraft((prev) => ({ ...prev, path: event.target.value }))
-                }
-                className="w-full rounded-lg border border-[#e8e4e0] bg-background px-3 py-2 text-sm"
-                placeholder="/path/to/workspace"
-              />
-              <p className="text-xs text-muted-foreground">
-                {canUseProductShellPicker
-                  ? "Use the product shell picker to populate a trusted local path automatically."
-                  : "Product shell builds should provide a native folder picker. In the browser, paste a trusted local path manually."}
-              </p>
-            </div>
+                {workspaceDraft.path ? (
+                  <div className="rounded-lg border border-[#e8e4e0] bg-background px-3 py-2 text-sm">
+                    <p className="font-medium text-foreground">{workspaceDraft.name}</p>
+                    <p className="text-xs text-muted-foreground break-all">{workspaceDraft.path}</p>
+                  </div>
+                ) : (
+                  <p className="text-xs text-muted-foreground">
+                    Choose a local directory to create a workspace.
+                  </p>
+                )}
+              </>
+            )}
             {workspaceDialogError && (
               <p className="text-sm text-destructive">{workspaceDialogError}</p>
             )}
@@ -285,8 +323,16 @@ export function Sidebar({
             >
               Cancel
             </Button>
-            <Button type="button" disabled={workspaceDialogSubmitting} onClick={() => void submitWorkspace()}>
-              {workspaceDialogSubmitting ? "Adding..." : "Add workspace"}
+            <Button
+              type="button"
+              disabled={
+                workspaceDialogSubmitting ||
+                (!isManualWorkspaceEntry &&
+                  (!workspaceDraft.name.trim() || !workspaceDraft.path.trim()))
+              }
+              onClick={() => void submitWorkspace()}
+            >
+              {workspaceDialogSubmitting ? "Adding..." : "Add directory"}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -334,7 +380,7 @@ function ProjectGroup({
 
   const submitRename = async () => {
     if (!projectName.trim()) {
-      setActionError("Workspace name is required.")
+      setActionError("Directory name is required.")
       return
     }
     setIsSubmitting(true)
@@ -502,7 +548,7 @@ function ProjectGroup({
           </DialogHeader>
           <div className="space-y-4">
             <div className="space-y-2">
-              <label className="text-sm font-medium" htmlFor={`rename-workspace-name-${project.id}`}>Workspace name</label>
+              <label className="text-sm font-medium" htmlFor={`rename-workspace-name-${project.id}`}>Directory name</label>
               <input
                 id={`rename-workspace-name-${project.id}`}
                 value={projectName}
@@ -622,4 +668,67 @@ function basename(value: string): string {
   }
   const parts = normalized.split(/[\\/]/)
   return parts[parts.length - 1] ?? ""
+}
+
+function resolveDirectoryPicker(
+  bridge: ProductShellBridge | null
+): (() => Promise<WorkspaceDraft>) | null {
+  const shellPicker = bridge?.pickWorkspaceDirectory
+  if (typeof shellPicker === "function") {
+    return async () => {
+      const selection = await shellPicker()
+      return normalizeDirectorySelection(selection)
+    }
+  }
+
+  const shellWindowPicker = bridge?.window?.showDirectoryPicker
+  if (typeof shellWindowPicker === "function") {
+    return async () => {
+      const selection = await shellWindowPicker()
+      return normalizeDirectorySelection(selection)
+    }
+  }
+
+  if (typeof window === "undefined") {
+    return null
+  }
+
+  const browserPicker = (window as Window & { showDirectoryPicker?: DirectoryPicker }).showDirectoryPicker
+  if (typeof browserPicker === "function") {
+    return async () => {
+      const selection = await browserPicker()
+      return normalizeDirectorySelection(selection)
+    }
+  }
+
+  return null
+}
+
+function normalizeDirectorySelection(selection: DirectoryPickerSelection): WorkspaceDraft {
+  const path =
+    selection.pathLabel?.trim() ||
+    selection.realPath?.trim() ||
+    selection.path?.trim() ||
+    selection.fullPath?.trim() ||
+    ""
+
+  if (!path) {
+    throw new Error("Unable to automatically read the directory path; please manually enter the directory name and path.")
+  }
+
+  const name = selection.name?.trim() || basename(path) || "Workspace"
+  return { name, path }
+}
+
+function isDirectoryPickerCancelled(error: unknown): boolean {
+  if (error instanceof DOMException && error.name === "AbortError") {
+    return true
+  }
+
+  if (error instanceof Error) {
+    const normalized = error.message.toLowerCase()
+    return normalized.includes("cancel") || normalized.includes("abort")
+  }
+
+  return false
 }

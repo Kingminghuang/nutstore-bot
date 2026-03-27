@@ -356,6 +356,9 @@ class ProviderService:
                 "base_url": normalized.get("base_url"),
                 "secret_ref": secret_ref,
                 "api_key_configured": normalized["api_key_configured"],
+                "health_status": normalized.get("health_status"),
+                "health_message": normalized.get("health_message"),
+                "last_validated_at": normalized.get("last_validated_at"),
                 "model_policy": normalized["model_policy"],
                 "preferred_model_id": normalized.get("preferred_model_id"),
                 "is_enabled": normalized["is_enabled"],
@@ -594,6 +597,8 @@ def normalize_provider_payload(
         display_name = _normalize_optional_string(
             payload.get("displayName", payload.get("display_name"))
         )
+        if display_name is None and existing is not None:
+            display_name = existing.connection.display_name
         if display_name is None:
             display_name = str(catalog_entry["label"])
 
@@ -652,6 +657,19 @@ def normalize_provider_payload(
                 "apiKey", payload.get("api_key", _API_KEY_SENTINEL)
             ),
             "api_key_configured": resolve_api_key_configured(payload, existing),
+            "health_status": payload.get("healthStatus", payload.get("health_status"))
+            if ("healthStatus" in payload or "health_status" in payload)
+            else (existing.connection.health_status if existing else "unknown"),
+            "health_message": payload.get(
+                "healthMessage", payload.get("health_message")
+            )
+            if ("healthMessage" in payload or "health_message" in payload)
+            else (existing.connection.health_message if existing else None),
+            "last_validated_at": payload.get(
+                "lastValidatedAt", payload.get("last_validated_at")
+            )
+            if ("lastValidatedAt" in payload or "last_validated_at" in payload)
+            else (existing.connection.last_validated_at if existing else None),
             "model_policy": model_policy,
             "preferred_model_id": preferred_model_id,
             "is_enabled": payload.get("isEnabled", payload.get("is_enabled", True))
@@ -687,6 +705,8 @@ def normalize_provider_payload(
     display_name = _normalize_optional_string(
         payload.get("displayName", payload.get("display_name"))
     )
+    if display_name is None and existing is not None:
+        display_name = existing.connection.display_name
     if display_name is None:
         display_name = custom_slug
 
@@ -725,6 +745,17 @@ def normalize_provider_payload(
             "apiKey", payload.get("api_key", _API_KEY_SENTINEL)
         ),
         "api_key_configured": resolve_api_key_configured(payload, existing),
+        "health_status": payload.get("healthStatus", payload.get("health_status"))
+        if ("healthStatus" in payload or "health_status" in payload)
+        else (existing.connection.health_status if existing else "unknown"),
+        "health_message": payload.get("healthMessage", payload.get("health_message"))
+        if ("healthMessage" in payload or "health_message" in payload)
+        else (existing.connection.health_message if existing else None),
+        "last_validated_at": payload.get(
+            "lastValidatedAt", payload.get("last_validated_at")
+        )
+        if ("lastValidatedAt" in payload or "last_validated_at" in payload)
+        else (existing.connection.last_validated_at if existing else None),
         "model_policy": "custom_only",
         "preferred_model_id": preferred_model_id,
         "is_enabled": payload.get("isEnabled", payload.get("is_enabled", True))

@@ -45,10 +45,10 @@ class RuntimeWorkerConfig:
     model_id: str
     ns_bot_home: str
     workspace_path_default: str
-    direct_provider: str | None = None
-    direct_base_url: str | None = None
-    direct_api_key: str | None = None
-    direct_model_id: str | None = None
+    provider: str | None = None
+    base_url: str | None = None
+    api_key: str | None = None
+    model: str | None = None
     direct_reasoning_effort: str | None = None
     direct_request_timeout_ms: int = 60_000
     fd_executable: str | None = None
@@ -91,41 +91,39 @@ class CodeAgentRuntimeService:
         session_key = self._resolve_session_key(metadata, workspace_path)
         session = self.sessions.get_or_create(session_key)
 
-        direct_provider = str(self.config.direct_provider or "custom").strip().lower()
-        direct_base_url = str(self.config.direct_base_url or "").strip()
-        direct_api_key = str(self.config.direct_api_key or "").strip()
-        direct_model_id = str(
-            self.config.direct_model_id or self.config.model_id
-        ).strip()
+        provider = str(self.config.provider or "custom").strip().lower()
+        base_url = str(self.config.base_url or "").strip()
+        api_key = str(self.config.api_key or "").strip()
+        model = str(self.config.model or self.config.model_id).strip()
         use_direct_model = self.model_factory is None or any(
             [
-                self.config.direct_provider,
-                self.config.direct_base_url,
-                self.config.direct_api_key,
-                self.config.direct_model_id,
+                self.config.provider,
+                self.config.base_url,
+                self.config.api_key,
+                self.config.model,
                 self.config.direct_reasoning_effort,
             ]
         )
         direct_model_config = None
         if use_direct_model:
-            if direct_provider not in BUILTIN_PROVIDERS and direct_base_url == "":
+            if provider not in BUILTIN_PROVIDERS and base_url == "":
                 raise RuntimeProcessError(
                     "invalid_base_url", "direct base url is missing"
                 )
-            if direct_api_key == "":
+            if api_key == "":
                 raise RuntimeProcessError(
                     "missing_api_key", "direct api key is missing"
                 )
-            if direct_model_id == "":
+            if model == "":
                 raise RuntimeProcessError(
                     "missing_model_id", "direct model id is missing"
                 )
 
             direct_model_config = DirectModelConfig(
-                provider=str(self.config.direct_provider or "custom"),
-                base_url=direct_base_url,
-                api_key=direct_api_key,
-                model_id=direct_model_id,
+                provider=str(self.config.provider or "custom"),
+                base_url=base_url,
+                api_key=api_key,
+                model_id=model,
                 reasoning_effort=self.config.direct_reasoning_effort,
                 timeout_seconds=max(
                     1.0, float(self.config.direct_request_timeout_ms) / 1000.0

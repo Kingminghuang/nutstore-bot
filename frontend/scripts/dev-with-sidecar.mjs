@@ -1,4 +1,6 @@
 import { spawn } from "node:child_process"
+import { cpSync, existsSync, mkdirSync } from "node:fs"
+import os from "node:os"
 import path from "node:path"
 import process from "node:process"
 import { fileURLToPath } from "node:url"
@@ -8,11 +10,68 @@ const frontendDir = path.resolve(scriptDir, "..")
 const workspaceRoot = path.resolve(frontendDir, "..")
 const sidecarDir = path.join(workspaceRoot, "sidecar")
 
+function resolveUserPath(value, homeDir) {
+  const trimmed = value.trim()
+  if (trimmed === "~") {
+    return homeDir
+  }
+  if (trimmed.startsWith("~/") || trimmed.startsWith("~\\")) {
+    return path.resolve(homeDir, trimmed.slice(2))
+  }
+  return path.resolve(trimmed)
+}
+
+function resolveNsBotHome({ platform = process.platform, env = process.env, homeDir = os.homedir() } = {}) {
+  const envOverride = env.NS_BOT_HOME
+  if (envOverride && envOverride.trim() !== "") {
+    return resolveUserPath(envOverride, homeDir)
+  }
+
+  if (platform === "win32") {
+    if (env.APPDATA) {
+      return path.resolve(env.APPDATA, "NutstoreBot")
+    }
+    return path.resolve(homeDir, ".nsbot")
+  }
+
+  if (platform === "darwin") {
+    return path.resolve(homeDir, "Library", "Application Support", "NutstoreBot")
+  }
+
+  if (env.XDG_STATE_HOME) {
+    return path.resolve(env.XDG_STATE_HOME, "NutstoreBot")
+  }
+
+  if (env.XDG_CONFIG_HOME) {
+    return path.resolve(env.XDG_CONFIG_HOME, "NutstoreBot")
+  }
+
+  return path.resolve(homeDir, ".nsbot")
+}
+
+function ensureTemplatesInitialized({ platform = process.platform, env = process.env } = {}) {
+  const sourceTemplatesDir = path.join(workspaceRoot, "templates")
+  if (!existsSync(sourceTemplatesDir)) {
+    return
+  }
+
+  const nsBotHome = resolveNsBotHome({ platform, env })
+  const targetTemplatesDir = path.join(nsBotHome, "templates")
+  if (existsSync(targetTemplatesDir)) {
+    return
+  }
+
+  mkdirSync(nsBotHome, { recursive: true })
+  cpSync(sourceTemplatesDir, targetTemplatesDir, { recursive: true })
+}
+
 export function startDevWithSidecar({
   platform = process.platform,
   env = process.env,
   spawnImpl = spawn,
 } = {}) {
+  ensureTemplatesInitialized({ platform, env })
+
   const children = []
   let shuttingDown = false
 

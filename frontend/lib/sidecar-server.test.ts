@@ -3,7 +3,7 @@ import { mkdtemp, mkdir, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
 
-describe("sidecar-server proxySidecarRequest", () => {
+describe("sidecar-server proxyNSBotRequest", () => {
   afterEach(() => {
     vi.restoreAllMocks()
     vi.resetModules()
@@ -25,8 +25,8 @@ describe("sidecar-server proxySidecarRequest", () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 200 }))
     vi.stubGlobal("fetch", fetchMock)
 
-    const { proxySidecarRequest } = await import("@/lib/sidecar-server")
-    await proxySidecarRequest("/providers", {
+    const { proxyNSBotRequest } = await import("@/lib/sidecar-server")
+    await proxyNSBotRequest("/providers", {
       method: "POST",
       headers: new Headers({ "Content-Type": "application/json" }),
       body: "{}",
