@@ -7,7 +7,9 @@ import {
   ArrowUp,
   Check,
   ChevronDown,
+  Copy,
   Mic,
+  Pencil,
   Paperclip,
   Plus,
   ShieldCheck,
@@ -59,6 +61,7 @@ interface MainContentProps {
   isUploadingAttachment: boolean
   onAttachFiles: (files: File[]) => Promise<void>
   onRemoveAttachment: (attachmentId: string) => Promise<void>
+  onEditMessageAndRerun: (messageId: string, nextContent: string) => Promise<void>
   onOpenSettings?: () => void
 }
 
@@ -83,6 +86,7 @@ export function MainContent({
   isUploadingAttachment,
   onAttachFiles,
   onRemoveAttachment,
+  onEditMessageAndRerun,
   onOpenSettings,
 }: MainContentProps) {
   const [permissionOpen, setPermissionOpen] = useState(false)
@@ -92,6 +96,9 @@ export function MainContent({
   const [isGenerating, setIsGenerating] = useState(false)
   const [showScrollBtn, setShowScrollBtn] = useState(false)
   const [hasAnimatedProviderNotice, setHasAnimatedProviderNotice] = useState(false)
+  const [editingMessageId, setEditingMessageId] = useState<string | null>(null)
+  const [editingValue, setEditingValue] = useState("")
+  const [isSubmittingEdit, setIsSubmittingEdit] = useState(false)
 
   const scrollRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
@@ -221,6 +228,56 @@ export function MainContent({
     }
   }
 
+  const copyMessage = async (content: string) => {
+    if (typeof navigator === "undefined") {
+      return
+    }
+    const clipboard = navigator.clipboard
+    if (!clipboard || typeof clipboard.writeText !== "function") {
+      return
+    }
+    try {
+      await clipboard.writeText(content)
+    } catch {
+      // Ignore clipboard failures to keep interaction non-blocking.
+    }
+  }
+
+  const startEditMessage = (messageId: string, content: string) => {
+    if (isSubmittingEdit) {
+      return
+    }
+    setEditingMessageId(messageId)
+    setEditingValue(content)
+  }
+
+  const cancelEditMessage = () => {
+    if (isSubmittingEdit) {
+      return
+    }
+    setEditingMessageId(null)
+    setEditingValue("")
+  }
+
+  const submitEditedMessage = async () => {
+    if (!editingMessageId || isSubmittingEdit) {
+      return
+    }
+    const nextContent = editingValue.trim()
+    if (!nextContent) {
+      return
+    }
+
+    setIsSubmittingEdit(true)
+    try {
+      await onEditMessageAndRerun(editingMessageId, nextContent)
+      setEditingMessageId(null)
+      setEditingValue("")
+    } finally {
+      setIsSubmittingEdit(false)
+    }
+  }
+
   const permissionOptions: { value: Permission; label: string }[] = [
     { value: "default", label: "Default permissions" },
     { value: "full", label: "Full access" },
@@ -282,7 +339,21 @@ export function MainContent({
             )}
             {messages.map((msg) => (
               <div key={msg.id} className="space-y-3">
-                <MessageBubble message={msg} />
+                <MessageBubble
+                  message={msg}
+                  isEditing={editingMessageId === msg.id}
+                  editingValue={editingValue}
+                  isSubmittingEdit={isSubmittingEdit}
+                  onCopyMessage={(content) => {
+                    void copyMessage(content)
+                  }}
+                  onEditValueChange={setEditingValue}
+                  onStartEdit={startEditMessage}
+                  onCancelEdit={cancelEditMessage}
+                  onSubmitEdit={() => {
+                    void submitEditedMessage()
+                  }}
+                />
                 {msg.role === "user" && msg.runId && (runStepsByRunId[msg.runId] ?? []).length > 0 ? (
                   <RunStepTimeline steps={runStepsByRunId[msg.runId] ?? []} />
                 ) : null}
@@ -572,10 +643,10 @@ export function MainContent({
                         onClick={() => {
                           void handleSubmit()
                         }}
-                        disabled={!inputValue.trim() || !activeSession || !selectedModel}
+                        disabled={!inputValue.trim() || !canCompose || !selectedModel}
                         className={cn(
                           "p-2 rounded-full transition-colors",
-                          inputValue.trim() && activeSession && selectedModel
+                          inputValue.trim() && canCompose && selectedModel
                             ? "bg-[#f5a76c] hover:bg-[#e99a5f] text-white"
                             : "bg-[#e8e4e0] text-muted-foreground cursor-not-allowed"
                         )}
@@ -682,12 +753,99 @@ function StepFootnote({
   return <div className="text-xs text-foreground/45">{parts.join(" | ")}</div>
 }
 
-function MessageBubble({ message }: { message: Message }) {
+function MessageBubble({
+  message,
+  isEditing,
+  editingValue,
+  isSubmittingEdit,
+  onCopyMessage,
+  onEditValueChange,
+  onStartEdit,
+  onCancelEdit,
+  onSubmitEdit,
+}: {
+  message: Message
+  isEditing: boolean
+  editingValue: string
+  isSubmittingEdit: boolean
+  onCopyMessage: (content: string) => void
+  onEditValueChange: (value: string) => void
+  onStartEdit: (messageId: string, content: string) => void
+  onCancelEdit: () => void
+  onSubmitEdit: () => void
+}) {
   if (message.role === "user") {
     return (
       <div className="flex justify-end">
-        <div className="max-w-[80%] bg-[#f0ebe6] border border-[#e8e4e0] rounded-2xl rounded-tr-sm px-4 py-2.5 text-sm text-foreground/90 whitespace-pre-wrap">
-          {message.content}
+        <div className="max-w-[80%] flex flex-col items-end gap-2">
+          {isEditing ? (
+            <div className="w-full min-w-[320px] bg-[#f0ebe6] border border-[#e8e4e0] rounded-2xl px-4 py-3">
+              <textarea
+                value={editingValue}
+                onChange={(event) => onEditValueChange(event.target.value)}
+                disabled={isSubmittingEdit}
+                rows={5}
+                className="w-full resize-none bg-transparent text-sm text-foreground/90 focus:outline-none disabled:opacity-60"
+              />
+              <div className="mt-3 flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={onCancelEdit}
+                  disabled={isSubmittingEdit}
+                  className="rounded-2xl border border-[#e8e4e0] bg-background px-4 py-1.5 text-sm hover:bg-[#efe9e4] transition-colors disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={onSubmitEdit}
+                  disabled={isSubmittingEdit || editingValue.trim().length === 0}
+                  className="rounded-2xl bg-foreground px-4 py-1.5 text-sm text-background hover:bg-foreground/85 transition-colors disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {isSubmittingEdit ? "Sending..." : "Send"}
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="w-full bg-[#f0ebe6] border border-[#e8e4e0] rounded-2xl rounded-tr-sm px-4 py-2.5 text-sm text-foreground/90 whitespace-pre-wrap">
+              {message.content}
+            </div>
+          )}
+
+          {!isEditing && (
+            <div className="flex items-center gap-2 self-end">
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    type="button"
+                    onClick={() => onCopyMessage(message.content)}
+                    className="h-9 w-9 rounded-full border border-[#e8e4e0] bg-[#f3efeb] text-muted-foreground hover:text-foreground hover:bg-[#efe9e4] transition-colors inline-flex items-center justify-center"
+                    aria-label="Copy user message"
+                  >
+                    <Copy className="w-4 h-4" />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="top" sideOffset={6}>
+                  Copy
+                </TooltipContent>
+              </Tooltip>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    type="button"
+                    onClick={() => onStartEdit(message.id, message.content)}
+                    className="h-9 w-9 rounded-full border border-[#e8e4e0] bg-[#f3efeb] text-muted-foreground hover:text-foreground hover:bg-[#efe9e4] transition-colors inline-flex items-center justify-center"
+                    aria-label="Edit user message"
+                  >
+                    <Pencil className="w-4 h-4" />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="top" sideOffset={6}>
+                  Edit
+                </TooltipContent>
+              </Tooltip>
+            </div>
+          )}
         </div>
       </div>
     )
@@ -696,8 +854,25 @@ function MessageBubble({ message }: { message: Message }) {
   return (
     <div className="flex gap-3 items-start">
       <div className="w-7 h-7 rounded-full bg-gradient-to-br from-[#e87b5f] to-[#8bc28f] flex-shrink-0 mt-0.5" />
-      <div className="flex-1 min-w-0">
+      <div className="flex-1 min-w-0 flex flex-col gap-2">
         <AgentMessageContent content={message.content} />
+        <div className="flex items-center gap-2">
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                onClick={() => onCopyMessage(message.content)}
+                className="h-9 w-9 rounded-full border border-[#e8e4e0] bg-[#f3efeb] text-muted-foreground hover:text-foreground hover:bg-[#efe9e4] transition-colors inline-flex items-center justify-center"
+                aria-label="Copy assistant message"
+              >
+                <Copy className="w-4 h-4" />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="top" sideOffset={6}>
+              Copy
+            </TooltipContent>
+          </Tooltip>
+        </div>
       </div>
     </div>
   )

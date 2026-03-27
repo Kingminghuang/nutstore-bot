@@ -45,6 +45,7 @@ from runtime_service import (
 )
 from secret_store import LocalSecretStore
 from session_service import SessionService, serialize_message, serialize_session
+from storage import transaction
 
 
 RuntimeExecutor = Callable[..., dict[str, Any]]
@@ -361,6 +362,159 @@ class RunService:
             },
         }
 
+    def edit_message_and_run(
+        self,
+        *,
+        session_id: str,
+        message_id: str,
+        payload: dict[str, Any],
+        background_tasks: BackgroundTasks | None = None,
+    ) -> dict[str, Any]:
+        workspace_id = _normalize_required_string(
+            payload.get("workspaceId", payload.get("workspace_id")),
+            detail="Workspace id is required",
+        )
+        connection_id = _normalize_required_string(
+            payload.get("connectionId", payload.get("connection_id")),
+            detail="Connection id is required",
+        )
+        model_id = _normalize_required_string(
+            payload.get("modelId", payload.get("model_id")),
+            detail="Model id is required",
+        )
+        reasoning_effort = _normalize_optional_string(
+            payload.get("reasoningEffort", payload.get("reasoning_effort"))
+        )
+        next_content = _normalize_required_string(
+            payload.get("content", payload.get("input", payload.get("inputText"))),
+            detail="Message content is required",
+        )
+
+        session = self._get_session_or_404(session_id)
+        if session.workspace_id != workspace_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Session does not belong to workspace",
+            )
+
+        message = self.session_service.messages.get_by_id(message_id)
+        if message.session_id != session_id:
+            raise HTTPException(status_code=404, detail="Message not found")
+        if message.role != "user":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Only user messages can be edited",
+            )
+
+        has_active_run = any(
+            run.status in {"queued", "running"}
+            for run in self.runs.list_by_session_id(session_id)
+        )
+        if has_active_run:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Cannot edit while a run is in progress",
+            )
+
+        bundle = self.providers.get_bundle_by_id(connection_id)
+        if bundle is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Provider connection not found",
+            )
+        if not bundle.connection.is_enabled:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Provider connection is disabled",
+            )
+        self._ensure_model_allowed(bundle, model_id)
+        self._resolve_reasoning_effort(bundle, model_id, reasoning_effort)
+        secret_payload = self.secret_store.load_provider_secret(bundle.connection.secret_ref)
+        api_key = secret_payload.api_key if secret_payload is not None else None
+        if api_key is None or api_key.strip() == "":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Provider connection is missing an API key",
+            )
+
+        suffix_messages = self.session_service.messages.list_by_session_id_from_sequence(
+            session_id, message.sequence_no
+        )
+        affected_run_ids = sorted(
+            {
+                candidate.run_id
+                for candidate in suffix_messages
+                if candidate.run_id is not None and candidate.run_id != ""
+            }
+        )
+
+        with transaction(self.sessions.connection):
+            self.sessions.connection.execute(
+                "DELETE FROM messages WHERE session_id = ? AND sequence_no >= ?",
+                (session_id, message.sequence_no),
+            )
+            if affected_run_ids:
+                placeholders = ",".join("?" for _ in affected_run_ids)
+                self.sessions.connection.execute(
+                    f"DELETE FROM runs WHERE id IN ({placeholders})",
+                    tuple(affected_run_ids),
+                )
+
+            remaining_row = self.sessions.connection.execute(
+                """
+                SELECT content, created_at
+                FROM messages
+                WHERE session_id = ?
+                ORDER BY sequence_no DESC, created_at DESC
+                LIMIT 1
+                """,
+                (session_id,),
+            ).fetchone()
+            count_row = self.sessions.connection.execute(
+                "SELECT COUNT(1) FROM messages WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+            remaining_count = int(count_row[0]) if count_row is not None else 0
+            last_message_preview = (
+                str(remaining_row["content"])[:280]
+                if remaining_row is not None and remaining_row["content"] is not None
+                else None
+            )
+            last_message_at = (
+                str(remaining_row["created_at"])
+                if remaining_row is not None and remaining_row["created_at"] is not None
+                else None
+            )
+            self.sessions.connection.execute(
+                """
+                UPDATE sessions
+                SET message_count = ?, last_message_preview = ?, last_message_at = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    remaining_count,
+                    last_message_preview,
+                    last_message_at,
+                    now_iso_timestamp(),
+                    session_id,
+                ),
+            )
+
+        if self.event_store is not None and affected_run_ids:
+            self.event_store.clear_many(affected_run_ids)
+
+        return self.create_run(
+            {
+                "sessionId": session_id,
+                "workspaceId": workspace_id,
+                "connectionId": connection_id,
+                "modelId": model_id,
+                "reasoningEffort": reasoning_effort,
+                "input": next_content,
+            },
+            background_tasks=background_tasks,
+        )
+
     def _cleanup_created_session(
         self, session_id: str | None, promoted_drafts: list[tuple[str, str]]
     ) -> None:
@@ -567,45 +721,53 @@ class RunService:
         executor = self.runtime_executor or execute_runtime_run
         signature = inspect.signature(executor)
         executor_any = cast(Any, executor)
-        supports_event_callback = (
-            "event_callback" in signature.parameters
-            or any(
-                parameter.kind == inspect.Parameter.VAR_KEYWORD
-                for parameter in signature.parameters.values()
-            )
-            or any(
-                parameter.kind == inspect.Parameter.VAR_POSITIONAL
-                for parameter in signature.parameters.values()
-            )
-            or len(signature.parameters) >= 6
+        parameters = signature.parameters
+        has_var_keyword = any(
+            parameter.kind == inspect.Parameter.VAR_KEYWORD
+            for parameter in parameters.values()
         )
-        if "event_callback" in signature.parameters:
-            return (
-                executor_any(
-                    config,
-                    run_id,
-                    user_input,
-                    auth_context,
-                    metadata,
-                    event_callback=event_callback,
-                    is_cancelled=is_cancelled,
-                ),
-                True,
-            )
+        has_var_positional = any(
+            parameter.kind == inspect.Parameter.VAR_POSITIONAL
+            for parameter in parameters.values()
+        )
+        supports_event_callback = (
+            "event_callback" in parameters
+            or has_var_keyword
+            or has_var_positional
+            or len(parameters) >= 6
+        )
+        supports_is_cancelled = (
+            "is_cancelled" in parameters
+            or has_var_keyword
+            or has_var_positional
+            or len(parameters) >= 7
+        )
+        base_args = [config, run_id, user_input, auth_context, metadata]
+
+        if has_var_positional:
+            if supports_event_callback:
+                base_args.append(event_callback)
+            if supports_is_cancelled:
+                base_args.append(is_cancelled)
+            return executor_any(*base_args), supports_event_callback
+
+        kwargs: dict[str, Any] = {}
+        if supports_event_callback and ("event_callback" in parameters or has_var_keyword):
+            kwargs["event_callback"] = event_callback
+        if supports_is_cancelled and ("is_cancelled" in parameters or has_var_keyword):
+            kwargs["is_cancelled"] = is_cancelled
+
+        if kwargs:
+            return executor_any(*base_args, **kwargs), supports_event_callback
+
         if supports_event_callback:
-            return (
-                executor_any(
-                    config,
-                    run_id,
-                    user_input,
-                    auth_context,
-                    metadata,
-                    event_callback,
-                    is_cancelled,
-                ),
-                True,
-            )
-        return executor_any(config, run_id, user_input, auth_context, metadata), False
+            call_args = list(base_args)
+            call_args.append(event_callback)
+            if supports_is_cancelled:
+                call_args.append(is_cancelled)
+            return executor_any(*call_args), True
+
+        return executor_any(*base_args), False
 
     def cancel_run(self, run_id: str) -> dict[str, Any]:
         run = self.runs.get_by_id(run_id)
@@ -1055,6 +1217,7 @@ def execute_runtime_run(
     auth_context: dict[str, Any],
     metadata: RunMetadata,
     event_callback: Callable[[dict[str, Any]], None] | None = None,
+    is_cancelled: Callable[[], bool] | None = None,
 ) -> dict[str, Any]:
     service = CodeAgentRuntimeService(config)
     return service.process(
@@ -1063,6 +1226,7 @@ def execute_runtime_run(
         auth_context=auth_context,
         metadata=metadata,
         event_callback=event_callback,
+        is_cancelled=is_cancelled,
     )
 
 

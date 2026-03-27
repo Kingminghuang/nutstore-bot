@@ -1019,6 +1019,87 @@ export default function Home() {
     []
   )
 
+  const handleEditMessageAndRerun = useCallback(
+    async (messageId: string, nextContent: string) => {
+      if (!activeSessionId || !activeWorkspaceId || !selectedModel) {
+        return
+      }
+
+      setRunError(null)
+
+      try {
+        const runResponse = await sidecarFetch<{
+          run: {
+            id: string
+            status: string
+            finalAnswer: string | null
+          }
+          session: ServerSession
+          messages: Message[]
+        }>(
+          `/sessions/${activeSessionId}/messages/${messageId}/edit-and-run`,
+          {
+            method: "POST",
+            body: JSON.stringify({
+              content: nextContent,
+              workspaceId: activeWorkspaceId,
+              connectionId: selectedModel.connectionId,
+              modelId: selectedModel.modelId,
+              ...(selectedReasoningEffort
+                ? { reasoningEffort: selectedReasoningEffort }
+                : {}),
+            }),
+          }
+        )
+
+        const nextSession = mergeSessionWithLocalHistory(
+          runResponse.session,
+          (sessionsByWorkspace[activeWorkspaceId] ?? []).find(
+            (session) => session.id === activeSessionId
+          ),
+          runResponse.messages.map((message) => ({
+            ...message,
+            role: message.role,
+          }))
+        )
+
+        setSessionsByWorkspace((prev) => ({
+          ...prev,
+          [activeWorkspaceId]: (prev[activeWorkspaceId] ?? []).map((session) =>
+            session.id === activeSessionId ? nextSession : session
+          ),
+        }))
+
+        const runIds = getMessageRunIds(runResponse.messages)
+        setRunStepsByRunId((prev) => {
+          const next: RunStepsByRunId = {}
+          for (const runId of runIds) {
+            if (prev[runId] != null) {
+              next[runId] = prev[runId]
+            }
+          }
+          next[runResponse.run.id] = next[runResponse.run.id] ?? []
+          return next
+        })
+
+        if (runResponse.run.status === "queued" || runResponse.run.status === "running") {
+          startRunEventStream(runResponse.run.id, activeWorkspaceId, activeSessionId)
+        }
+      } catch (error) {
+        setRunError(error instanceof Error ? error.message : "Failed to edit and rerun request")
+        throw error
+      }
+    },
+    [
+      activeSessionId,
+      activeWorkspaceId,
+      selectedModel,
+      selectedReasoningEffort,
+      sessionsByWorkspace,
+      startRunEventStream,
+    ]
+  )
+
   const handleRemoveProject = useCallback(
     async (projectId: string) => {
       await sidecarFetch(`/workspaces/${projectId}`, { method: "DELETE" })
@@ -1214,6 +1295,7 @@ export default function Home() {
         }
         onAttachFiles={handleAttachFiles}
         onRemoveAttachment={handleRemoveAttachment}
+        onEditMessageAndRerun={handleEditMessageAndRerun}
         onOpenSettings={() => setSettingsOpen(true)}
       />
       <SettingsModal

@@ -276,6 +276,28 @@ def create_app(config: ApiServerConfig | None = None) -> FastAPI:
             session_id, payload, background_tasks=background_tasks
         )
 
+    @app.post("/sessions/{session_id}/messages/{message_id}/edit-and-run")
+    def edit_session_message_and_run(
+        session_id: str,
+        message_id: str,
+        payload: dict[str, object],
+        background_tasks: BackgroundTasks,
+        request: Request,
+    ):
+        service = request.app.state.run_service
+        try:
+            return service.edit_message_and_run(
+                session_id=session_id,
+                message_id=message_id,
+                payload=payload,
+                background_tasks=background_tasks,
+            )
+        except RunRequestFailed as exc:
+            return JSONResponse(
+                status_code=exc.status_code,
+                content=redact_sensitive(exc.payload),
+            )
+
     @app.get("/sessions/{session_id}/attachments")
     def get_session_attachments(session_id: str) -> dict[str, list[dict[str, object]]]:
         return session_service.list_attachments_payload(session_id)

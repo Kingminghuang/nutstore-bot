@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react"
+import { fireEvent, render, screen, waitFor } from "@testing-library/react"
 
 import { MainContent } from "@/components/main-content"
 import type { RunHistoryStep } from "@/lib/sidecar-client"
@@ -90,6 +90,7 @@ function renderMainContent(selection: SelectedModelRef | null, runStepsByRunId: 
       isUploadingAttachment={false}
       onAttachFiles={vi.fn(async () => undefined)}
       onRemoveAttachment={vi.fn(async () => undefined)}
+      onEditMessageAndRerun={vi.fn(async () => undefined)}
     />
   )
 
@@ -160,6 +161,7 @@ describe("MainContent model selector", () => {
         isUploadingAttachment={false}
         onAttachFiles={vi.fn(async () => undefined)}
         onRemoveAttachment={vi.fn(async () => undefined)}
+        onEditMessageAndRerun={vi.fn(async () => undefined)}
       />
     )
 
@@ -208,6 +210,7 @@ describe("MainContent model selector", () => {
         isUploadingAttachment={false}
         onAttachFiles={vi.fn(async () => undefined)}
         onRemoveAttachment={vi.fn(async () => undefined)}
+        onEditMessageAndRerun={vi.fn(async () => undefined)}
         onOpenSettings={onOpenSettings}
       />
     )
@@ -272,5 +275,88 @@ describe("MainContent model selector", () => {
     expect(screen.getByText((content) => content.includes('"result": "hello"'))).toBeInTheDocument()
     expect(screen.queryByText("Execution logs:\nhello")).not.toBeInTheDocument()
     expect(screen.getByText("Minor warning")).toBeInTheDocument()
+  })
+
+  it("renders message actions and supports inline edit submit", async () => {
+    Object.assign(navigator, {
+      clipboard: {
+        writeText: vi.fn(async () => undefined),
+      },
+    })
+    const onEditMessageAndRerun = vi.fn(async () => undefined)
+
+    render(
+      <MainContent
+        activeProject={{ id: 1, name: "nutstore-bot", path: "/tmp/nutstore-bot", sessions: [] }}
+        activeSession={{
+          id: "sess_1",
+          workspaceId: "ws_1",
+          title: "New session",
+          titleSource: "placeholder",
+          createdAt: "2026-03-24T12:00:00Z",
+          updatedAt: "2026-03-24T12:00:00Z",
+          lastMessageAt: null,
+          messageCount: 2,
+          lastMessagePreview: null,
+          activeConnectionId: null,
+          activeModelId: null,
+          messages: [
+            {
+              id: "msg_user",
+              role: "user",
+              content: "please update this",
+              createdAt: "2026-03-24T12:00:00Z",
+              runId: "run_1",
+              stepId: null,
+            },
+            {
+              id: "msg_assistant",
+              role: "assistant",
+              content: "```ts\nconsole.log('a')\n```",
+              createdAt: "2026-03-24T12:00:01Z",
+              runId: "run_1",
+              stepId: null,
+            },
+          ],
+          hasMoreHistory: false,
+          nextBeforeSequence: null,
+          isLoadingHistory: false,
+          messageHydrationStatus: "loaded",
+        }}
+        isDraftSession={false}
+        runStepsByRunId={{}}
+        onSendMessage={vi.fn()}
+        modelOptionGroups={groups}
+        selectedModel={{ connectionId: "prov_openai", modelId: "gpt-5.4" }}
+        selectedReasoningEffort={null}
+        onSelectedModelChange={vi.fn()}
+        onSelectedReasoningEffortChange={vi.fn()}
+        isLoadingModels={false}
+        providerError={null}
+        runError={null}
+        hasMoreHistory={false}
+        isLoadingHistory={false}
+        onLoadEarlierMessages={vi.fn(async () => undefined)}
+        composerAttachments={[]}
+        isUploadingAttachment={false}
+        onAttachFiles={vi.fn(async () => undefined)}
+        onRemoveAttachment={vi.fn(async () => undefined)}
+        onEditMessageAndRerun={onEditMessageAndRerun}
+      />
+    )
+
+    fireEvent.click(screen.getByRole("button", { name: "Copy user message" }))
+    fireEvent.click(screen.getByRole("button", { name: "Copy assistant message" }))
+    expect(navigator.clipboard.writeText).toHaveBeenNthCalledWith(1, "please update this")
+    expect(navigator.clipboard.writeText).toHaveBeenNthCalledWith(2, "```ts\nconsole.log('a')\n```")
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit user message" }))
+    const editor = screen.getByDisplayValue("please update this")
+    fireEvent.change(editor, { target: { value: "please update this now" } })
+    fireEvent.click(screen.getByText("Send"))
+
+    await waitFor(() => {
+      expect(onEditMessageAndRerun).toHaveBeenCalledWith("msg_user", "please update this now")
+    })
   })
 })

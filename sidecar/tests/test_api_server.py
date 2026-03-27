@@ -927,6 +927,229 @@ class ApiServerTests(unittest.TestCase):
         self.assertEqual(older_body["pagination"]["hasMore"], False)
         self.assertIsNone(older_body["pagination"]["nextBeforeSequence"])
 
+    def test_edit_and_run_rewrites_suffix_messages_and_runs(self) -> None:
+        workspace = self._create_workspace("workspace-edit-run")
+        provider = self._create_provider()
+        session = self._create_session(
+            workspace_id=str(workspace["id"]),
+            connection_id=str(provider["id"]),
+        )
+        session_id = str(session["id"])
+        provider_id = str(provider["id"])
+        self._set_sync_run_launcher()
+        self.app.state.run_service = replace(
+            self.app.state.run_service,
+            runtime_executor=lambda *_args, **_kwargs: {
+                "deltas": [],
+                "steps": [],
+                "final_answer": "Edited run complete",
+            },
+        )
+
+        database = self.app.state.database
+        database.execute(
+            """
+            INSERT INTO runs (
+                id, session_id, workspace_id, connection_id, model_id, status, input_text,
+                final_answer, error_code, error_message, created_at, started_at, completed_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "run_old_1",
+                session_id,
+                workspace["id"],
+                provider_id,
+                "gpt-5.4",
+                "completed",
+                "old input 1",
+                "done",
+                None,
+                None,
+                "2026-03-24T12:00:00Z",
+                "2026-03-24T12:00:00Z",
+                "2026-03-24T12:00:30Z",
+                "2026-03-24T12:00:30Z",
+            ),
+        )
+        database.execute(
+            """
+            INSERT INTO runs (
+                id, session_id, workspace_id, connection_id, model_id, status, input_text,
+                final_answer, error_code, error_message, created_at, started_at, completed_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "run_old_2",
+                session_id,
+                workspace["id"],
+                provider_id,
+                "gpt-5.4",
+                "completed",
+                "old input 2",
+                "done",
+                None,
+                None,
+                "2026-03-24T12:01:00Z",
+                "2026-03-24T12:01:00Z",
+                "2026-03-24T12:01:30Z",
+                "2026-03-24T12:01:30Z",
+            ),
+        )
+        database.execute(
+            """
+            INSERT INTO messages (id, session_id, run_id, role, content, step_id, sequence_no, created_at, metadata_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            ("msg_keep_1", session_id, "run_old_1", "user", "prefix user", None, 1, "2026-03-24T12:00:00Z", None),
+        )
+        database.execute(
+            """
+            INSERT INTO messages (id, session_id, run_id, role, content, step_id, sequence_no, created_at, metadata_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "msg_keep_2",
+                session_id,
+                "run_old_1",
+                "assistant",
+                "prefix assistant",
+                None,
+                2,
+                "2026-03-24T12:00:10Z",
+                None,
+            ),
+        )
+        database.execute(
+            """
+            INSERT INTO messages (id, session_id, run_id, role, content, step_id, sequence_no, created_at, metadata_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            ("msg_edit_1", session_id, "run_old_2", "user", "old editable", None, 3, "2026-03-24T12:01:00Z", None),
+        )
+        database.execute(
+            """
+            INSERT INTO messages (id, session_id, run_id, role, content, step_id, sequence_no, created_at, metadata_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "msg_drop_2",
+                session_id,
+                "run_old_2",
+                "assistant",
+                "old assistant tail",
+                None,
+                4,
+                "2026-03-24T12:01:10Z",
+                None,
+            ),
+        )
+        database.execute(
+            """
+            UPDATE sessions
+            SET message_count = 4, last_message_preview = ?, last_message_at = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            ("old assistant tail", "2026-03-24T12:01:10Z", "2026-03-24T12:01:10Z", session_id),
+        )
+        database.commit()
+
+        response = self.client.post(
+            f"/sessions/{session_id}/messages/msg_edit_1/edit-and-run",
+            headers={"Authorization": "Bearer test-token"},
+            json={
+                "content": "edited user message",
+                "workspaceId": workspace["id"],
+                "connectionId": provider_id,
+                "modelId": "gpt-5.4",
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["run"]["status"], "completed")
+        self.assertEqual(body["messages"][0]["content"], "prefix user")
+        self.assertEqual(body["messages"][1]["content"], "prefix assistant")
+        self.assertEqual(body["messages"][2]["content"], "edited user message")
+        self.assertEqual(body["messages"][3]["content"], "Edited run complete")
+
+        run_ids = {
+            item["id"]
+            for item in database.execute("SELECT id FROM runs").fetchall()
+        }
+        self.assertIn("run_old_1", run_ids)
+        self.assertNotIn("run_old_2", run_ids)
+
+    def test_edit_and_run_rejects_non_user_message(self) -> None:
+        workspace = self._create_workspace("workspace-edit-invalid-role")
+        provider = self._create_provider()
+        session = self._create_session(
+            workspace_id=str(workspace["id"]),
+            connection_id=str(provider["id"]),
+        )
+        response = self.client.post(
+            f"/sessions/{session['id']}/messages",
+            headers={"Authorization": "Bearer test-token"},
+            json={
+                "role": "assistant",
+                "content": "assistant content",
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        message_id = response.json()["id"]
+
+        edit_response = self.client.post(
+            f"/sessions/{session['id']}/messages/{message_id}/edit-and-run",
+            headers={"Authorization": "Bearer test-token"},
+            json={
+                "content": "new content",
+                "workspaceId": workspace["id"],
+                "connectionId": provider["id"],
+                "modelId": "gpt-5.4",
+            },
+        )
+        self.assertEqual(edit_response.status_code, 400)
+        self.assertEqual(edit_response.json()["detail"], "Only user messages can be edited")
+
+    def test_edit_and_run_rejects_when_session_has_active_run(self) -> None:
+        workspace = self._create_workspace("workspace-edit-active-run")
+        provider = self._create_provider()
+        session = self._create_session(
+            workspace_id=str(workspace["id"]),
+            connection_id=str(provider["id"]),
+        )
+        message_response = self.client.post(
+            f"/sessions/{session['id']}/messages",
+            headers={"Authorization": "Bearer test-token"},
+            json={
+                "role": "user",
+                "content": "message while running",
+            },
+        )
+        self.assertEqual(message_response.status_code, 200)
+        message_id = str(message_response.json()["id"])
+
+        run = self.app.state.repositories.runs.create(
+            session_id=str(session["id"]),
+            workspace_id=str(workspace["id"]),
+            connection_id=str(provider["id"]),
+            model_id="gpt-5.4",
+            input_text="pending",
+            status="running",
+        )
+        self.assertEqual(run.status, "running")
+
+        response = self.client.post(
+            f"/sessions/{session['id']}/messages/{message_id}/edit-and-run",
+            headers={"Authorization": "Bearer test-token"},
+            json={
+                "content": "edited during running run",
+                "workspaceId": workspace["id"],
+                "connectionId": provider["id"],
+                "modelId": "gpt-5.4",
+            },
+        )
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json()["detail"], "Cannot edit while a run is in progress")
+
     def test_session_attachments_can_upload_list_and_delete(self) -> None:
         workspace = self._create_workspace("workspace-attachments")
         provider = self._create_provider()

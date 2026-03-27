@@ -43,3 +43,12 @@ class RunEventStore:
             if state is None:
                 return False
             return state.closed
+
+    def clear(self, run_id: str) -> None:
+        with self._lock:
+            self._states.pop(run_id, None)
+
+    def clear_many(self, run_ids: list[str]) -> None:
+        with self._lock:
+            for run_id in run_ids:
+                self._states.pop(run_id, None)

@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
+from unittest.mock import patch
 
 from smolagents.models import (
     ChatMessage,
@@ -24,6 +25,7 @@ from python_runtime.runtime_service import (
     RuntimeProcessError,
     RuntimeWorkerConfig,
 )
+from run_service import execute_runtime_run
 
 
 class FakeStreamingModel(Model):
@@ -342,6 +344,44 @@ class RuntimeServiceTests(unittest.TestCase):
             "Here are the rules you should always follow to solve your task", prompt
         )
         self.assertNotIn("Above examples were using notional tools", prompt)
+
+    def test_execute_runtime_run_forwards_event_callback_and_is_cancelled(self) -> None:
+        cfg = self._config()
+        metadata = RunMetadata(
+            workspace_path=str(self.workspace_a),
+            session_key="session-1",
+        )
+        callback = lambda _event: None
+        is_cancelled = lambda: False
+
+        with patch("run_service.CodeAgentRuntimeService") as service_cls:
+            service_instance = service_cls.return_value
+            service_instance.process.return_value = {
+                "deltas": [],
+                "steps": [],
+                "final_answer": "ok",
+            }
+
+            result = execute_runtime_run(
+                cfg,
+                "run-1",
+                "task",
+                {"auth": "ctx"},
+                metadata,
+                event_callback=callback,
+                is_cancelled=is_cancelled,
+            )
+
+        self.assertEqual(result["final_answer"], "ok")
+        service_cls.assert_called_once_with(cfg)
+        service_instance.process.assert_called_once_with(
+            run_id="run-1",
+            user_input="task",
+            auth_context={"auth": "ctx"},
+            metadata=metadata,
+            event_callback=callback,
+            is_cancelled=is_cancelled,
+        )
 
 
 if __name__ == "__main__":

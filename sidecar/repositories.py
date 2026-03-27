@@ -651,6 +651,29 @@ class MessagesRepository:
         next_before_sequence = records[0].sequence_no if has_more and records else None
         return records, has_more, next_before_sequence
 
+    def list_by_session_id_from_sequence(
+        self, session_id: str, from_sequence: int
+    ) -> list[MessageRecord]:
+        rows = self.connection.execute(
+            """
+            SELECT *
+            FROM messages
+            WHERE session_id = ? AND sequence_no >= ?
+            ORDER BY sequence_no ASC, created_at ASC
+            """,
+            (session_id, from_sequence),
+        ).fetchall()
+        return [_map_message(row) for row in rows]
+
+    def delete_by_session_id_from_sequence(
+        self, session_id: str, from_sequence: int
+    ) -> None:
+        self.connection.execute(
+            "DELETE FROM messages WHERE session_id = ? AND sequence_no >= ?",
+            (session_id, from_sequence),
+        )
+        self.connection.commit()
+
     def _next_sequence_number(self, session_id: str) -> int:
         row = self.connection.execute(
             "SELECT COALESCE(MAX(sequence_no), 0) FROM messages WHERE session_id = ?",
@@ -738,6 +761,28 @@ class RunsRepository:
         )
         self.connection.commit()
         return self.get_by_id(run_id)
+
+    def list_by_session_id(self, session_id: str) -> list[RunRecord]:
+        rows = self.connection.execute(
+            """
+            SELECT *
+            FROM runs
+            WHERE session_id = ?
+            ORDER BY created_at ASC, id ASC
+            """,
+            (session_id,),
+        ).fetchall()
+        return [_map_run(row) for row in rows]
+
+    def delete_by_ids(self, run_ids: list[str]) -> None:
+        if not run_ids:
+            return
+        placeholders = ",".join("?" for _ in run_ids)
+        self.connection.execute(
+            f"DELETE FROM runs WHERE id IN ({placeholders})",
+            tuple(run_ids),
+        )
+        self.connection.commit()
 
 
 class AttachmentsRepository:

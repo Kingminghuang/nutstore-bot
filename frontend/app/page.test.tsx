@@ -84,6 +84,59 @@ const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => 
     )
   }
 
+  if (
+    decodedPath === "/sessions/sess_1/messages/msg_1/edit-and-run" &&
+    init?.method === "POST"
+  ) {
+    return new Response(
+      JSON.stringify({
+        run: {
+          id: "run_edited_1",
+          status: "completed",
+          finalAnswer: "Edited run completed",
+        },
+        session: {
+          id: "sess_1",
+          workspaceId: "ws_1",
+          title: "Backend driven title",
+          titleSource: "model",
+          createdAt: "2026-03-24T12:00:00Z",
+          updatedAt: "2026-03-24T12:20:00Z",
+          lastMessageAt: "2026-03-24T12:20:00Z",
+          messageCount: 2,
+          lastMessagePreview: "Edited run completed",
+          activeConnectionId: "prov_openai",
+          activeModelId: "gpt-5.4-mini",
+        },
+        messages: [
+          {
+            id: "msg_1",
+            sessionId: "sess_1",
+            runId: "run_edited_1",
+            role: "user",
+            content: String(body?.content ?? "edited"),
+            stepId: null,
+            sequenceNo: 1,
+            createdAt: "2026-03-24T12:19:00Z",
+            metadataJson: null,
+          },
+          {
+            id: "msg_edited_2",
+            sessionId: "sess_1",
+            runId: "run_edited_1",
+            role: "assistant",
+            content: "Edited run completed",
+            stepId: null,
+            sequenceNo: 2,
+            createdAt: "2026-03-24T12:20:00Z",
+            metadataJson: null,
+          },
+        ],
+      }),
+      { status: 200 }
+    )
+  }
+
   if (decodedPath.startsWith("/sessions/sess_1/messages")) {
     if (deletedSessionIds.has("sess_1")) {
       return new Response(JSON.stringify({ detail: "Session not found" }), { status: 404 })
@@ -691,6 +744,33 @@ describe("Home page", () => {
 
     await waitFor(() => {
       expect(screen.getAllByText("Backend driven title")).toHaveLength(2)
+    })
+  })
+
+  it("submits edited user message through edit-and-run endpoint", async () => {
+    render(<Home />)
+
+    await waitFor(() => {
+      expect(screen.getByText("Please wire the sidecar")).toBeInTheDocument()
+    })
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit user message" }))
+    fireEvent.change(screen.getByDisplayValue("Please wire the sidecar"), {
+      target: { value: "Please wire the sidecar with retries" },
+    })
+    fireEvent.click(screen.getByText("Send"))
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        expect.stringContaining("path=%2Fsessions%2Fsess_1%2Fmessages%2Fmsg_1%2Fedit-and-run"),
+        expect.objectContaining({
+          method: "POST",
+        })
+      )
+    })
+
+    await waitFor(() => {
+      expect(screen.getByText("Edited run completed")).toBeInTheDocument()
     })
   })
 
