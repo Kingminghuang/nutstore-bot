@@ -777,7 +777,7 @@ function MessageBubble({
   if (message.role === "user") {
     return (
       <div className="flex justify-end">
-        <div className="max-w-[80%] flex flex-col items-end gap-2">
+        <div className="group max-w-[80%] flex flex-col items-end gap-2">
           {isEditing ? (
             <div className="w-full min-w-[320px] bg-[#f0ebe6] border border-[#e8e4e0] rounded-2xl px-4 py-3">
               <textarea
@@ -813,7 +813,7 @@ function MessageBubble({
           )}
 
           {!isEditing && (
-            <div className="flex items-center gap-2 self-end">
+            <div className="flex items-center gap-2 self-end opacity-0 pointer-events-none transition-opacity group-hover:opacity-100 group-hover:pointer-events-auto group-focus-within:opacity-100 group-focus-within:pointer-events-auto">
               <Tooltip>
                 <TooltipTrigger asChild>
                   <button
@@ -854,9 +854,9 @@ function MessageBubble({
   return (
     <div className="flex gap-3 items-start">
       <div className="w-7 h-7 rounded-full bg-gradient-to-br from-[#e87b5f] to-[#8bc28f] flex-shrink-0 mt-0.5" />
-      <div className="flex-1 min-w-0 flex flex-col gap-2">
+      <div className="group flex-1 min-w-0 flex flex-col gap-2">
         <AgentMessageContent content={message.content} />
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 opacity-0 pointer-events-none transition-opacity group-hover:opacity-100 group-hover:pointer-events-auto group-focus-within:opacity-100 group-focus-within:pointer-events-auto">
           <Tooltip>
             <TooltipTrigger asChild>
               <button

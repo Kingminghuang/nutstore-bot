@@ -618,7 +618,7 @@ export function SettingsModal({
                     {connectedProviderCards.map(({ provider, icon, description, modelCount }) => (
                       <div
                         key={provider.id}
-                        className="flex items-center gap-3 rounded-lg border border-[#e8e4e0] bg-[#f8f5f2] p-2"
+                        className="group flex items-center gap-3 rounded-lg border border-[#e8e4e0] bg-[#f8f5f2] p-2"
                       >
                         <button
                           type="button"
@@ -658,7 +658,7 @@ export function SettingsModal({
                           type="button"
                           variant="ghost"
                           size="icon-sm"
-                          className="text-foreground/60 hover:text-destructive"
+                          className="pointer-events-none opacity-0 text-foreground/60 transition-opacity group-hover:opacity-100 group-hover:pointer-events-auto group-focus-within:opacity-100 group-focus-within:pointer-events-auto hover:text-destructive"
                           onClick={() => void handleDisconnectProvider(provider.id)}
                           aria-label={`Disconnect ${provider.displayName}`}
                         >
