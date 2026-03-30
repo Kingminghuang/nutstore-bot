@@ -20,6 +20,11 @@ from direct_model import DirectModel, DirectModelConfig, DirectModelError
 from local_code_executor import LocalCodeExecutor
 from memory import MemoryConsolidator, MemoryStore
 from native_code_agent import NativeCodeAgent
+from agent_memory_projection import (
+    project_agent_memory_to_session_messages,
+    project_agent_memory_to_timeline_entries,
+    project_final_answer_to_session_message,
+)
 from provider_catalog import BUILTIN_PROVIDERS
 from session_manager import SessionManager
 from tools import build_workspace_tools, path_identity, resolve_path_arg
@@ -326,8 +331,14 @@ class CodeAgentRuntimeService:
         finally:
             executor.release_run()
 
-        session.add_message("user", user_input)
-        session.add_message("assistant", final_answer or "")
+        projected_messages = project_agent_memory_to_session_messages(
+            agent.memory, run_id=run_id
+        )
+        if final_answer is not None:
+            projected_messages.append(
+                project_final_answer_to_session_message(final_answer, run_id=run_id)
+            )
+        session.append_messages(projected_messages)
         self.sessions.save(session)
 
         try:
@@ -339,6 +350,12 @@ class CodeAgentRuntimeService:
             "deltas": deltas,
             "steps": steps,
             "final_answer": final_answer,
+            "session_messages": projected_messages,
+            "timeline_entries": project_agent_memory_to_timeline_entries(
+                agent.memory,
+                run_id=run_id,
+                session_id=session_key,
+            ),
         }
 
     def _resolve_workspace_path(self, metadata: RunMetadata) -> str:

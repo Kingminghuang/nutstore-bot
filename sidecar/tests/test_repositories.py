@@ -55,16 +55,17 @@ class RepositoriesTests(unittest.TestCase):
             active_model_id="gpt-5.4",
         )
 
-        message = self.repositories.messages.append(
+        message = self.repositories.timeline_entries.append(
             session_id=session.id,
-            role="user",
-            content="Help me wire frontend and sidecar",
+            entry_kind="user_input",
+            display_role="user",
+            content_text="Help me wire frontend and sidecar",
         )
 
         self.repositories.sessions.touch(
             session.id,
             message_count=1,
-            last_message_preview=message.content,
+            last_message_preview=message.content_text,
             last_message_at=message.created_at,
             title="Wire frontend and sidecar",
             title_source="heuristic",
@@ -75,7 +76,7 @@ class RepositoriesTests(unittest.TestCase):
             workspace_id=workspace.id,
             connection_id=provider.connection.id,
             model_id="gpt-5.4",
-            input_text=message.content,
+            input_text=message.content_text or "",
         )
         updated_run = self.repositories.runs.update(
             run.id,
@@ -90,7 +91,7 @@ class RepositoriesTests(unittest.TestCase):
             len(self.repositories.sessions.list_by_workspace_id(workspace.id)), 1
         )
         self.assertEqual(
-            len(self.repositories.messages.list_by_session_id(session.id)), 1
+            len(self.repositories.timeline_entries.list_by_session_id(session.id)), 1
         )
         self.assertTrue(provider.connection.secret_ref.startswith("sec_"))
         self.assertEqual(updated_run.status, "completed")

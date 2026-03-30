@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react"
 
 import { MainContent } from "@/components/main-content"
-import type { RunHistoryStep } from "@/lib/sidecar-client"
+import type { TimelineEntry } from "@/lib/sidecar-client"
 import type { ModelOptionGroup, SelectedModelRef } from "@/lib/provider-settings"
 
 const groups: ModelOptionGroup[] = [
@@ -38,42 +38,38 @@ const groups: ModelOptionGroup[] = [
   },
 ]
 
-function renderMainContent(selection: SelectedModelRef | null, runStepsByRunId: Record<string, RunHistoryStep[]> = {}) {
+function buildSession(timelineEntries: TimelineEntry[] = []) {
+  return {
+    id: "sess_1",
+    workspaceId: "ws_1",
+    title: "New session",
+    titleSource: "placeholder" as const,
+    createdAt: "2026-03-24T12:00:00Z",
+    updatedAt: "2026-03-24T12:00:00Z",
+    lastMessageAt: null,
+    messageCount: timelineEntries.length,
+    lastMessagePreview: null,
+    activeConnectionId: null,
+    activeModelId: null,
+    timelineEntries,
+    hasMoreHistory: false,
+    nextBeforeSequence: null,
+    isLoadingHistory: false,
+    timelineHydrationStatus: "loaded" as const,
+  }
+}
+
+function renderMainContent(
+  selection: SelectedModelRef | null,
+  timelineEntries: TimelineEntry[] = []
+) {
   const onSelectedModelChange = vi.fn()
 
   render(
     <MainContent
-      activeProject={{ id: 1, name: "nutstore-bot", path: "/tmp/nutstore-bot", sessions: [] }}
-      activeSession={{
-        id: "sess_1",
-        workspaceId: "ws_1",
-        title: "New session",
-        titleSource: "placeholder",
-        createdAt: "2026-03-24T12:00:00Z",
-        updatedAt: "2026-03-24T12:00:00Z",
-        lastMessageAt: null,
-        messageCount: 0,
-        lastMessagePreview: null,
-          activeConnectionId: null,
-          activeModelId: null,
-          messages: runStepsByRunId.run_1
-          ? [
-              {
-                id: "msg_1",
-                role: "user",
-                content: "Inspect the workspace",
-                createdAt: "2026-03-24T12:00:00Z",
-                runId: "run_1",
-                stepId: null,
-              },
-            ]
-          : [],
-          hasMoreHistory: false,
-          nextBeforeSequence: null,
-          isLoadingHistory: false,
-        }}
+      activeProject={{ id: "ws_1", name: "nutstore-bot", path: "/tmp/nutstore-bot", sessions: [] }}
+      activeSession={buildSession(timelineEntries)}
       isDraftSession={false}
-      runStepsByRunId={runStepsByRunId}
       onSendMessage={vi.fn()}
       modelOptionGroups={groups}
       selectedModel={selection}
@@ -125,26 +121,9 @@ describe("MainContent model selector", () => {
   it("disables model selection and submit when no configured providers exist", () => {
     render(
       <MainContent
-        activeProject={{ id: 1, name: "nutstore-bot", path: "/tmp/nutstore-bot", sessions: [] }}
-        activeSession={{
-          id: "sess_1",
-          workspaceId: "ws_1",
-          title: "New session",
-          titleSource: "placeholder",
-          createdAt: "2026-03-24T12:00:00Z",
-          updatedAt: "2026-03-24T12:00:00Z",
-          lastMessageAt: null,
-          messageCount: 0,
-          lastMessagePreview: null,
-           activeConnectionId: null,
-           activeModelId: null,
-           messages: [],
-            hasMoreHistory: false,
-            nextBeforeSequence: null,
-            isLoadingHistory: false,
-          }}
+        activeProject={{ id: "ws_1", name: "nutstore-bot", path: "/tmp/nutstore-bot", sessions: [] }}
+        activeSession={buildSession()}
         isDraftSession={false}
-        runStepsByRunId={{}}
         onSendMessage={vi.fn()}
         modelOptionGroups={[]}
         selectedModel={null}
@@ -174,26 +153,9 @@ describe("MainContent model selector", () => {
 
     render(
       <MainContent
-        activeProject={{ id: 1, name: "nutstore-bot", path: "/tmp/nutstore-bot", sessions: [] }}
-        activeSession={{
-          id: "sess_1",
-          workspaceId: "ws_1",
-          title: "New session",
-          titleSource: "placeholder",
-          createdAt: "2026-03-24T12:00:00Z",
-          updatedAt: "2026-03-24T12:00:00Z",
-          lastMessageAt: null,
-          messageCount: 0,
-          lastMessagePreview: null,
-          activeConnectionId: null,
-          activeModelId: null,
-          messages: [],
-          hasMoreHistory: false,
-          nextBeforeSequence: null,
-          isLoadingHistory: false,
-        }}
+        activeProject={{ id: "ws_1", name: "nutstore-bot", path: "/tmp/nutstore-bot", sessions: [] }}
+        activeSession={buildSession()}
         isDraftSession={false}
-        runStepsByRunId={{}}
         onSendMessage={vi.fn()}
         modelOptionGroups={[]}
         selectedModel={null}
@@ -228,56 +190,74 @@ describe("MainContent model selector", () => {
     expect(screen.getByRole("option", { name: "Auto" })).toBeInTheDocument()
   })
 
-  it("renders persisted planning and action steps with action display priority", () => {
+  it("renders persisted planning and action entries with action display priority", () => {
     renderMainContent(
       { connectionId: "prov_openai", modelId: "gpt-5.4" },
-      {
-        run_1: [
-          {
-            id: "step_plan",
-            runId: "run_1",
-            sessionId: "sess_1",
-            sequenceNo: 1,
-            stepId: "step-1",
-            stepKind: "planning",
-            stepNumber: null,
-            plan: "Inspect the repo and identify the main entry points.",
-            usage: { inputTokens: 10, outputTokens: 5, reasoningTokens: 0 },
-            durationMs: 120,
-            hasDelta: true,
-            createdAt: "2026-03-24T12:00:01Z",
-          },
-          {
-            id: "step_action",
-            runId: "run_1",
-            sessionId: "sess_1",
-            sequenceNo: 2,
-            stepId: "step-2",
-            stepKind: "action",
-            stepNumber: 1,
+      [
+        {
+          id: "entry_user",
+          sessionId: "sess_1",
+          runId: "run_1",
+          sequenceNo: 1,
+          entryKind: "user_input",
+          displayRole: "user",
+          stepId: null,
+          stepNumber: null,
+          contentText: "Inspect the workspace",
+          createdAt: "2026-03-24T12:00:00Z",
+        },
+        {
+          id: "entry_plan",
+          sessionId: "sess_1",
+          runId: "run_1",
+          sequenceNo: 2,
+          entryKind: "planning",
+          displayRole: "assistant",
+          stepId: "step-1",
+          stepNumber: null,
+          contentText: "Inspect the repo and identify the main entry points.",
+          createdAt: "2026-03-24T12:00:01Z",
+        },
+        {
+          id: "entry_action",
+          sessionId: "sess_1",
+          runId: "run_1",
+          sequenceNo: 3,
+          entryKind: "action",
+          displayRole: "assistant",
+          stepId: "step-2",
+          stepNumber: 1,
+          contentText: null,
+          createdAt: "2026-03-24T12:00:02Z",
+          contentJson: {
+            toolCalls: [],
+            observations: ["Execution logs:", "hello"],
             codeAction: 'print("hello")',
             actionOutput: { result: "hello" },
-            observations: ["Execution logs:", "hello"],
             error: "Minor warning",
             usage: { inputTokens: 12, outputTokens: 4, reasoningTokens: 0 },
             durationMs: 180,
-            hasDelta: true,
-            createdAt: "2026-03-24T12:00:02Z",
           },
-        ],
-      }
+        },
+      ]
     )
 
     expect(screen.getByText("Planning step")).toBeInTheDocument()
     expect(screen.getByText("Inspect the repo and identify the main entry points.")).toBeInTheDocument()
     expect(screen.getByText("Step 1")).toBeInTheDocument()
-    expect(screen.getByText("print(\"hello\")")).toBeInTheDocument()
-    expect(screen.getByText((content) => content.includes('"result": "hello"'))).toBeInTheDocument()
+    expect(screen.queryByText("print(\"hello\")")).not.toBeInTheDocument()
+    expect(screen.queryByText((content) => content.includes('"result": "hello"'))).not.toBeInTheDocument()
     expect(screen.queryByText("Execution logs:\nhello")).not.toBeInTheDocument()
     expect(screen.getByText("Minor warning")).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole("button", { name: /Code action/i }))
+    expect(screen.getByText('print("hello")')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole("button", { name: /Action output/i }))
+    expect(screen.getByText((content) => content.includes('"result": "hello"'))).toBeInTheDocument()
   })
 
-  it("renders message actions and supports inline edit submit", async () => {
+  it("renders timeline entry actions and supports inline edit submit", async () => {
     Object.assign(navigator, {
       clipboard: {
         writeText: vi.fn(async () => undefined),
@@ -287,44 +267,34 @@ describe("MainContent model selector", () => {
 
     render(
       <MainContent
-        activeProject={{ id: 1, name: "nutstore-bot", path: "/tmp/nutstore-bot", sessions: [] }}
-        activeSession={{
-          id: "sess_1",
-          workspaceId: "ws_1",
-          title: "New session",
-          titleSource: "placeholder",
-          createdAt: "2026-03-24T12:00:00Z",
-          updatedAt: "2026-03-24T12:00:00Z",
-          lastMessageAt: null,
-          messageCount: 2,
-          lastMessagePreview: null,
-          activeConnectionId: null,
-          activeModelId: null,
-          messages: [
-            {
-              id: "msg_user",
-              role: "user",
-              content: "please update this",
-              createdAt: "2026-03-24T12:00:00Z",
-              runId: "run_1",
-              stepId: null,
-            },
-            {
-              id: "msg_assistant",
-              role: "assistant",
-              content: "```ts\nconsole.log('a')\n```",
-              createdAt: "2026-03-24T12:00:01Z",
-              runId: "run_1",
-              stepId: null,
-            },
-          ],
-          hasMoreHistory: false,
-          nextBeforeSequence: null,
-          isLoadingHistory: false,
-          messageHydrationStatus: "loaded",
-        }}
+        activeProject={{ id: "ws_1", name: "nutstore-bot", path: "/tmp/nutstore-bot", sessions: [] }}
+        activeSession={buildSession([
+          {
+            id: "msg_user",
+            sessionId: "sess_1",
+            runId: "run_1",
+            sequenceNo: 1,
+            entryKind: "user_input",
+            displayRole: "user",
+            stepId: null,
+            stepNumber: null,
+            contentText: "please update this",
+            createdAt: "2026-03-24T12:00:00Z",
+          },
+          {
+            id: "msg_assistant",
+            sessionId: "sess_1",
+            runId: "run_1",
+            sequenceNo: 2,
+            entryKind: "final_answer",
+            displayRole: "assistant",
+            stepId: null,
+            stepNumber: null,
+            contentText: "```ts\nconsole.log('a')\n```",
+            createdAt: "2026-03-24T12:00:01Z",
+          },
+        ])}
         isDraftSession={false}
-        runStepsByRunId={{}}
         onSendMessage={vi.fn()}
         modelOptionGroups={groups}
         selectedModel={{ connectionId: "prov_openai", modelId: "gpt-5.4" }}

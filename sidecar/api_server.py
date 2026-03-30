@@ -39,6 +39,7 @@ from repositories import create_repositories
 from session_service import SessionService
 from secret_store import LocalSecretStore
 from storage import connect_database
+from timeline_service import TimelineService
 
 
 DEFAULT_HOST = "127.0.0.1"
@@ -73,17 +74,20 @@ def create_app(config: ApiServerConfig | None = None) -> FastAPI:
     session_service = SessionService(
         workspaces=repositories.workspaces,
         sessions=repositories.sessions,
-        messages=repositories.messages,
         attachments=repositories.attachments,
         draft_attachments=repositories.draft_attachments,
         attachment_store=AttachmentStore(cfg.ns_bot_home),
+        timeline_service=TimelineService(
+            sessions=repositories.sessions,
+            timeline_entries=repositories.timeline_entries,
+        ),
     )
     run_service = RunService(
         workspaces=repositories.workspaces,
         sessions=repositories.sessions,
         providers=repositories.providers,
         runs=repositories.runs,
-        run_steps=repositories.run_steps,
+        timeline_entries=repositories.timeline_entries,
         session_service=session_service,
         attachments=repositories.attachments,
         draft_attachments=repositories.draft_attachments,
@@ -238,7 +242,10 @@ def create_app(config: ApiServerConfig | None = None) -> FastAPI:
             payload=payload,
         )
 
-    @app.delete("/workspaces/{workspace_id}/draft-attachments/{draft_attachment_id}", status_code=204)
+    @app.delete(
+        "/workspaces/{workspace_id}/draft-attachments/{draft_attachment_id}",
+        status_code=204,
+    )
     def delete_workspace_draft_attachment(
         workspace_id: str, draft_attachment_id: str
     ) -> None:
@@ -254,32 +261,22 @@ def create_app(config: ApiServerConfig | None = None) -> FastAPI:
     def delete_session(session_id: str) -> None:
         session_service.delete_session(session_id)
 
-    @app.get("/sessions/{session_id}/messages")
-    def get_session_messages(
+    @app.get("/sessions/{session_id}/timeline")
+    def get_session_timeline(
         session_id: str,
         limit: int | None = Query(default=None, ge=1),
         before_sequence: int | None = Query(default=None, alias="beforeSequence", ge=1),
     ) -> dict[str, object]:
-        return session_service.list_messages_payload(
+        return session_service.list_timeline_payload(
             session_id,
             limit=limit,
             before_sequence=before_sequence,
         )
 
-    @app.post("/sessions/{session_id}/messages")
-    def create_session_message(
+    @app.post("/sessions/{session_id}/timeline/{entry_id}/edit-and-run")
+    def edit_session_timeline_entry_and_run(
         session_id: str,
-        payload: dict[str, object],
-        background_tasks: BackgroundTasks,
-    ) -> dict[str, object]:
-        return session_service.append_message(
-            session_id, payload, background_tasks=background_tasks
-        )
-
-    @app.post("/sessions/{session_id}/messages/{message_id}/edit-and-run")
-    def edit_session_message_and_run(
-        session_id: str,
-        message_id: str,
+        entry_id: str,
         payload: dict[str, object],
         background_tasks: BackgroundTasks,
         request: Request,
@@ -288,7 +285,7 @@ def create_app(config: ApiServerConfig | None = None) -> FastAPI:
         try:
             return service.edit_message_and_run(
                 session_id=session_id,
-                message_id=message_id,
+                timeline_entry_id=entry_id,
                 payload=payload,
                 background_tasks=background_tasks,
             )
@@ -374,13 +371,13 @@ def create_app(config: ApiServerConfig | None = None) -> FastAPI:
             },
         )
 
-    @app.get("/runs/{run_id}/steps")
-    def get_run_steps(
+    @app.get("/runs/{run_id}/timeline")
+    def get_run_timeline(
         run_id: str, request: Request
     ) -> dict[str, list[dict[str, object]]]:
         service = request.app.state.run_service
         try:
-            return service.list_run_steps_payload(run_id)
+            return service.list_run_timeline_payload(run_id)
         except ValueError as exc:
             raise HTTPException(status_code=404, detail="Run not found") from exc
 

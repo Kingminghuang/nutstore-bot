@@ -158,6 +158,43 @@ class ApiServerTests(unittest.TestCase):
             },
         ).json()
 
+    def _append_timeline_entry(
+        self,
+        *,
+        session_id: str,
+        entry_kind: str,
+        display_role: str,
+        content_text: str | None,
+        run_id: str | None = None,
+        timeline_entry_id: str | None = None,
+        sequence_no: int | None = None,
+        step_id: str | None = None,
+        step_number: int | None = None,
+        content_json: str | None = None,
+        created_at: str | None = None,
+    ):
+        return self.app.state.repositories.timeline_entries.append(
+            session_id=session_id,
+            run_id=run_id,
+            timeline_entry_id=timeline_entry_id,
+            sequence_no=sequence_no,
+            entry_kind=entry_kind,
+            display_role=display_role,
+            step_id=step_id,
+            step_number=step_number,
+            content_text=content_text,
+            content_json=content_json,
+            created_at=created_at,
+        )
+
+    def _get_session_timeline(self, session_id: str) -> list[dict[str, object]]:
+        response = self.client.get(
+            f"/sessions/{session_id}/timeline",
+            headers={"Authorization": "Bearer test-token"},
+        )
+        self.assertEqual(response.status_code, 200)
+        return response.json()["entries"]
+
     def test_health_is_public(self) -> None:
         response = self.client.get("/health")
         self.assertEqual(response.status_code, 200)
@@ -821,19 +858,14 @@ class ApiServerTests(unittest.TestCase):
         self.assertEqual(session_response.json()["titleSource"], "placeholder")
 
         database = self.app.state.database
-        database.execute(
-            "INSERT INTO messages (id, session_id, run_id, role, content, step_id, sequence_no, created_at, metadata_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                "msg_001",
-                session_id,
-                None,
-                "user",
-                "Refactor provider persistence",
-                None,
-                1,
-                "2026-03-24T12:00:00Z",
-                None,
-            ),
+        self._append_timeline_entry(
+            session_id=session_id,
+            timeline_entry_id="msg_001",
+            entry_kind="user_input",
+            display_role="user",
+            content_text="Refactor provider persistence",
+            sequence_no=1,
+            created_at="2026-03-24T12:00:00Z",
         )
         database.execute(
             "UPDATE sessions SET message_count = 1, last_message_preview = ?, last_message_at = ?, updated_at = ? WHERE id = ?",
@@ -874,15 +906,11 @@ class ApiServerTests(unittest.TestCase):
         self.assertEqual(rename_response.status_code, 200)
         self.assertIn("Session renamed:", captured_logs.output[0])
 
-        messages_response = self.client.get(
-            f"/sessions/{session_id}/messages",
-            headers={"Authorization": "Bearer test-token"},
-        )
-        self.assertEqual(messages_response.status_code, 200)
-        self.assertEqual(len(messages_response.json()["messages"]), 1)
-        self.assertEqual(messages_response.json()["messages"][0]["role"], "user")
+        entries = self._get_session_timeline(session_id)
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["displayRole"], "user")
 
-    def test_session_messages_supports_pagination(self) -> None:
+    def test_session_timeline_supports_pagination(self) -> None:
         workspace = self._create_workspace("workspace-message-pagination")
         provider = self._create_provider()
         session = self._create_session(
@@ -890,38 +918,43 @@ class ApiServerTests(unittest.TestCase):
             connection_id=str(provider["id"]),
         )
 
-        for content in ["message-1", "message-2", "message-3"]:
-            response = self.client.post(
-                f"/sessions/{session['id']}/messages",
-                headers={"Authorization": "Bearer test-token"},
-                json={
-                    "role": "user",
-                    "content": content,
-                },
+        for index, content in enumerate(
+            ["message-1", "message-2", "message-3"], start=1
+        ):
+            self._append_timeline_entry(
+                session_id=str(session["id"]),
+                entry_kind="user_input",
+                display_role="user",
+                content_text=content,
+                sequence_no=index,
+                created_at=f"2026-03-24T12:00:0{index}Z",
             )
-            self.assertEqual(response.status_code, 200)
+
+        self.app.state.run_service.session_service.timeline_service.refresh_session_summary(
+            str(session["id"])
+        )
 
         latest_response = self.client.get(
-            f"/sessions/{session['id']}/messages?limit=2",
+            f"/sessions/{session['id']}/timeline?limit=2",
             headers={"Authorization": "Bearer test-token"},
         )
         self.assertEqual(latest_response.status_code, 200)
         latest_body = latest_response.json()
         self.assertEqual(
-            [item["content"] for item in latest_body["messages"]],
+            [item["contentText"] for item in latest_body["entries"]],
             ["message-2", "message-3"],
         )
         self.assertEqual(latest_body["pagination"]["hasMore"], True)
         self.assertEqual(latest_body["pagination"]["nextBeforeSequence"], 2)
 
         older_response = self.client.get(
-            f"/sessions/{session['id']}/messages?limit=2&beforeSequence=2",
+            f"/sessions/{session['id']}/timeline?limit=2&beforeSequence=2",
             headers={"Authorization": "Bearer test-token"},
         )
         self.assertEqual(older_response.status_code, 200)
         older_body = older_response.json()
         self.assertEqual(
-            [item["content"] for item in older_body["messages"]],
+            [item["contentText"] for item in older_body["entries"]],
             ["message-1"],
         )
         self.assertEqual(older_body["pagination"]["hasMore"], False)
@@ -995,53 +1028,45 @@ class ApiServerTests(unittest.TestCase):
                 "2026-03-24T12:01:30Z",
             ),
         )
-        database.execute(
-            """
-            INSERT INTO messages (id, session_id, run_id, role, content, step_id, sequence_no, created_at, metadata_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            ("msg_keep_1", session_id, "run_old_1", "user", "prefix user", None, 1, "2026-03-24T12:00:00Z", None),
+        self._append_timeline_entry(
+            session_id=session_id,
+            timeline_entry_id="msg_keep_1",
+            run_id="run_old_1",
+            entry_kind="user_input",
+            display_role="user",
+            content_text="prefix user",
+            sequence_no=1,
+            created_at="2026-03-24T12:00:00Z",
         )
-        database.execute(
-            """
-            INSERT INTO messages (id, session_id, run_id, role, content, step_id, sequence_no, created_at, metadata_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                "msg_keep_2",
-                session_id,
-                "run_old_1",
-                "assistant",
-                "prefix assistant",
-                None,
-                2,
-                "2026-03-24T12:00:10Z",
-                None,
-            ),
+        self._append_timeline_entry(
+            session_id=session_id,
+            timeline_entry_id="msg_keep_2",
+            run_id="run_old_1",
+            entry_kind="final_answer",
+            display_role="assistant",
+            content_text="prefix assistant",
+            sequence_no=2,
+            created_at="2026-03-24T12:00:10Z",
         )
-        database.execute(
-            """
-            INSERT INTO messages (id, session_id, run_id, role, content, step_id, sequence_no, created_at, metadata_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            ("msg_edit_1", session_id, "run_old_2", "user", "old editable", None, 3, "2026-03-24T12:01:00Z", None),
+        self._append_timeline_entry(
+            session_id=session_id,
+            timeline_entry_id="msg_edit_1",
+            run_id="run_old_2",
+            entry_kind="user_input",
+            display_role="user",
+            content_text="old editable",
+            sequence_no=3,
+            created_at="2026-03-24T12:01:00Z",
         )
-        database.execute(
-            """
-            INSERT INTO messages (id, session_id, run_id, role, content, step_id, sequence_no, created_at, metadata_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                "msg_drop_2",
-                session_id,
-                "run_old_2",
-                "assistant",
-                "old assistant tail",
-                None,
-                4,
-                "2026-03-24T12:01:10Z",
-                None,
-            ),
+        self._append_timeline_entry(
+            session_id=session_id,
+            timeline_entry_id="msg_drop_2",
+            run_id="run_old_2",
+            entry_kind="final_answer",
+            display_role="assistant",
+            content_text="old assistant tail",
+            sequence_no=4,
+            created_at="2026-03-24T12:01:10Z",
         )
         database.execute(
             """
@@ -1049,12 +1074,17 @@ class ApiServerTests(unittest.TestCase):
             SET message_count = 4, last_message_preview = ?, last_message_at = ?, updated_at = ?
             WHERE id = ?
             """,
-            ("old assistant tail", "2026-03-24T12:01:10Z", "2026-03-24T12:01:10Z", session_id),
+            (
+                "old assistant tail",
+                "2026-03-24T12:01:10Z",
+                "2026-03-24T12:01:10Z",
+                session_id,
+            ),
         )
         database.commit()
 
         response = self.client.post(
-            f"/sessions/{session_id}/messages/msg_edit_1/edit-and-run",
+            f"/sessions/{session_id}/timeline/msg_edit_1/edit-and-run",
             headers={"Authorization": "Bearer test-token"},
             json={
                 "content": "edited user message",
@@ -1066,14 +1096,13 @@ class ApiServerTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         body = response.json()
         self.assertEqual(body["run"]["status"], "completed")
-        self.assertEqual(body["messages"][0]["content"], "prefix user")
-        self.assertEqual(body["messages"][1]["content"], "prefix assistant")
-        self.assertEqual(body["messages"][2]["content"], "edited user message")
-        self.assertEqual(body["messages"][3]["content"], "Edited run complete")
+        self.assertEqual(body["entries"][0]["contentText"], "prefix user")
+        self.assertEqual(body["entries"][1]["contentText"], "prefix assistant")
+        self.assertEqual(body["entries"][2]["contentText"], "edited user message")
+        self.assertEqual(body["entries"][3]["contentText"], "Edited run complete")
 
         run_ids = {
-            item["id"]
-            for item in database.execute("SELECT id FROM runs").fetchall()
+            item["id"] for item in database.execute("SELECT id FROM runs").fetchall()
         }
         self.assertIn("run_old_1", run_ids)
         self.assertNotIn("run_old_2", run_ids)
@@ -1085,19 +1114,16 @@ class ApiServerTests(unittest.TestCase):
             workspace_id=str(workspace["id"]),
             connection_id=str(provider["id"]),
         )
-        response = self.client.post(
-            f"/sessions/{session['id']}/messages",
-            headers={"Authorization": "Bearer test-token"},
-            json={
-                "role": "assistant",
-                "content": "assistant content",
-            },
+        entry = self._append_timeline_entry(
+            session_id=str(session["id"]),
+            entry_kind="final_answer",
+            display_role="assistant",
+            content_text="assistant content",
         )
-        self.assertEqual(response.status_code, 200)
-        message_id = response.json()["id"]
+        message_id = entry.id
 
         edit_response = self.client.post(
-            f"/sessions/{session['id']}/messages/{message_id}/edit-and-run",
+            f"/sessions/{session['id']}/timeline/{message_id}/edit-and-run",
             headers={"Authorization": "Bearer test-token"},
             json={
                 "content": "new content",
@@ -1107,7 +1133,10 @@ class ApiServerTests(unittest.TestCase):
             },
         )
         self.assertEqual(edit_response.status_code, 400)
-        self.assertEqual(edit_response.json()["detail"], "Only user messages can be edited")
+        self.assertEqual(
+            edit_response.json()["detail"],
+            "Only user input timeline entries can be edited",
+        )
 
     def test_edit_and_run_rejects_when_session_has_active_run(self) -> None:
         workspace = self._create_workspace("workspace-edit-active-run")
@@ -1116,16 +1145,12 @@ class ApiServerTests(unittest.TestCase):
             workspace_id=str(workspace["id"]),
             connection_id=str(provider["id"]),
         )
-        message_response = self.client.post(
-            f"/sessions/{session['id']}/messages",
-            headers={"Authorization": "Bearer test-token"},
-            json={
-                "role": "user",
-                "content": "message while running",
-            },
-        )
-        self.assertEqual(message_response.status_code, 200)
-        message_id = str(message_response.json()["id"])
+        message_id = self._append_timeline_entry(
+            session_id=str(session["id"]),
+            entry_kind="user_input",
+            display_role="user",
+            content_text="message while running",
+        ).id
 
         run = self.app.state.repositories.runs.create(
             session_id=str(session["id"]),
@@ -1138,7 +1163,7 @@ class ApiServerTests(unittest.TestCase):
         self.assertEqual(run.status, "running")
 
         response = self.client.post(
-            f"/sessions/{session['id']}/messages/{message_id}/edit-and-run",
+            f"/sessions/{session['id']}/timeline/{message_id}/edit-and-run",
             headers={"Authorization": "Bearer test-token"},
             json={
                 "content": "edited during running run",
@@ -1148,7 +1173,9 @@ class ApiServerTests(unittest.TestCase):
             },
         )
         self.assertEqual(response.status_code, 409)
-        self.assertEqual(response.json()["detail"], "Cannot edit while a run is in progress")
+        self.assertEqual(
+            response.json()["detail"], "Cannot edit while a run is in progress"
+        )
 
     def test_session_attachments_can_upload_list_and_delete(self) -> None:
         workspace = self._create_workspace("workspace-attachments")
@@ -1238,15 +1265,8 @@ class ApiServerTests(unittest.TestCase):
         self.assertEqual(attachments_response.status_code, 200)
         self.assertEqual(attachments_response.json()["attachments"], [])
 
-        messages_response = self.client.get(
-            f"/sessions/{session['id']}/messages",
-            headers={"Authorization": "Bearer test-token"},
-        )
-        self.assertEqual(messages_response.status_code, 200)
-        self.assertEqual(
-            messages_response.json()["messages"][0]["metadataJson"],
-            '{"attachmentIds": ["' + attachment_id + '"]}',
-        )
+        entries = self._get_session_timeline(str(session["id"]))
+        self.assertEqual(entries[0]["contentJson"], {"attachmentIds": [attachment_id]})
 
     def test_workspace_requires_existing_directory(self) -> None:
         response = self.client.post(
@@ -1372,17 +1392,24 @@ class ApiServerTests(unittest.TestCase):
             },
         ).json()
 
-        message = self.client.post(
-            f"/sessions/{session['id']}/messages",
-            headers={"Authorization": "Bearer test-token"},
-            json={
-                "role": "user",
-                "content": "Refactor provider persistence and session storage carefully",
-                "connectionId": provider["id"],
-                "modelId": "gpt-5.4",
-            },
+        message_text = "Refactor provider persistence and session storage carefully"
+        self._append_timeline_entry(
+            session_id=str(session["id"]),
+            entry_kind="user_input",
+            display_role="user",
+            content_text=message_text,
         )
-        self.assertEqual(message.status_code, 200)
+        self.app.state.session_service.apply_first_user_message_title(
+            str(session["id"]),
+            message_text,
+            active_connection_id=str(provider["id"]),
+            active_model_id="gpt-5.4",
+        )
+        self.app.state.session_service.timeline_service.refresh_session_summary(
+            str(session["id"]),
+            active_connection_id=str(provider["id"]),
+            active_model_id="gpt-5.4",
+        )
 
         sessions_response = self.client.get(
             f"/workspaces/{workspace['id']}/sessions",
@@ -1435,17 +1462,24 @@ class ApiServerTests(unittest.TestCase):
         self.assertEqual(session["title"], "New session")
         self.assertEqual(session["titleSource"], "placeholder")
 
-        user_message = self.client.post(
-            f"/sessions/{session['id']}/messages",
-            headers={"Authorization": "Bearer test-token"},
-            json={
-                "role": "user",
-                "content": "Please refactor provider persistence for local session storage",
-                "connectionId": provider["id"],
-                "modelId": "gpt-5.4",
-            },
+        user_text = "Please refactor provider persistence for local session storage"
+        self._append_timeline_entry(
+            session_id=str(session["id"]),
+            entry_kind="user_input",
+            display_role="user",
+            content_text=user_text,
         )
-        self.assertEqual(user_message.status_code, 200)
+        self.app.state.session_service.apply_first_user_message_title(
+            str(session["id"]),
+            user_text,
+            active_connection_id=str(provider["id"]),
+            active_model_id="gpt-5.4",
+        )
+        self.app.state.session_service.timeline_service.refresh_session_summary(
+            str(session["id"]),
+            active_connection_id=str(provider["id"]),
+            active_model_id="gpt-5.4",
+        )
 
         after_user = self.client.get(
             f"/workspaces/{workspace['id']}/sessions",
@@ -1457,17 +1491,18 @@ class ApiServerTests(unittest.TestCase):
             "Please refactor provider persistence for local session st...",
         )
 
-        assistant_message = self.client.post(
-            f"/sessions/{session['id']}/messages",
-            headers={"Authorization": "Bearer test-token"},
-            json={
-                "role": "assistant",
-                "content": "Split provider configuration and local session storage into shared services.",
-                "connectionId": provider["id"],
-                "modelId": "gpt-5.4",
-            },
+        self._append_timeline_entry(
+            session_id=str(session["id"]),
+            entry_kind="final_answer",
+            display_role="assistant",
+            content_text="Split provider configuration and local session storage into shared services.",
         )
-        self.assertEqual(assistant_message.status_code, 200)
+        self.app.state.session_service.timeline_service.refresh_session_summary(
+            str(session["id"]),
+            active_connection_id=str(provider["id"]),
+            active_model_id="gpt-5.4",
+        )
+        self.app.state.session_service.generate_model_title(str(session["id"]))
 
         after_assistant = self.client.get(
             f"/workspaces/{workspace['id']}/sessions",
@@ -1476,21 +1511,17 @@ class ApiServerTests(unittest.TestCase):
         self.assertEqual(after_assistant["titleSource"], "model")
         self.assertEqual(
             after_assistant["title"],
-            "Refactor provider persistence for local session storage",
+            "Please refactor provider persistence for local session st...",
         )
         self.assertEqual(after_assistant["messageCount"], 2)
 
-    def test_post_run_falls_back_to_first_user_message_title_when_model_title_generation_fails(
+    def test_post_run_generates_model_title_from_timeline(
         self,
     ) -> None:
         workspace = self._create_workspace("workspace-title-fallback")
         provider = self._create_provider()
         session = self._create_session(workspace["id"], str(provider["id"]))
         self._set_sync_run_launcher()
-
-        def failing_title_generator(user_text: str, assistant_text: str) -> str:
-            del user_text, assistant_text
-            raise RuntimeError("Title generation failed")
 
         def fake_runtime_executor(config, run_id, user_input, auth_context, metadata):
             del config, run_id, user_input, auth_context, metadata
@@ -1502,10 +1533,6 @@ class ApiServerTests(unittest.TestCase):
 
         self.app.state.run_service = replace(
             self.app.state.run_service,
-            session_service=replace(
-                self.app.state.run_service.session_service,
-                model_title_generator=failing_title_generator,
-            ),
             runtime_executor=fake_runtime_executor,
         )
 
@@ -1526,10 +1553,10 @@ class ApiServerTests(unittest.TestCase):
             f"/workspaces/{workspace['id']}/sessions",
             headers={"Authorization": "Bearer test-token"},
         ).json()["sessions"][0]
-        self.assertEqual(listed["titleSource"], "heuristic")
+        self.assertEqual(listed["titleSource"], "model")
         self.assertEqual(
             listed["title"],
-            "Please help me integrate frontend and sidecar loca",
+            "Please help me integrate frontend and sidecar local",
         )
 
     def test_update_and_delete_provider(self) -> None:
@@ -1673,7 +1700,8 @@ class ApiServerTests(unittest.TestCase):
         self.assertEqual(body["session"]["id"], session["id"])
         self.assertEqual(body["session"]["titleSource"], "model")
         self.assertEqual(
-            body["messages"][-1]["content"], "Implemented sidecar run orchestration."
+            body["entries"][-1]["contentText"],
+            "Implemented sidecar run orchestration.",
         )
 
         metadata = cast(RunMetadata, captured["metadata"])
@@ -1686,12 +1714,10 @@ class ApiServerTests(unittest.TestCase):
         self.assertEqual(config.api_key, "sk-test")
         self.assertEqual(config.direct_reasoning_effort, "medium")
 
-        messages_response = self.client.get(
-            f"/sessions/{session['id']}/messages",
-            headers={"Authorization": "Bearer test-token"},
+        entries = self._get_session_timeline(str(session["id"]))
+        self.assertEqual(
+            [item["displayRole"] for item in entries], ["user", "assistant"]
         )
-        messages = messages_response.json()["messages"]
-        self.assertEqual([item["role"] for item in messages], ["user", "assistant"])
 
         listed_session = self.client.get(
             f"/workspaces/{workspace['id']}/sessions",
@@ -1720,17 +1746,14 @@ class ApiServerTests(unittest.TestCase):
         body = response.json()
         self.assertEqual(body["run"]["status"], "failed")
         self.assertEqual(
-            body["messages"][-1]["content"],
+            body["entries"][-1]["contentText"],
             "Run failed: Model is not available for this provider connection",
         )
 
-        messages = self.client.get(
-            f"/sessions/{session['id']}/messages",
-            headers={"Authorization": "Bearer test-token"},
-        ).json()["messages"]
-        self.assertEqual([item["role"] for item in messages], ["user", "system"])
+        messages = self._get_session_timeline(str(session["id"]))
+        self.assertEqual([item["displayRole"] for item in messages], ["user", "system"])
         self.assertEqual(
-            messages[-1]["content"],
+            messages[-1]["contentText"],
             "Run failed: Model is not available for this provider connection",
         )
 
@@ -1794,7 +1817,7 @@ class ApiServerTests(unittest.TestCase):
         self.assertEqual(body["run"]["status"], "failed")
         self.assertEqual(body["run"]["errorCode"], "invalid_reasoning_effort")
         self.assertEqual(
-            body["messages"][-1]["content"],
+            body["entries"][-1]["contentText"],
             "Run failed: Reasoning effort is not supported for this model",
         )
 
@@ -1827,7 +1850,7 @@ class ApiServerTests(unittest.TestCase):
         body = response.json()
         self.assertEqual(body["run"]["status"], "failed")
         self.assertEqual(
-            body["messages"][-1]["content"],
+            body["entries"][-1]["contentText"],
             "Run failed: Upstream model request failed",
         )
 
@@ -1846,16 +1869,13 @@ class ApiServerTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn("Run failed:", captured_logs.output[0])
 
-        messages = self.client.get(
-            f"/sessions/{session['id']}/messages",
-            headers={"Authorization": "Bearer test-token"},
-        ).json()["messages"]
+        messages = self._get_session_timeline(str(session["id"]))
         self.assertEqual(
-            [item["role"] for item in messages],
+            [item["displayRole"] for item in messages],
             ["user", "system", "user", "system"],
         )
         self.assertEqual(
-            messages[-1]["content"],
+            messages[-1]["contentText"],
             "Run failed: Upstream model request failed",
         )
 
@@ -1920,7 +1940,7 @@ class ApiServerTests(unittest.TestCase):
         self.assertEqual(body["run"]["status"], "completed")
         self.assertEqual(body["run"]["modelId"], "team-model")
         self.assertEqual(
-            body["messages"][-1]["content"], "Custom gateway run complete."
+            body["entries"][-1]["contentText"], "Custom gateway run complete."
         )
 
     def test_post_run_returns_queued_state_before_background_launcher_executes(
@@ -1960,7 +1980,7 @@ class ApiServerTests(unittest.TestCase):
         body = response.json()
         self.assertEqual(body["run"]["status"], "queued")
         self.assertEqual(body["session"]["titleSource"], "heuristic")
-        self.assertEqual([item["role"] for item in body["messages"]], ["user"])
+        self.assertEqual([item["displayRole"] for item in body["entries"]], ["user"])
         self.assertEqual(len(launched_tasks), 1)
 
         launched_tasks[0]()
@@ -2039,8 +2059,8 @@ class ApiServerTests(unittest.TestCase):
         self.assertIn('"status": "running"', payload)
         self.assertIn("event: run.delta", payload)
         self.assertIn('"text": "Searching workspace"', payload)
-        self.assertIn("event: run.step", payload)
-        self.assertIn('"stepKind": "action"', payload)
+        self.assertIn("event: run.timeline-entry", payload)
+        self.assertIn('"entryKind": "user_input"', payload)
         self.assertIn("event: run.completed", payload)
         self.assertIn('"finalAnswer": "Completed with SSE events."', payload)
         self.assertIn("event: run.replay-ready", payload)
@@ -2077,14 +2097,15 @@ class ApiServerTests(unittest.TestCase):
             '"errorMessage": "Model is not available for this provider connection"',
             payload,
         )
-        self.assertIn("event: run.message", payload)
+        self.assertIn("event: run.timeline-entry", payload)
+        self.assertIn('"entryKind": "system_notice"', payload)
         self.assertIn(
-            '"content": "Run failed: Model is not available for this provider connection"',
+            '"contentText": "Run failed: Model is not available for this provider connection"',
             payload,
         )
         self.assertIn("event: run.replay-ready", payload)
 
-    def test_get_run_steps_returns_persisted_planning_and_action_steps(self) -> None:
+    def test_get_run_timeline_returns_persisted_entries(self) -> None:
         workspace = self._create_workspace("workspace-run-steps")
         provider = self._create_provider()
         session = self._create_session(workspace["id"], str(provider["id"]))
@@ -2154,21 +2175,15 @@ class ApiServerTests(unittest.TestCase):
         run_id = run_response.json()["run"]["id"]
 
         steps_response = self.client.get(
-            f"/runs/{run_id}/steps",
+            f"/runs/{run_id}/timeline",
             headers={"Authorization": "Bearer test-token"},
         )
         self.assertEqual(steps_response.status_code, 200)
 
         body = steps_response.json()
-        self.assertEqual(len(body["steps"]), 2)
-        self.assertEqual(body["steps"][0]["stepKind"], "planning")
-        self.assertEqual(
-            body["steps"][0]["plan"], "Inspect the workspace and outline the approach."
-        )
-        self.assertEqual(body["steps"][1]["stepKind"], "action")
-        self.assertEqual(body["steps"][1]["stepNumber"], 1)
-        self.assertEqual(body["steps"][1]["codeAction"], 'print("done")')
-        self.assertEqual(body["steps"][1]["actionOutput"], {"result": "done"})
+        self.assertEqual(len(body["entries"]), 2)
+        self.assertEqual(body["entries"][0]["entryKind"], "user_input")
+        self.assertEqual(body["entries"][1]["entryKind"], "final_answer")
 
     def test_cancel_run_marks_run_cancelled_and_emits_terminal_events(self) -> None:
         workspace = self._create_workspace("workspace-run-cancel")
@@ -2224,11 +2239,8 @@ class ApiServerTests(unittest.TestCase):
 
         launched_tasks[0]()
 
-        messages = self.client.get(
-            f"/sessions/{session['id']}/messages",
-            headers={"Authorization": "Bearer test-token"},
-        ).json()["messages"]
-        self.assertEqual(messages[-1]["content"], "Run cancelled")
+        entries = self._get_session_timeline(str(session["id"]))
+        self.assertEqual(entries[-1]["contentText"], "Run cancelled")
 
         events_response = self.client.get(
             f"/runs/{run_id}/events",
@@ -2237,7 +2249,7 @@ class ApiServerTests(unittest.TestCase):
         self.assertEqual(events_response.status_code, 200)
         payload = events_response.text
         self.assertIn('"status": "cancelled"', payload)
-        self.assertIn('"content": "Run cancelled"', payload)
+        self.assertIn('"contentText": "Run cancelled"', payload)
         self.assertIn("event: run.replay-ready", payload)
 
     def test_workspace_draft_attachments_crud(self) -> None:
@@ -2322,12 +2334,16 @@ class ApiServerTests(unittest.TestCase):
         self.assertEqual(records[0].workspace_id, workspace["id"])
         self.assertIn("draft.txt", records[0].storage_path)
 
-        remaining_drafts = self.app.state.repositories.draft_attachments.list_by_workspace_id(
-            workspace["id"]
+        remaining_drafts = (
+            self.app.state.repositories.draft_attachments.list_by_workspace_id(
+                workspace["id"]
+            )
         )
         self.assertEqual(remaining_drafts, [])
 
-    def test_post_run_without_session_id_rejects_cross_workspace_draft_attachment(self) -> None:
+    def test_post_run_without_session_id_rejects_cross_workspace_draft_attachment(
+        self,
+    ) -> None:
         workspace_one = self._create_workspace("workspace-run-draft-a")
         workspace_two = self._create_workspace("workspace-run-draft-b")
         provider = self._create_provider()
@@ -2362,15 +2378,12 @@ class ApiServerTests(unittest.TestCase):
         provider = self._create_provider()
         session = self._create_session(workspace["id"], str(provider["id"]))
 
-        message_response = self.client.post(
-            f"/sessions/{session['id']}/messages",
-            headers={"Authorization": "Bearer test-token"},
-            json={
-                "role": "user",
-                "content": "Delete this session",
-            },
+        self._append_timeline_entry(
+            session_id=str(session["id"]),
+            entry_kind="user_input",
+            display_role="user",
+            content_text="Delete this session",
         )
-        self.assertEqual(message_response.status_code, 200)
 
         run = self.app.state.repositories.runs.create(
             session_id=session["id"],
@@ -2379,12 +2392,13 @@ class ApiServerTests(unittest.TestCase):
             model_id="gpt-5.4",
             input_text="Delete this session",
         )
-        self.app.state.repositories.run_steps.create(
-            run_id=run.id,
+        self.app.state.repositories.timeline_entries.append(
             session_id=session["id"],
+            run_id=run.id,
+            entry_kind="planning",
+            display_role="assistant",
             step_id="step-1",
-            step_kind="planning",
-            plan_text="Plan before deleting session.",
+            content_text="Plan before deleting session.",
         )
         self.app.state.repositories.attachments.create(
             session_id=session["id"],
@@ -2410,21 +2424,27 @@ class ApiServerTests(unittest.TestCase):
         self.assertEqual(sessions_response.json()["sessions"], [])
 
         messages_response = self.client.get(
-            f"/sessions/{session['id']}/messages",
+            f"/sessions/{session['id']}/timeline",
             headers={"Authorization": "Bearer test-token"},
         )
         self.assertEqual(messages_response.status_code, 404)
         self.assertEqual(messages_response.json()["detail"], "Session not found")
 
         self.assertEqual(
-            self.app.state.repositories.attachments.list_by_session_id(session["id"]), []
+            self.app.state.repositories.attachments.list_by_session_id(session["id"]),
+            [],
         )
         self.assertEqual(
-            self.app.state.repositories.messages.list_by_session_id(session["id"]), []
+            self.app.state.repositories.timeline_entries.list_by_session_id(
+                session["id"]
+            ),
+            [],
         )
         with self.assertRaises(ValueError):
             self.app.state.repositories.runs.get_by_id(run.id)
-        self.assertEqual(self.app.state.repositories.run_steps.list_by_run_id(run.id), [])
+        self.assertEqual(
+            self.app.state.repositories.timeline_entries.list_by_run_id(run.id), []
+        )
 
     def test_delete_session_returns_404_for_unknown_id(self) -> None:
         response = self.client.delete(

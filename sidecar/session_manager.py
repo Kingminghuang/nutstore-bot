@@ -9,10 +9,16 @@ from pathlib import Path
 from typing import Any
 
 LOGGER = logging.getLogger(__name__)
+ALLOWED_ROLES = {"user", "assistant", "system", "tool-call", "tool-response"}
 
 
 def now_iso8601() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    return (
+        datetime.now(timezone.utc)
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
 
 
 def safe_session_key(key: str) -> str:
@@ -33,13 +39,44 @@ class Session:
     last_consolidated: int = 0
 
     def add_message(self, role: str, content: Any, **kwargs: Any) -> None:
+        normalized_role = str(role).strip()
+        if normalized_role not in ALLOWED_ROLES:
+            raise ValueError(f"Unsupported session role: {normalized_role}")
         msg = {
-            "role": role,
+            "role": normalized_role,
             "content": content,
             "timestamp": now_iso8601(),
+            "run_id": kwargs.pop("run_id", None),
+            "step_id": kwargs.pop("step_id", None),
+            "source_kind": kwargs.pop("source_kind", None),
+            "internal": bool(kwargs.pop("internal", False)),
             **kwargs,
         }
         self.messages.append(msg)
+        self.updated_at = now_iso8601()
+
+    def append_messages(self, messages: list[dict[str, Any]]) -> None:
+        for message in messages:
+            self.add_message(
+                str(message.get("role") or "assistant"),
+                message.get("content", ""),
+                **{
+                    key: value
+                    for key, value in message.items()
+                    if key not in {"role", "content", "timestamp"}
+                },
+            )
+
+    def truncate_by_run_id(self, run_id: str) -> None:
+        cutoff = None
+        for idx, message in enumerate(self.messages):
+            if str(message.get("run_id") or "") == run_id:
+                cutoff = idx
+                break
+        if cutoff is None:
+            return
+        self.messages = self.messages[:cutoff]
+        self.last_consolidated = min(self.last_consolidated, len(self.messages))
         self.updated_at = now_iso8601()
 
     def get_history(self, max_messages: int = 500) -> list[dict[str, Any]]:
@@ -60,7 +97,15 @@ class Session:
                 "role": msg.get("role", "assistant"),
                 "content": msg.get("content", ""),
             }
-            for key in ["tool_calls", "tool_call_id", "name"]:
+            for key in [
+                "tool_calls",
+                "tool_call_id",
+                "name",
+                "run_id",
+                "step_id",
+                "source_kind",
+                "internal",
+            ]:
                 if key in msg:
                     entry[key] = msg[key]
             history.append(entry)
@@ -108,7 +153,9 @@ class SessionManager:
                     path.parent.mkdir(parents=True, exist_ok=True)
                     legacy.replace(path)
                 except Exception:
-                    LOGGER.exception("Failed to migrate legacy session", extra={"session_key": key})
+                    LOGGER.exception(
+                        "Failed to migrate legacy session", extra={"session_key": key}
+                    )
 
         if not path.exists():
             return None
@@ -128,7 +175,9 @@ class SessionManager:
                     data = json.loads(line)
                     if data.get("_type") == "metadata":
                         raw_metadata = data.get("metadata", {})
-                        metadata = raw_metadata if isinstance(raw_metadata, dict) else {}
+                        metadata = (
+                            raw_metadata if isinstance(raw_metadata, dict) else {}
+                        )
                         created_at = data.get("created_at") or created_at
                         updated_at = data.get("updated_at") or updated_at
                         last_consolidated = int(data.get("last_consolidated", 0))
@@ -145,7 +194,11 @@ class SessionManager:
             )
             return session
         except Exception:
-            LOGGER.warning("Failed to load session", extra={"session_key": key, "path": str(path)}, exc_info=True)
+            LOGGER.warning(
+                "Failed to load session",
+                extra={"session_key": key, "path": str(path)},
+                exc_info=True,
+            )
             return None
 
     def save(self, session: Session) -> None:

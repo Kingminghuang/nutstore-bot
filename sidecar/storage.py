@@ -47,6 +47,9 @@ MIGRATIONS: tuple[Migration, ...] = (
           base_url TEXT,
           secret_ref TEXT NOT NULL,
           api_key_configured INTEGER NOT NULL DEFAULT 0,
+          health_status TEXT NOT NULL DEFAULT 'unknown',
+          health_message TEXT,
+          last_validated_at TEXT,
           model_policy TEXT NOT NULL DEFAULT 'all_catalog' CHECK (
             model_policy IN ('all_catalog', 'restricted', 'custom_only')
           ),
@@ -114,22 +117,6 @@ MIGRATIONS: tuple[Migration, ...] = (
         CREATE INDEX IF NOT EXISTS idx_sessions_workspace_updated
         ON sessions(workspace_id, updated_at DESC);
 
-        CREATE TABLE IF NOT EXISTS messages (
-          id TEXT PRIMARY KEY,
-          session_id TEXT NOT NULL,
-          run_id TEXT,
-          role TEXT NOT NULL CHECK (role IN ('user', 'assistant', 'system')),
-          content TEXT NOT NULL,
-          step_id TEXT,
-          sequence_no INTEGER NOT NULL,
-          created_at TEXT NOT NULL,
-          metadata_json TEXT,
-          FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
-        );
-
-        CREATE UNIQUE INDEX IF NOT EXISTS uq_messages_session_sequence
-        ON messages(session_id, sequence_no);
-
         CREATE TABLE IF NOT EXISTS runs (
           id TEXT PRIMARY KEY,
           session_id TEXT NOT NULL,
@@ -151,51 +138,36 @@ MIGRATIONS: tuple[Migration, ...] = (
           FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE,
           FOREIGN KEY (connection_id) REFERENCES provider_connections(id)
         );
-        """,
-    ),
-    Migration(
-        version=2,
-        sql="""
-        ALTER TABLE provider_connections ADD COLUMN health_status TEXT NOT NULL DEFAULT 'unknown';
-        ALTER TABLE provider_connections ADD COLUMN health_message TEXT;
-        ALTER TABLE provider_connections ADD COLUMN last_validated_at TEXT;
-        """,
-    ),
-    Migration(
-        version=3,
-        sql="""
-        CREATE TABLE IF NOT EXISTS run_steps (
+
+        CREATE TABLE IF NOT EXISTS timeline_entries (
           id TEXT PRIMARY KEY,
-          run_id TEXT NOT NULL,
           session_id TEXT NOT NULL,
+          run_id TEXT,
           sequence_no INTEGER NOT NULL,
-          step_id TEXT NOT NULL,
-          step_kind TEXT NOT NULL CHECK (step_kind IN ('planning', 'action')),
+          entry_kind TEXT NOT NULL CHECK (
+            entry_kind IN ('user_input', 'planning', 'action', 'final_answer', 'system_notice')
+          ),
+          display_role TEXT NOT NULL CHECK (
+            display_role IN ('user', 'assistant', 'system')
+          ),
+          step_id TEXT,
           step_number INTEGER,
-          plan_text TEXT,
-          code_action TEXT,
-          action_output_json TEXT,
-          observations_json TEXT NOT NULL DEFAULT '[]',
-          error_text TEXT,
-          usage_json TEXT NOT NULL DEFAULT '{"inputTokens":0,"outputTokens":0,"reasoningTokens":0}',
-          duration_ms INTEGER NOT NULL DEFAULT 0,
-          has_delta INTEGER NOT NULL DEFAULT 0,
-          raw_model_output TEXT,
+          content_text TEXT,
+          content_json TEXT,
           created_at TEXT NOT NULL,
-          FOREIGN KEY (run_id) REFERENCES runs(id) ON DELETE CASCADE,
-          FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+          FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE,
+          FOREIGN KEY (run_id) REFERENCES runs(id) ON DELETE CASCADE
         );
 
-        CREATE UNIQUE INDEX IF NOT EXISTS uq_run_steps_run_sequence
-        ON run_steps(run_id, sequence_no);
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_timeline_entries_session_sequence
+        ON timeline_entries(session_id, sequence_no);
 
-        CREATE INDEX IF NOT EXISTS idx_run_steps_run_created
-        ON run_steps(run_id, created_at, sequence_no);
-        """,
-    ),
-    Migration(
-        version=4,
-        sql="""
+        CREATE INDEX IF NOT EXISTS idx_timeline_entries_session_created
+        ON timeline_entries(session_id, created_at, sequence_no);
+
+        CREATE INDEX IF NOT EXISTS idx_timeline_entries_run_sequence
+        ON timeline_entries(run_id, sequence_no, created_at);
+
         CREATE TABLE IF NOT EXISTS attachments (
           id TEXT PRIMARY KEY,
           session_id TEXT NOT NULL,
@@ -213,11 +185,7 @@ MIGRATIONS: tuple[Migration, ...] = (
 
         CREATE INDEX IF NOT EXISTS idx_attachments_session_status
         ON attachments(session_id, status, created_at);
-        """,
-    ),
-    Migration(
-        version=5,
-        sql="""
+
         CREATE TABLE IF NOT EXISTS draft_attachments (
           id TEXT PRIMARY KEY,
           workspace_id TEXT NOT NULL,

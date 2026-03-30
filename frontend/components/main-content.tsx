@@ -20,12 +20,10 @@ import {
 import type {
   ComposerAttachment,
   DraftAttachment,
-  Message,
   Project,
-  RunStepsByRunId,
   Session,
 } from "@/app/page"
-import type { RunActionStep, RunHistoryStep } from "@/lib/sidecar-client"
+import type { ActionEntry, PlanningEntry, TimelineEntry } from "@/lib/sidecar-client"
 import {
   getModelOptionLabel,
   getReasoningEffortOptions,
@@ -38,13 +36,12 @@ import { cn } from "@/lib/utils"
 
 type Permission = "default" | "full"
 
-const EMPTY_MESSAGES: Message[] = []
+const EMPTY_ENTRIES: TimelineEntry[] = []
 
 interface MainContentProps {
   activeProject: Project | null
   activeSession: Session | null
   isDraftSession: boolean
-  runStepsByRunId: RunStepsByRunId
   onSendMessage: (text: string) => Promise<void>
   modelOptionGroups: ModelOptionGroup[]
   selectedModel: SelectedModelRef | null
@@ -69,7 +66,6 @@ export function MainContent({
   activeProject,
   activeSession,
   isDraftSession,
-  runStepsByRunId,
   onSendMessage,
   modelOptionGroups,
   selectedModel,
@@ -103,11 +99,9 @@ export function MainContent({
   const scrollRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
-  const pendingHistoryScrollRestore = useRef<{ previousTop: number; previousHeight: number } | null>(
-    null
-  )
+  const pendingHistoryScrollRestore = useRef<{ previousTop: number; previousHeight: number } | null>(null)
 
-  const messages = activeSession?.messages ?? EMPTY_MESSAGES
+  const messages = activeSession?.timelineEntries ?? EMPTY_ENTRIES
   const canCompose = activeSession != null || isDraftSession
   const hasMessages = messages.length > 0
   const hasAvailableModels = modelOptionGroups.some((group) => group.models.length > 0)
@@ -122,21 +116,16 @@ export function MainContent({
     if (!showProviderNotice || hasAnimatedProviderNotice) {
       return
     }
-
     const frame = requestAnimationFrame(() => {
       setHasAnimatedProviderNotice(true)
     })
-
-    return () => {
-      cancelAnimationFrame(frame)
-    }
+    return () => cancelAnimationFrame(frame)
   }, [hasAnimatedProviderNotice, showProviderNotice])
 
   const selectedModelLabel = useMemo(() => {
     if (isLoadingModels) {
       return "Loading models..."
     }
-
     return (
       getModelOptionLabel(selectedModel, modelOptionGroups) ??
       (providerError ? "NSBot unavailable" : "No configured providers")
@@ -148,14 +137,12 @@ export function MainContent({
     if (!scrollElement) {
       return
     }
-
     const restore = pendingHistoryScrollRestore.current
     if (restore) {
       scrollElement.scrollTop = restore.previousTop + (scrollElement.scrollHeight - restore.previousHeight)
       pendingHistoryScrollRestore.current = null
       return
     }
-
     scrollElement.scrollTop = scrollElement.scrollHeight
   }, [messages])
 
@@ -163,7 +150,6 @@ export function MainContent({
     if (!hasMoreHistory || isLoadingHistory) {
       return
     }
-
     const scrollElement = scrollRef.current
     if (scrollElement) {
       pendingHistoryScrollRestore.current = {
@@ -171,7 +157,6 @@ export function MainContent({
         previousHeight: scrollElement.scrollHeight,
       }
     }
-
     try {
       await onLoadEarlierMessages()
     } catch {
@@ -193,14 +178,12 @@ export function MainContent({
   const handleSubmit = async () => {
     const text = inputValue.trim()
     if (!text || isGenerating || !canCompose || !selectedModel) return
-
     setIsGenerating(true)
-
     try {
       await onSendMessage(text)
       setInputValue("")
     } catch {
-      // Error state is surfaced by the page container.
+      // Parent state already surfaces request errors.
     } finally {
       setIsGenerating(false)
     }
@@ -239,7 +222,7 @@ export function MainContent({
     try {
       await clipboard.writeText(content)
     } catch {
-      // Ignore clipboard failures to keep interaction non-blocking.
+      // Ignore clipboard failures.
     }
   }
 
@@ -267,12 +250,13 @@ export function MainContent({
     if (!nextContent) {
       return
     }
-
     setIsSubmittingEdit(true)
     try {
       await onEditMessageAndRerun(editingMessageId, nextContent)
       setEditingMessageId(null)
       setEditingValue("")
+    } catch {
+      // Parent state already surfaces request errors.
     } finally {
       setIsSubmittingEdit(false)
     }
@@ -298,11 +282,7 @@ export function MainContent({
         <h1 className="text-sm font-medium">{activeSessionLabel}</h1>
       </header>
 
-      <div
-        ref={scrollRef}
-        onScroll={handleScroll}
-        className="flex-1 overflow-y-auto relative"
-      >
+      <div ref={scrollRef} onScroll={handleScroll} className="flex-1 overflow-y-auto relative">
         {!hasMessages ? (
           <div className="flex flex-col items-center justify-center h-full px-6 pb-8">
             <div className="flex flex-col items-center">
@@ -337,27 +317,23 @@ export function MainContent({
                 </button>
               </div>
             )}
-            {messages.map((msg) => (
-              <div key={msg.id} className="space-y-3">
-                <MessageBubble
-                  message={msg}
-                  isEditing={editingMessageId === msg.id}
-                  editingValue={editingValue}
-                  isSubmittingEdit={isSubmittingEdit}
-                  onCopyMessage={(content) => {
-                    void copyMessage(content)
-                  }}
-                  onEditValueChange={setEditingValue}
-                  onStartEdit={startEditMessage}
-                  onCancelEdit={cancelEditMessage}
-                  onSubmitEdit={() => {
-                    void submitEditedMessage()
-                  }}
-                />
-                {msg.role === "user" && msg.runId && (runStepsByRunId[msg.runId] ?? []).length > 0 ? (
-                  <RunStepTimeline steps={runStepsByRunId[msg.runId] ?? []} />
-                ) : null}
-              </div>
+            {messages.map((entry) => (
+              <TimelineEntryView
+                key={entry.id}
+                entry={entry}
+                isEditing={editingMessageId === entry.id}
+                editingValue={editingValue}
+                isSubmittingEdit={isSubmittingEdit}
+                onCopyMessage={(content) => {
+                  void copyMessage(content)
+                }}
+                onEditValueChange={setEditingValue}
+                onStartEdit={startEditMessage}
+                onCancelEdit={cancelEditMessage}
+                onSubmitEdit={() => {
+                  void submitEditedMessage()
+                }}
+              />
             ))}
             {isGenerating && (
               <div className="flex gap-3 items-start">
@@ -391,10 +367,7 @@ export function MainContent({
           aria-hidden="true"
         />
 
-        <div
-          className="bg-[#faf8f6] border border-[#e8e4e0] rounded-2xl relative"
-          onClick={(e) => e.stopPropagation()}
-        >
+        <div className="bg-[#faf8f6] border border-[#e8e4e0] rounded-2xl relative" onClick={(e) => e.stopPropagation()}>
           <div className="p-4">
             {composerAttachments.length > 0 && (
               <div className="flex flex-wrap gap-1.5 mb-3">
@@ -471,9 +444,7 @@ export function MainContent({
             </div>
           )}
 
-          {runError && (
-            <div className="px-4 pb-2 text-xs text-[#b45b44]">{runError}</div>
-          )}
+          {runError && <div className="px-4 pb-2 text-xs text-[#b45b44]">{runError}</div>}
 
           <div className="flex items-center justify-between px-4 pb-3">
             <div className="flex items-center gap-4">
@@ -496,9 +467,7 @@ export function MainContent({
                   </span>
                 </TooltipTrigger>
                 <TooltipContent side="top" sideOffset={6}>
-                  {canCompose
-                    ? `Pick files from ${activeProject?.path ?? "workspace"}`
-                    : "Select a session first"}
+                  {canCompose ? `Pick files from ${activeProject?.path ?? "workspace"}` : "Select a session first"}
                 </TooltipContent>
               </Tooltip>
 
@@ -552,9 +521,7 @@ export function MainContent({
                               className="w-full flex items-center justify-between px-4 py-2 text-sm text-foreground/80 hover:bg-[#efe9e4] transition-colors"
                             >
                               <span className="truncate">{model.label}</span>
-                              {isSelected && (
-                                <Check className="w-4 h-4 text-foreground/70 flex-shrink-0" />
-                              )}
+                              {isSelected && <Check className="w-4 h-4 text-foreground/70 flex-shrink-0" />}
                             </button>
                           )
                         })}
@@ -612,9 +579,7 @@ export function MainContent({
                       >
                         <ShieldCheck className="w-4 h-4 text-muted-foreground flex-shrink-0" />
                         <span className="flex-1 text-left">{opt.label}</span>
-                        {permission === opt.value && (
-                          <Check className="w-4 h-4 text-foreground/70 flex-shrink-0" />
-                        )}
+                        {permission === opt.value && <Check className="w-4 h-4 text-foreground/70 flex-shrink-0" />}
                       </button>
                     ))}
                   </div>
@@ -670,91 +635,8 @@ export function MainContent({
   )
 }
 
-function RunStepTimeline({ steps }: { steps: RunHistoryStep[] }) {
-  return (
-    <div className="ml-10 space-y-3 border-l border-[#e8e4e0] pl-4">
-      {steps.map((step) =>
-        step.stepKind === "planning" ? (
-          <PlanningStepCard key={step.id} step={step} />
-        ) : (
-          <ActionStepCard key={step.id} step={step} />
-        )
-      )}
-    </div>
-  )
-}
-
-function PlanningStepCard({ step }: { step: Extract<RunHistoryStep, { stepKind: "planning" }> }) {
-  return (
-    <div className="rounded-2xl border border-[#e8e4e0] bg-[#fcfaf8] px-4 py-3">
-      <div className="mb-2 text-xs uppercase tracking-[0.12em] text-foreground/45">Planning step</div>
-      <AgentMessageContent content={step.plan} />
-      <StepFootnote
-        usage={step.usage}
-        durationMs={step.durationMs}
-      />
-    </div>
-  )
-}
-
-function ActionStepCard({ step }: { step: RunActionStep }) {
-  const hasCodeAction = Boolean(step.codeAction)
-  const hasActionOutput = step.actionOutput !== null && step.actionOutput !== ""
-  const showObservations = !hasActionOutput && step.observations.length > 0
-
-  return (
-    <div className="rounded-2xl border border-[#e8e4e0] bg-[#fcfaf8] px-4 py-3 space-y-3">
-      <div className="text-xs uppercase tracking-[0.12em] text-foreground/45">Step {step.stepNumber}</div>
-      {hasCodeAction ? <CodeBlock label="python" content={step.codeAction ?? ""} /> : null}
-      {hasActionOutput ? <DataBlock label="Result" value={step.actionOutput} /> : null}
-      {showObservations ? <CodeBlock label="bash" content={step.observations.join("\n")} /> : null}
-      {step.error ? (
-        <div className="rounded-xl border border-[#efc1b4] bg-[#fff1ec] px-3 py-2 text-sm text-[#9d4d38] whitespace-pre-wrap">
-          {step.error}
-        </div>
-      ) : null}
-      <StepFootnote usage={step.usage} durationMs={step.durationMs} />
-    </div>
-  )
-}
-
-function DataBlock({ label, value }: { label: string; value: unknown }) {
-  const content = typeof value === "string" ? value : JSON.stringify(value, null, 2)
-  return <CodeBlock label={label} content={content} />
-}
-
-function CodeBlock({ label, content }: { label: string; content: string }) {
-  return (
-    <pre className="bg-[#1e1e1e] text-[#d4d4d4] rounded-xl px-4 py-3 text-xs overflow-x-auto font-mono">
-      <div className="text-[#6a9955] mb-2 text-xs">{label}</div>
-      <code>{content}</code>
-    </pre>
-  )
-}
-
-function StepFootnote({
-  usage,
-  durationMs,
-}: {
-  usage: { inputTokens: number; outputTokens: number; reasoningTokens: number }
-  durationMs: number
-}) {
-  const parts = [
-    `Input ${usage.inputTokens}`,
-    `Output ${usage.outputTokens}`,
-  ]
-  if (usage.reasoningTokens > 0) {
-    parts.push(`Reasoning ${usage.reasoningTokens}`)
-  }
-  if (durationMs > 0) {
-    parts.push(`Duration ${(durationMs / 1000).toFixed(2)}s`)
-  }
-
-  return <div className="text-xs text-foreground/45">{parts.join(" | ")}</div>
-}
-
-function MessageBubble({
-  message,
+function TimelineEntryView({
+  entry,
   isEditing,
   editingValue,
   isSubmittingEdit,
@@ -764,7 +646,7 @@ function MessageBubble({
   onCancelEdit,
   onSubmitEdit,
 }: {
-  message: Message
+  entry: TimelineEntry
   isEditing: boolean
   editingValue: string
   isSubmittingEdit: boolean
@@ -774,7 +656,13 @@ function MessageBubble({
   onCancelEdit: () => void
   onSubmitEdit: () => void
 }) {
-  if (message.role === "user") {
+  if (entry.entryKind === "planning") {
+    return <PlanningStepCard step={entry} />
+  }
+  if (entry.entryKind === "action") {
+    return <ActionStepCard step={entry} />
+  }
+  if (entry.displayRole === "user") {
     return (
       <div className="flex justify-end">
         <div className="group max-w-[80%] flex flex-col items-end gap-2">
@@ -808,7 +696,7 @@ function MessageBubble({
             </div>
           ) : (
             <div className="w-full bg-[#f0ebe6] border border-[#e8e4e0] rounded-2xl rounded-tr-sm px-4 py-2.5 text-sm text-foreground/90 whitespace-pre-wrap">
-              {message.content}
+              {entry.contentText}
             </div>
           )}
 
@@ -818,7 +706,7 @@ function MessageBubble({
                 <TooltipTrigger asChild>
                   <button
                     type="button"
-                    onClick={() => onCopyMessage(message.content)}
+                    onClick={() => onCopyMessage(entry.contentText ?? "")}
                     className="h-9 w-9 rounded-full border border-[#e8e4e0] bg-[#f3efeb] text-muted-foreground hover:text-foreground hover:bg-[#efe9e4] transition-colors inline-flex items-center justify-center"
                     aria-label="Copy user message"
                   >
@@ -833,7 +721,7 @@ function MessageBubble({
                 <TooltipTrigger asChild>
                   <button
                     type="button"
-                    onClick={() => onStartEdit(message.id, message.content)}
+                    onClick={() => onStartEdit(entry.id, entry.contentText ?? "")}
                     className="h-9 w-9 rounded-full border border-[#e8e4e0] bg-[#f3efeb] text-muted-foreground hover:text-foreground hover:bg-[#efe9e4] transition-colors inline-flex items-center justify-center"
                     aria-label="Edit user message"
                   >
@@ -855,13 +743,13 @@ function MessageBubble({
     <div className="flex gap-3 items-start">
       <div className="w-7 h-7 rounded-full bg-gradient-to-br from-[#e87b5f] to-[#8bc28f] flex-shrink-0 mt-0.5" />
       <div className="group flex-1 min-w-0 flex flex-col gap-2">
-        <AgentMessageContent content={message.content} />
+        <AgentMessageContent content={entry.contentText ?? ""} />
         <div className="flex items-center gap-2 opacity-0 pointer-events-none transition-opacity group-hover:opacity-100 group-hover:pointer-events-auto group-focus-within:opacity-100 group-focus-within:pointer-events-auto">
           <Tooltip>
             <TooltipTrigger asChild>
               <button
                 type="button"
-                onClick={() => onCopyMessage(message.content)}
+                onClick={() => onCopyMessage(entry.contentText ?? "")}
                 className="h-9 w-9 rounded-full border border-[#e8e4e0] bg-[#f3efeb] text-muted-foreground hover:text-foreground hover:bg-[#efe9e4] transition-colors inline-flex items-center justify-center"
                 aria-label="Copy assistant message"
               >
@@ -876,6 +764,132 @@ function MessageBubble({
       </div>
     </div>
   )
+}
+
+function PlanningStepCard({ step }: { step: PlanningEntry }) {
+  return (
+    <div className="rounded-2xl border border-[#e8e4e0] bg-[#fcfaf8] px-4 py-3">
+      <div className="mb-2 text-xs uppercase tracking-[0.12em] text-foreground/45">Planning step</div>
+      <AgentMessageContent content={step.contentText ?? ""} />
+    </div>
+  )
+}
+
+function ActionStepCard({ step }: { step: ActionEntry }) {
+  const payload = step.contentJson
+  const [showObservationsPanel, setShowObservationsPanel] = useState(false)
+  const [showCodeActionPanel, setShowCodeActionPanel] = useState(false)
+  const [showActionOutputPanel, setShowActionOutputPanel] = useState(false)
+  const hasCodeAction = Boolean(payload?.codeAction)
+  const hasActionOutput = payload?.actionOutput !== null && payload?.actionOutput !== ""
+  const hasObservations = (payload?.observations?.length ?? 0) > 0
+
+  return (
+    <div className="rounded-2xl border border-[#e8e4e0] bg-[#fcfaf8] px-4 py-3 space-y-3">
+      <div className="text-xs uppercase tracking-[0.12em] text-foreground/45">Step {step.stepNumber}</div>
+      {(payload?.toolCalls?.length ?? 0) > 0 ? (
+        <div className="rounded-xl border border-[#e8e4e0] bg-background px-3 py-2 text-sm text-foreground/80 space-y-2">
+          {payload?.toolCalls.map((toolCall, index) => (
+            <div key={`${toolCall.name}-${index}`} className="whitespace-pre-wrap">
+              {toolCall.name}({toolCall.argumentsText})
+            </div>
+          ))}
+        </div>
+      ) : null}
+      {hasObservations ? (
+        <CollapsiblePanel
+          label="Observations"
+          open={showObservationsPanel}
+          onToggle={() => setShowObservationsPanel((current) => !current)}
+        >
+          <CodeBlock label="observations" content={payload?.observations.join("\n") ?? ""} />
+        </CollapsiblePanel>
+      ) : null}
+      {hasCodeAction ? (
+        <CollapsiblePanel
+          label="Code action"
+          open={showCodeActionPanel}
+          onToggle={() => setShowCodeActionPanel((current) => !current)}
+        >
+          <CodeBlock label="python" content={payload?.codeAction ?? ""} />
+        </CollapsiblePanel>
+      ) : null}
+      {hasActionOutput ? (
+        <CollapsiblePanel
+          label="Action output"
+          open={showActionOutputPanel}
+          onToggle={() => setShowActionOutputPanel((current) => !current)}
+        >
+          <DataBlock label="Result" value={payload?.actionOutput} />
+        </CollapsiblePanel>
+      ) : null}
+      {payload?.error ? (
+        <div className="rounded-xl border border-[#efc1b4] bg-[#fff1ec] px-3 py-2 text-sm text-[#9d4d38] whitespace-pre-wrap">
+          {payload.error}
+        </div>
+      ) : null}
+      <StepFootnote
+        usage={payload?.usage ?? { inputTokens: 0, outputTokens: 0, reasoningTokens: 0 }}
+        durationMs={payload?.durationMs ?? 0}
+      />
+    </div>
+  )
+}
+
+function CollapsiblePanel({
+  label,
+  open,
+  onToggle,
+  children,
+}: {
+  label: string
+  open: boolean
+  onToggle: () => void
+  children: React.ReactNode
+}) {
+  return (
+    <div className="space-y-2">
+      <button
+        type="button"
+        onClick={onToggle}
+        className="text-xs uppercase tracking-[0.12em] text-foreground/45 hover:text-foreground/70 transition-colors"
+      >
+        {open ? `Hide ${label}` : `Show ${label}`}
+      </button>
+      {open ? children : null}
+    </div>
+  )
+}
+
+function DataBlock({ label, value }: { label: string; value: unknown }) {
+  const content = typeof value === "string" ? value : JSON.stringify(value, null, 2)
+  return <CodeBlock label={label} content={content} />
+}
+
+function CodeBlock({ label, content }: { label: string; content: string }) {
+  return (
+    <pre className="bg-[#1e1e1e] text-[#d4d4d4] rounded-xl px-4 py-3 text-xs overflow-x-auto font-mono">
+      <div className="text-[#6a9955] mb-2 text-xs">{label}</div>
+      <code>{content}</code>
+    </pre>
+  )
+}
+
+function StepFootnote({
+  usage,
+  durationMs,
+}: {
+  usage: { inputTokens: number; outputTokens: number; reasoningTokens: number }
+  durationMs: number
+}) {
+  const parts = [`Input ${usage.inputTokens}`, `Output ${usage.outputTokens}`]
+  if (usage.reasoningTokens > 0) {
+    parts.push(`Reasoning ${usage.reasoningTokens}`)
+  }
+  if (durationMs > 0) {
+    parts.push(`Duration ${(durationMs / 1000).toFixed(2)}s`)
+  }
+  return <div className="text-xs text-foreground/45">{parts.join(" | ")}</div>
 }
 
 function AgentMessageContent({ content }: { content: string }) {

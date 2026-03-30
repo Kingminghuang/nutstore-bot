@@ -8,13 +8,13 @@ import { Sidebar } from "@/components/sidebar"
 import {
   createProvider,
   deleteProvider,
-  getRunSteps,
   getModelOptions,
   getProviderCatalog,
   getProviders,
+  getSessionTimeline,
   updateProvider,
   validateProvider,
-  type RunHistoryStep,
+  type TimelineEntry,
 } from "@/lib/sidecar-client"
 import {
   normalizeSelectedReasoningEffort,
@@ -28,15 +28,6 @@ import {
 } from "@/lib/provider-settings"
 import { parseRunEventEnvelope, type RunStreamEvent } from "@/lib/run-events"
 
-export type Message = {
-  id: string
-  role: "user" | "assistant" | "system"
-  content: string
-  createdAt: string
-  stepId?: string | null
-  runId?: string | null
-}
-
 export type Session = {
   id: string
   workspaceId: string
@@ -49,15 +40,15 @@ export type Session = {
   lastMessagePreview: string | null
   activeConnectionId: string | null
   activeModelId: string | null
-  messages: Message[]
+  timelineEntries: TimelineEntry[]
   hasMoreHistory: boolean
   nextBeforeSequence: number | null
   isLoadingHistory: boolean
-  messageHydrationStatus: "idle" | "loading" | "loaded"
+  timelineHydrationStatus: "idle" | "loading" | "loaded"
 }
 
-type MessagesPageResponse = {
-  messages: Message[]
+type TimelinePageResponse = {
+  entries: TimelineEntry[]
   pagination?: {
     hasMore?: boolean
     nextBeforeSequence?: number | null
@@ -66,10 +57,8 @@ type MessagesPageResponse = {
 
 type ServerSession = Omit<
   Session,
-  "messages" | "hasMoreHistory" | "nextBeforeSequence" | "isLoadingHistory"
+  "timelineEntries" | "hasMoreHistory" | "nextBeforeSequence" | "isLoadingHistory" | "timelineHydrationStatus"
 >
-
-export type RunStepsByRunId = Record<string, RunHistoryStep[]>
 
 export type ComposerAttachment = {
   id: string
@@ -112,47 +101,32 @@ export type WorkspaceSummary = {
 const SIDEBAR_MIN = 160
 const SIDEBAR_MAX = 480
 const SIDEBAR_DEFAULT = 230
-const MESSAGE_PAGE_SIZE = 50
+const TIMELINE_PAGE_SIZE = 50
 
-function withSessionHistoryDefaults(
-  session: ServerSession
-): Session {
+function withSessionHistoryDefaults(session: ServerSession): Session {
   return {
     ...session,
-    messages: [],
+    timelineEntries: [],
     hasMoreHistory: false,
     nextBeforeSequence: null,
     isLoadingHistory: false,
-    messageHydrationStatus: "idle",
+    timelineHydrationStatus: "idle",
   }
 }
 
 function mergeSessionWithLocalHistory(
   incoming: ServerSession,
   existing: Session | undefined,
-  messages: Message[]
+  timelineEntries: TimelineEntry[]
 ): Session {
   return {
     ...incoming,
-    messages,
+    timelineEntries,
     hasMoreHistory: existing?.hasMoreHistory ?? false,
     nextBeforeSequence: existing?.nextBeforeSequence ?? null,
     isLoadingHistory: existing?.isLoadingHistory ?? false,
-    messageHydrationStatus: messages.length > 0 ? "loaded" : (existing?.messageHydrationStatus ?? "loaded"),
-  }
-}
-
-function getMessageRunIds(messages: Message[]): string[] {
-  return Array.from(new Set(messages.map((message) => message.runId).filter(Boolean))) as string[]
-}
-
-function mergeRunStepsByEntries(
-  prev: RunStepsByRunId,
-  entries: ReadonlyArray<readonly [string, RunHistoryStep[]]>
-): RunStepsByRunId {
-  return {
-    ...prev,
-    ...Object.fromEntries(entries),
+    timelineHydrationStatus:
+      timelineEntries.length > 0 ? "loaded" : (existing?.timelineHydrationStatus ?? "loaded"),
   }
 }
 
@@ -170,60 +144,14 @@ function updateSessionInWorkspace(
   }
 }
 
-function appendDeltaToMessages(
-  messages: Message[],
-  event: Extract<RunStreamEvent, { type: "run.delta" }>
-): Message[] {
-  const nextMessages = [...messages]
-  const lastMessage = nextMessages[nextMessages.length - 1]
-  if (
-    lastMessage &&
-    lastMessage.role === "assistant" &&
-    (lastMessage.stepId ?? null) === event.stepId &&
-    (lastMessage.runId ?? null) === event.runId
-  ) {
-    nextMessages[nextMessages.length - 1] = {
-      ...lastMessage,
-      content: `${lastMessage.content}${event.text}`,
-    }
-    return nextMessages
-  }
-
-  nextMessages.push({
-    id: `stream-${event.runId}-${event.sequence}`,
-    role: "assistant",
-    content: event.text,
-    createdAt: event.createdAt,
-    stepId: event.stepId,
-    runId: event.runId,
-  })
-  return nextMessages
-}
-
-function applyRunMessageToMessages(
-  messages: Message[],
-  event: Extract<RunStreamEvent, { type: "run.message" }>
-): Message[] {
-  const withoutStreamMessage = messages.filter(
-    (message) => !(message.id.startsWith("stream-") && (message.runId ?? null) === event.runId)
-  )
-  const existingIndex = withoutStreamMessage.findIndex((message) => message.id === event.messageId)
-  const nextMessage = {
-    id: event.messageId,
-    role: event.role,
-    content: event.content,
-    createdAt: event.createdAt,
-    stepId: event.stepId,
-    runId: event.runId,
-  }
-
+function appendTimelineEntry(entries: TimelineEntry[], entry: TimelineEntry): TimelineEntry[] {
+  const existingIndex = entries.findIndex((candidate) => candidate.id === entry.id)
   if (existingIndex >= 0) {
-    withoutStreamMessage[existingIndex] = nextMessage
-  } else {
-    withoutStreamMessage.push(nextMessage)
+    const next = [...entries]
+    next[existingIndex] = entry
+    return next
   }
-
-  return withoutStreamMessage
+  return [...entries, entry]
 }
 
 export default function Home() {
@@ -239,7 +167,6 @@ export default function Home() {
   const [selectedReasoningEffort, setSelectedReasoningEffort] =
     useState<SelectedReasoningEffort>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
-  const [runStepsByRunId, setRunStepsByRunId] = useState<RunStepsByRunId>({})
   const [sidebarWidth, setSidebarWidth] = useState(SIDEBAR_DEFAULT)
   const [isLoadingProviders, setIsLoadingProviders] = useState(true)
   const [providerError, setProviderError] = useState<string | null>(null)
@@ -273,9 +200,7 @@ export default function Home() {
         return modelOptionsResponse.defaultSelection
       })
     } catch (error) {
-      setProviderError(
-        error instanceof Error ? error.message : "Failed to load provider data"
-      )
+      setProviderError(error instanceof Error ? error.message : "Failed to load provider data")
       setProviderCatalog([])
       setProviderConnections([])
       setModelOptionGroups([])
@@ -304,6 +229,7 @@ export default function Home() {
           ] as const
         })
       )
+
       const nextSessionsByWorkspace = Object.fromEntries(sessionsEntries)
       setSessionsByWorkspace(nextSessionsByWorkspace)
       setDraftAttachmentsByWorkspace((prev) => {
@@ -321,7 +247,6 @@ export default function Home() {
         if (!current) {
           return nextSessionsByWorkspace[nextWorkspaces[0]?.id ?? ""]?.[0]?.id ?? null
         }
-
         for (const sessions of Object.values(nextSessionsByWorkspace)) {
           if (sessions.some((session) => session.id === current)) {
             return current
@@ -336,14 +261,11 @@ export default function Home() {
         return nextWorkspaces.some((workspace) => workspace.id === current) ? current : null
       })
     } catch (error) {
-      setWorkspaceError(
-        error instanceof Error ? error.message : "Failed to load workspaces"
-      )
+      setWorkspaceError(error instanceof Error ? error.message : "Failed to load workspaces")
       setWorkspaces([])
       setSessionsByWorkspace({})
       setAttachmentsBySession({})
       setDraftAttachmentsByWorkspace({})
-      setRunStepsByRunId({})
       setActiveDraftWorkspaceId(null)
       setActiveWorkspaceId(null)
       setActiveSessionId(null)
@@ -375,12 +297,13 @@ export default function Home() {
           null,
     [activeSessionId, activeWorkspaceId, sessionsByWorkspace]
   )
+
   const isDraftSessionActive =
     activeWorkspaceId != null &&
     activeSessionId == null &&
     activeDraftWorkspaceId === activeWorkspaceId
 
-  const activeSessionHydrationStatus = activeSession?.messageHydrationStatus ?? null
+  const activeSessionHydrationStatus = activeSession?.timelineHydrationStatus ?? null
 
   useEffect(() => {
     lastHydrationAttemptSessionIdRef.current = null
@@ -390,11 +313,9 @@ export default function Home() {
     if (!activeSessionId || !activeWorkspaceId) {
       return
     }
-
     if (activeSessionHydrationStatus !== "idle") {
       return
     }
-
     if (lastHydrationAttemptSessionIdRef.current === activeSessionId) {
       return
     }
@@ -403,40 +324,28 @@ export default function Home() {
 
     setSessionsByWorkspace((prev) =>
       updateSessionInWorkspace(prev, activeWorkspaceId, activeSessionId, (session) =>
-        session.messageHydrationStatus === "idle"
+        session.timelineHydrationStatus === "idle"
           ? {
               ...session,
-              messageHydrationStatus: "loading",
+              timelineHydrationStatus: "loading",
             }
           : session
       )
     )
 
-    void sidecarFetch<MessagesPageResponse>(
-      `/sessions/${activeSessionId}/messages?limit=${MESSAGE_PAGE_SIZE}`
-    )
+    void getSessionTimeline(activeSessionId, { limit: TIMELINE_PAGE_SIZE })
       .then((response) => {
-        const runIds = getMessageRunIds(response.messages)
-        setRunStepsByRunId((prev) => {
-          const next = { ...prev }
-          for (const key of Object.keys(next)) {
-            if (!runIds.includes(key)) {
-              delete next[key]
-            }
-          }
-          return next
-        })
         setSessionsByWorkspace((prev) => ({
           ...prev,
           [activeWorkspaceId]: (prev[activeWorkspaceId] ?? []).map((session) =>
-              session.id === activeSessionId
+            session.id === activeSessionId
               ? {
                   ...session,
-                  messages: response.messages,
+                  timelineEntries: response.entries,
                   hasMoreHistory: response.pagination?.hasMore ?? false,
                   nextBeforeSequence: response.pagination?.nextBeforeSequence ?? null,
                   isLoadingHistory: false,
-                  messageHydrationStatus: "loaded",
+                  timelineHydrationStatus: "loaded",
                 }
               : session
           ),
@@ -446,7 +355,7 @@ export default function Home() {
         setSessionsByWorkspace((prev) =>
           updateSessionInWorkspace(prev, activeWorkspaceId, activeSessionId, (session) => ({
             ...session,
-            messageHydrationStatus: "idle",
+            timelineHydrationStatus: "idle",
           }))
         )
       })
@@ -461,9 +370,7 @@ export default function Home() {
     }
 
     let cancelled = false
-    void sidecarFetch<{ attachments: ComposerAttachment[] }>(
-      `/sessions/${activeSessionId}/attachments`
-    )
+    void sidecarFetch<{ attachments: ComposerAttachment[] }>(`/sessions/${activeSessionId}/attachments`)
       .then((response) => {
         if (cancelled) {
           return
@@ -508,7 +415,7 @@ export default function Home() {
     }
   }, [activeWorkspaceId, draftAttachmentsByWorkspace, isDraftSessionActive])
 
-  const handleLoadEarlierMessages = useCallback(async () => {
+  const handleLoadEarlierTimeline = useCallback(async () => {
     if (!activeSessionId || !activeWorkspaceId || !activeSession) {
       return
     }
@@ -524,18 +431,18 @@ export default function Home() {
     )
 
     try {
-      const response = await sidecarFetch<MessagesPageResponse>(
-        `/sessions/${activeSessionId}/messages?limit=${MESSAGE_PAGE_SIZE}&beforeSequence=${activeSession.nextBeforeSequence}`
-      )
+      const response = await getSessionTimeline(activeSessionId, {
+        limit: TIMELINE_PAGE_SIZE,
+        beforeSequence: activeSession.nextBeforeSequence,
+      })
 
       setSessionsByWorkspace((prev) =>
         updateSessionInWorkspace(prev, activeWorkspaceId, activeSessionId, (session) => {
-          const existingIds = new Set(session.messages.map((message) => message.id))
-          const olderMessages = response.messages.filter((message) => !existingIds.has(message.id))
-
+          const existingIds = new Set(session.timelineEntries.map((entry) => entry.id))
+          const olderEntries = response.entries.filter((entry) => !existingIds.has(entry.id))
           return {
             ...session,
-            messages: [...olderMessages, ...session.messages],
+            timelineEntries: [...olderEntries, ...session.timelineEntries],
             hasMoreHistory: response.pagination?.hasMore ?? false,
             nextBeforeSequence: response.pagination?.nextBeforeSequence ?? null,
             isLoadingHistory: false,
@@ -551,38 +458,6 @@ export default function Home() {
       )
     }
   }, [activeSession, activeSessionId, activeWorkspaceId])
-
-  useEffect(() => {
-    if (!activeSession) {
-      return
-    }
-
-    const runIds = getMessageRunIds(activeSession.messages)
-    const missingRunIds = runIds.filter((runId) => runStepsByRunId[runId] == null)
-    if (missingRunIds.length === 0) {
-      return
-    }
-
-    let cancelled = false
-
-    void Promise.all(
-      missingRunIds.map(async (runId) => {
-        const stepsResponse = await getRunSteps(runId)
-        return [runId, stepsResponse.steps] as const
-      })
-    )
-      .then((entries) => {
-        if (cancelled) {
-          return
-        }
-        setRunStepsByRunId((prev) => mergeRunStepsByEntries(prev, entries))
-      })
-      .catch(() => undefined)
-
-    return () => {
-      cancelled = true
-    }
-  }, [activeSession, runStepsByRunId])
 
   const handleSidebarResizeStart = useCallback(
     (e: React.MouseEvent) => {
@@ -614,11 +489,7 @@ export default function Home() {
     async (name: string, path: string) => {
       await sidecarFetch("/workspaces", {
         method: "POST",
-        body: JSON.stringify({
-          name,
-          realPath: path,
-          pathLabel: path,
-        }),
+        body: JSON.stringify({ name, realPath: path, pathLabel: path }),
       })
       await refreshWorkspaceState()
     },
@@ -637,11 +508,95 @@ export default function Home() {
     [activeWorkspaceId]
   )
 
+  const startRunEventStream = useCallback((runId: string, workspaceId: string, sessionId: string) => {
+    eventSourceRef.current?.close()
+    const source = new EventSource(`/api/sidecar/proxy?path=${encodeURIComponent(`/runs/${runId}/events`)}`)
+    eventSourceRef.current = source
+
+    const closeSource = () => {
+      source.close()
+      if (eventSourceRef.current === source) {
+        eventSourceRef.current = null
+      }
+    }
+
+    const updateActiveSession = (updateSession: (session: Session) => Session) => {
+      setSessionsByWorkspace((prev) => updateSessionInWorkspace(prev, workspaceId, sessionId, updateSession))
+    }
+
+    const refreshSessionSummary = () => {
+      void sidecarFetch<{ sessions: ServerSession[] }>(`/workspaces/${workspaceId}/sessions`)
+        .then((response) => {
+          const refreshed = response.sessions.find((session) => session.id === sessionId)
+          if (!refreshed) {
+            return
+          }
+          updateActiveSession((session) => ({
+            ...session,
+            ...refreshed,
+            timelineEntries: session.timelineEntries,
+          }))
+        })
+        .catch(() => undefined)
+    }
+
+    const applyTimelineEntryEvent = (event: Extract<RunStreamEvent, { type: "run.timeline-entry" }>) => {
+      updateActiveSession((session) => ({
+        ...session,
+        timelineEntries: appendTimelineEntry(session.timelineEntries, event.entry),
+      }))
+    }
+
+    const applyTerminalEvent = (event: Extract<RunStreamEvent, { type: "run.completed" | "run.failed" }>) => {
+      refreshSessionSummary()
+      setRunError(event.type === "run.failed" ? event.errorMessage : null)
+    }
+
+    const applyEvent = (event: RunStreamEvent) => {
+      if (event.sessionId !== sessionId) {
+        return
+      }
+      if (event.type === "run.timeline-entry") {
+        applyTimelineEntryEvent(event)
+        return
+      }
+      if (event.type === "run.completed" || event.type === "run.failed") {
+        applyTerminalEvent(event)
+        return
+      }
+      if (event.type === "run.replay-ready") {
+        closeSource()
+      }
+    }
+
+    const handleMessageEvent = (messageEvent: MessageEvent<string>) => {
+      try {
+        const envelope = parseRunEventEnvelope(
+          JSON.stringify({
+            id: messageEvent.lastEventId,
+            event: messageEvent.type,
+            data: JSON.parse(messageEvent.data),
+          })
+        )
+        applyEvent(envelope.data)
+      } catch {
+        // ignore malformed stream events
+      }
+    }
+
+    ;["run.timeline-entry", "run.completed", "run.failed", "run.replay-ready"].forEach((eventName) => {
+      source.addEventListener(eventName, handleMessageEvent as EventListener)
+    })
+
+    source.onerror = () => {
+      closeSource()
+    }
+  }, [])
+
   const handleSendMessage = useCallback(
     async (text: string) => {
       if (!activeWorkspaceId || !selectedModel) return
-      const isDraftMode =
-        activeSessionId == null && activeDraftWorkspaceId === activeWorkspaceId
+      const isDraftMode = activeSessionId == null && activeDraftWorkspaceId === activeWorkspaceId
 
       setRunError(null)
       const attachmentIds = activeSessionId
@@ -654,43 +609,29 @@ export default function Home() {
 
       try {
         const runResponse = await sidecarFetch<{
-          run: {
-            id: string
-            status: string
-            finalAnswer: string | null
-          }
+          run: { id: string; status: string; finalAnswer: string | null }
           session: ServerSession
-          messages: Message[]
-        }>(
-          "/runs",
-          {
-            method: "POST",
-            body: JSON.stringify({
-              ...(requestSessionId ? { sessionId: requestSessionId } : {}),
-              workspaceId: activeWorkspaceId,
-              connectionId: selectedModel.connectionId,
-              modelId: selectedModel.modelId,
-              ...(selectedReasoningEffort
-                ? { reasoningEffort: selectedReasoningEffort }
-                : {}),
-              ...(attachmentIds.length > 0 ? { attachmentIds } : {}),
-              ...(draftAttachmentIds.length > 0 ? { draftAttachmentIds } : {}),
-              input: text,
-            }),
-          }
-        )
+          entries: TimelineEntry[]
+        }>("/runs", {
+          method: "POST",
+          body: JSON.stringify({
+            ...(requestSessionId ? { sessionId: requestSessionId } : {}),
+            workspaceId: activeWorkspaceId,
+            connectionId: selectedModel.connectionId,
+            modelId: selectedModel.modelId,
+            ...(selectedReasoningEffort ? { reasoningEffort: selectedReasoningEffort } : {}),
+            ...(attachmentIds.length > 0 ? { attachmentIds } : {}),
+            ...(draftAttachmentIds.length > 0 ? { draftAttachmentIds } : {}),
+            input: text,
+          }),
+        })
 
         const nextSession = mergeSessionWithLocalHistory(
           runResponse.session,
           activeSessionId
-            ? (sessionsByWorkspace[activeWorkspaceId] ?? []).find(
-                (session) => session.id === activeSessionId
-              )
+            ? (sessionsByWorkspace[activeWorkspaceId] ?? []).find((session) => session.id === activeSessionId)
             : undefined,
-          runResponse.messages.map((message) => ({
-            ...message,
-            role: message.role,
-          }))
+          runResponse.entries
         )
 
         setSessionsByWorkspace((prev) => {
@@ -708,6 +649,7 @@ export default function Home() {
             [activeWorkspaceId]: [nextSession, ...existing.filter((session) => session.id !== nextSession.id)],
           }
         })
+
         setAttachmentsBySession((prev) => ({
           ...prev,
           [runResponse.session.id]: [],
@@ -720,10 +662,6 @@ export default function Home() {
           setActiveDraftWorkspaceId(null)
         }
         setActiveSessionId(runResponse.session.id)
-        setRunStepsByRunId((prev) => ({
-          ...prev,
-          [runResponse.run.id]: [],
-        }))
 
         if (runResponse.run.status === "queued" || runResponse.run.status === "running") {
           startRunEventStream(runResponse.run.id, activeWorkspaceId, runResponse.session.id)
@@ -733,20 +671,15 @@ export default function Home() {
           const payload = error.payload as {
             detail?: string
             session?: ServerSession
-            messages?: Message[]
+            entries?: TimelineEntry[]
           }
-          if (payload.session && payload.messages) {
+          if (payload.session && payload.entries) {
             const payloadSession = mergeSessionWithLocalHistory(
               payload.session,
               activeSessionId
-                ? (sessionsByWorkspace[activeWorkspaceId] ?? []).find(
-                    (session) => session.id === activeSessionId
-                  )
+                ? (sessionsByWorkspace[activeWorkspaceId] ?? []).find((session) => session.id === activeSessionId)
                 : undefined,
-              payload.messages.map((message) => ({
-                ...message,
-                role: message.role,
-              }))
+              payload.entries
             )
             setSessionsByWorkspace((prev) => {
               const existing = prev[activeWorkspaceId] ?? []
@@ -793,23 +726,20 @@ export default function Home() {
       sessionsByWorkspace,
       selectedModel,
       selectedReasoningEffort,
+      startRunEventStream,
     ]
   )
 
   const handleAttachFiles = useCallback(
     async (files: File[]) => {
       const isDraftMode =
-        activeSessionId == null &&
-        activeWorkspaceId != null &&
-        activeDraftWorkspaceId === activeWorkspaceId
+        activeSessionId == null && activeWorkspaceId != null && activeDraftWorkspaceId === activeWorkspaceId
 
       if (!activeSessionId && !isDraftMode) {
         return
       }
 
-      const uploadTargetId = activeSessionId
-        ? `session:${activeSessionId}`
-        : `draft:${activeWorkspaceId}`
+      const uploadTargetId = activeSessionId ? `session:${activeSessionId}` : `draft:${activeWorkspaceId}`
       setUploadingAttachmentTargetId(uploadTargetId)
 
       try {
@@ -856,9 +786,7 @@ export default function Home() {
           })
         }
       } finally {
-        setUploadingAttachmentTargetId((current) =>
-          current === uploadTargetId ? null : current
-        )
+        setUploadingAttachmentTargetId((current) => (current === uploadTargetId ? null : current))
       }
     },
     [activeDraftWorkspaceId, activeSessionId, activeWorkspaceId]
@@ -867,160 +795,36 @@ export default function Home() {
   const handleRemoveAttachment = useCallback(
     async (attachmentId: string) => {
       const isDraftMode =
-        activeSessionId == null &&
-        activeWorkspaceId != null &&
-        activeDraftWorkspaceId === activeWorkspaceId
+        activeSessionId == null && activeWorkspaceId != null && activeDraftWorkspaceId === activeWorkspaceId
       if (!activeSessionId && !isDraftMode) {
         return
       }
       if (activeSessionId) {
-        await sidecarFetch<void>(
-          `/sessions/${activeSessionId}/attachments/${attachmentId}`,
-          { method: "DELETE" }
-        )
+        await sidecarFetch<void>(`/sessions/${activeSessionId}/attachments/${attachmentId}`, {
+          method: "DELETE",
+        })
         setAttachmentsBySession((prev) => ({
           ...prev,
-          [activeSessionId]: (prev[activeSessionId] ?? []).filter(
-            (attachment) => attachment.id !== attachmentId
-          ),
+          [activeSessionId]: (prev[activeSessionId] ?? []).filter((attachment) => attachment.id !== attachmentId),
         }))
         return
       }
       if (!activeWorkspaceId) {
         return
       }
-      await sidecarFetch<void>(
-        `/workspaces/${activeWorkspaceId}/draft-attachments/${attachmentId}`,
-        { method: "DELETE" }
-      )
+      await sidecarFetch<void>(`/workspaces/${activeWorkspaceId}/draft-attachments/${attachmentId}`, {
+        method: "DELETE",
+      })
       setDraftAttachmentsByWorkspace((prev) => ({
         ...prev,
-        [activeWorkspaceId]: (prev[activeWorkspaceId] ?? []).filter(
-          (attachment) => attachment.id !== attachmentId
-        ),
+        [activeWorkspaceId]: (prev[activeWorkspaceId] ?? []).filter((attachment) => attachment.id !== attachmentId),
       }))
     },
     [activeDraftWorkspaceId, activeSessionId, activeWorkspaceId]
   )
 
-  const startRunEventStream = useCallback(
-    (runId: string, workspaceId: string, sessionId: string) => {
-      eventSourceRef.current?.close()
-      const source = new EventSource(
-        `/api/sidecar/proxy?path=${encodeURIComponent(`/runs/${runId}/events`)}`
-      )
-      eventSourceRef.current = source
-
-      const closeSource = () => {
-        source.close()
-        if (eventSourceRef.current === source) {
-          eventSourceRef.current = null
-        }
-      }
-
-      const updateActiveSession = (updateSession: (session: Session) => Session) => {
-        setSessionsByWorkspace((prev) =>
-          updateSessionInWorkspace(prev, workspaceId, sessionId, updateSession)
-        )
-      }
-
-      const refreshSessionSummary = () => {
-        void sidecarFetch<{ sessions: ServerSession[] }>(`/workspaces/${workspaceId}/sessions`)
-          .then((response) => {
-            const refreshed = response.sessions.find((session) => session.id === sessionId)
-            if (!refreshed) {
-              return
-            }
-
-            updateActiveSession((session) => ({
-              ...session,
-              ...refreshed,
-              messages: session.messages,
-            }))
-          })
-          .catch(() => undefined)
-      }
-
-      const applyDeltaEvent = (event: Extract<RunStreamEvent, { type: "run.delta" }>) => {
-        updateActiveSession((session) => ({
-          ...session,
-          messages: appendDeltaToMessages(session.messages, event),
-        }))
-      }
-
-      const applyMessageEvent = (event: Extract<RunStreamEvent, { type: "run.message" }>) => {
-        updateActiveSession((session) => ({
-          ...session,
-          messages: applyRunMessageToMessages(session.messages, event),
-        }))
-      }
-
-      const applyTerminalEvent = (
-        event: Extract<RunStreamEvent, { type: "run.completed" | "run.failed" }>
-      ) => {
-        refreshSessionSummary()
-        setRunError(event.type === "run.failed" ? event.errorMessage : null)
-      }
-
-      const applyEvent = (event: RunStreamEvent) => {
-        if (event.sessionId !== sessionId) {
-          return
-        }
-
-        if (event.type === "run.delta") {
-          applyDeltaEvent(event)
-          return
-        }
-
-        if (event.type === "run.message") {
-          applyMessageEvent(event)
-          return
-        }
-
-        if (event.type === "run.completed" || event.type === "run.failed") {
-          applyTerminalEvent(event)
-          return
-        }
-
-        if (event.type === "run.replay-ready") {
-          closeSource()
-        }
-      }
-
-      const handleMessageEvent = (messageEvent: MessageEvent<string>) => {
-        try {
-          const envelope = parseRunEventEnvelope(
-            JSON.stringify({
-              id: messageEvent.lastEventId,
-              event: messageEvent.type,
-              data: JSON.parse(messageEvent.data),
-            })
-          )
-          applyEvent(envelope.data)
-        } catch {
-          // ignore malformed stream events
-        }
-      }
-
-      ;[
-        "run.delta",
-        "run.message",
-        "run.completed",
-        "run.failed",
-        "run.replay-ready",
-      ].forEach((eventName) => {
-        source.addEventListener(eventName, handleMessageEvent as EventListener)
-      })
-
-      source.onerror = () => {
-        closeSource()
-      }
-    },
-    []
-  )
-
-  const handleEditMessageAndRerun = useCallback(
-    async (messageId: string, nextContent: string) => {
+  const handleEditTimelineEntryAndRerun = useCallback(
+    async (entryId: string, nextContent: string) => {
       if (!activeSessionId || !activeWorkspaceId || !selectedModel) {
         return
       }
@@ -1029,38 +833,24 @@ export default function Home() {
 
       try {
         const runResponse = await sidecarFetch<{
-          run: {
-            id: string
-            status: string
-            finalAnswer: string | null
-          }
+          run: { id: string; status: string; finalAnswer: string | null }
           session: ServerSession
-          messages: Message[]
-        }>(
-          `/sessions/${activeSessionId}/messages/${messageId}/edit-and-run`,
-          {
-            method: "POST",
-            body: JSON.stringify({
-              content: nextContent,
-              workspaceId: activeWorkspaceId,
-              connectionId: selectedModel.connectionId,
-              modelId: selectedModel.modelId,
-              ...(selectedReasoningEffort
-                ? { reasoningEffort: selectedReasoningEffort }
-                : {}),
-            }),
-          }
-        )
+          entries: TimelineEntry[]
+        }>(`/sessions/${activeSessionId}/timeline/${entryId}/edit-and-run`, {
+          method: "POST",
+          body: JSON.stringify({
+            content: nextContent,
+            workspaceId: activeWorkspaceId,
+            connectionId: selectedModel.connectionId,
+            modelId: selectedModel.modelId,
+            ...(selectedReasoningEffort ? { reasoningEffort: selectedReasoningEffort } : {}),
+          }),
+        })
 
         const nextSession = mergeSessionWithLocalHistory(
           runResponse.session,
-          (sessionsByWorkspace[activeWorkspaceId] ?? []).find(
-            (session) => session.id === activeSessionId
-          ),
-          runResponse.messages.map((message) => ({
-            ...message,
-            role: message.role,
-          }))
+          (sessionsByWorkspace[activeWorkspaceId] ?? []).find((session) => session.id === activeSessionId),
+          runResponse.entries
         )
 
         setSessionsByWorkspace((prev) => ({
@@ -1069,18 +859,6 @@ export default function Home() {
             session.id === activeSessionId ? nextSession : session
           ),
         }))
-
-        const runIds = getMessageRunIds(runResponse.messages)
-        setRunStepsByRunId((prev) => {
-          const next: RunStepsByRunId = {}
-          for (const runId of runIds) {
-            if (prev[runId] != null) {
-              next[runId] = prev[runId]
-            }
-          }
-          next[runResponse.run.id] = next[runResponse.run.id] ?? []
-          return next
-        })
 
         if (runResponse.run.status === "queued" || runResponse.run.status === "running") {
           startRunEventStream(runResponse.run.id, activeWorkspaceId, activeSessionId)
@@ -1204,8 +982,7 @@ export default function Home() {
           )
         }
       } catch (error) {
-        validationError =
-          error instanceof Error ? error : new Error("Provider validation failed")
+        validationError = error instanceof Error ? error : new Error("Provider validation failed")
       }
 
       await refreshProviderState()
@@ -1241,10 +1018,7 @@ export default function Home() {
         onRenameProject={async (projectId, name, pathLabel) => {
           await sidecarFetch(`/workspaces/${projectId}`, {
             method: "PATCH",
-            body: JSON.stringify({
-              name,
-              pathLabel,
-            }),
+            body: JSON.stringify({ name, pathLabel }),
           })
           await refreshWorkspaceState()
         }}
@@ -1266,7 +1040,6 @@ export default function Home() {
         activeProject={activeProject}
         activeSession={activeSession}
         isDraftSession={isDraftSessionActive}
-        runStepsByRunId={runStepsByRunId}
         onSendMessage={handleSendMessage}
         modelOptionGroups={modelOptionGroups}
         selectedModel={selectedModel}
@@ -1278,7 +1051,7 @@ export default function Home() {
         runError={runError}
         hasMoreHistory={activeSession?.hasMoreHistory ?? false}
         isLoadingHistory={activeSession?.isLoadingHistory ?? false}
-        onLoadEarlierMessages={handleLoadEarlierMessages}
+        onLoadEarlierMessages={handleLoadEarlierTimeline}
         composerAttachments={
           activeSessionId
             ? attachmentsBySession[activeSessionId] ?? []
@@ -1295,7 +1068,7 @@ export default function Home() {
         }
         onAttachFiles={handleAttachFiles}
         onRemoveAttachment={handleRemoveAttachment}
-        onEditMessageAndRerun={handleEditMessageAndRerun}
+        onEditMessageAndRerun={handleEditTimelineEntryAndRerun}
         onOpenSettings={() => setSettingsOpen(true)}
       />
       <SettingsModal
@@ -1323,9 +1096,7 @@ async function sidecarFetch<T>(path: string, init?: RequestInit): Promise<T> {
   if (!response.ok) {
     const payload = (await response.json().catch(() => null)) as Record<string, unknown> | null
     const isSessionDeleteNotAllowed =
-      response.status === 405 &&
-      init?.method === "DELETE" &&
-      path.startsWith("/sessions/")
+      response.status === 405 && init?.method === "DELETE" && path.startsWith("/sessions/")
     const fallbackMessage = isSessionDeleteNotAllowed
       ? "Session deletion is not supported by the connected sidecar yet. Please restart or upgrade the sidecar service, then try again."
       : `Request failed with status ${response.status}`

@@ -3,12 +3,11 @@ from __future__ import annotations
 import unittest
 
 from python_runtime.run_events import (
-    RunUsage,
     completed_event,
     delta_event,
     failed_event,
     status_event,
-    step_event,
+    timeline_entry_event,
 )
 
 
@@ -28,8 +27,6 @@ class RunEventTests(unittest.TestCase):
         self.assertEqual(envelope.data["status"], "running")
 
     def test_delta_step_and_terminal_events(self) -> None:
-        usage = RunUsage(input_tokens=10, output_tokens=20, reasoning_tokens=3)
-
         delta = delta_event(
             run_id="run_1",
             session_id="sess_1",
@@ -38,23 +35,22 @@ class RunEventTests(unittest.TestCase):
             step_id="step-1",
             text="partial output",
         )
-        step = step_event(
+        step = timeline_entry_event(
             run_id="run_1",
             session_id="sess_1",
             sequence=3,
             created_at="2026-03-24T12:00:02Z",
-            step_id="step-1",
-            step_kind="action",
-            step_number=1,
-            plan=None,
-            model_output="tool call",
-            code_action="print('hello')",
-            action_output={"status": "ok"},
-            observations=["changed file"],
-            error=None,
-            usage=usage,
-            duration_ms=150,
-            has_delta=True,
+            entry={
+                "id": "tle_1",
+                "entryKind": "action",
+                "displayRole": "assistant",
+                "stepNumber": 1,
+                "contentJson": {
+                    "codeAction": "print('hello')",
+                    "actionOutput": {"status": "ok"},
+                    "observations": ["changed file"],
+                },
+            },
         )
         completed = completed_event(
             run_id="run_1",
@@ -73,13 +69,14 @@ class RunEventTests(unittest.TestCase):
         )
 
         self.assertEqual(delta.data["text"], "partial output")
+        self.assertEqual(step.data["entry"]["entryKind"], "action")
+        self.assertEqual(step.data["entry"]["stepNumber"], 1)
         self.assertEqual(
-            step.data["usage"],
-            {"inputTokens": 10, "outputTokens": 20, "reasoningTokens": 3},
+            step.data["entry"]["contentJson"]["codeAction"], "print('hello')"
         )
-        self.assertEqual(step.data["stepNumber"], 1)
-        self.assertEqual(step.data["codeAction"], "print('hello')")
-        self.assertEqual(step.data["actionOutput"], {"status": "ok"})
+        self.assertEqual(
+            step.data["entry"]["contentJson"]["actionOutput"], {"status": "ok"}
+        )
         self.assertEqual(completed.data["finalAnswer"], "Done")
         self.assertEqual(failed.data["errorCode"], "provider_timeout")
 

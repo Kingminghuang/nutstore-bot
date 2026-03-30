@@ -1,10 +1,4 @@
-export type RunUsage = {
-  inputTokens: number
-  outputTokens: number
-  reasoningTokens: number
-}
-
-export type RunStepKind = "planning" | "action"
+import type { TimelineEntry } from "@/lib/sidecar-client"
 
 export type RunDeltaEvent = {
   type: "run.delta"
@@ -16,20 +10,13 @@ export type RunDeltaEvent = {
   text: string
 }
 
-export type RunStepEvent = {
-  type: "run.step"
+export type RunTimelineEntryEvent = {
+  type: "run.timeline-entry"
   runId: string
   sessionId: string
   sequence: number
   createdAt: string
-  stepId: string
-  stepKind: RunStepKind
-  modelOutput: string
-  observations: string[]
-  error: string | null
-  usage: RunUsage
-  durationMs: number
-  hasDelta: boolean
+  entry: TimelineEntry
 }
 
 export type RunStatusEvent = {
@@ -40,18 +27,6 @@ export type RunStatusEvent = {
   createdAt: string
   status: "queued" | "running" | "completed" | "failed" | "cancelled"
   message: string | null
-}
-
-export type RunMessageEvent = {
-  type: "run.message"
-  runId: string
-  sessionId: string
-  sequence: number
-  createdAt: string
-  messageId: string
-  role: "user" | "assistant" | "system"
-  content: string
-  stepId: string | null
 }
 
 export type RunCompletedEvent = {
@@ -92,9 +67,8 @@ export type RunReplayReadyEvent = {
 
 export type RunStreamEvent =
   | RunDeltaEvent
-  | RunStepEvent
+  | RunTimelineEntryEvent
   | RunStatusEvent
-  | RunMessageEvent
   | RunCompletedEvent
   | RunFailedEvent
   | RunKeepaliveEvent

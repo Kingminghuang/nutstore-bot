@@ -6,18 +6,22 @@ from pathlib import Path
 import re
 from typing import Any, Callable
 
-from fastapi import BackgroundTasks, HTTPException, status
+from fastapi import HTTPException, status
 
 from attachment_store import AttachmentStore
 from redaction import redact_text
 from repositories import (
     AttachmentsRepository,
     DraftAttachmentsRepository,
-    MessagesRepository,
     SessionsRepository,
     WorkspacesRepository,
     create_id,
 )
+from session_titles import (
+    build_first_user_message_fallback_title,
+    build_heuristic_title,
+)
+from timeline_service import TimelineService, serialize_session_summary
 
 
 ModelTitleGenerator = Callable[[str, str], str | None]
@@ -30,10 +34,10 @@ LOGGER = logging.getLogger(__name__)
 class SessionService:
     workspaces: WorkspacesRepository
     sessions: SessionsRepository
-    messages: MessagesRepository
     attachments: AttachmentsRepository
     draft_attachments: DraftAttachmentsRepository
     attachment_store: AttachmentStore
+    timeline_service: TimelineService
     model_title_generator: ModelTitleGenerator | None = None
 
     def list_workspaces_payload(self) -> dict[str, list[dict[str, Any]]]:
@@ -169,128 +173,18 @@ class SessionService:
         )
         return serialize_session(updated)
 
-    def list_messages_payload(
+    def list_timeline_payload(
         self,
         session_id: str,
         *,
         limit: int | None = None,
         before_sequence: int | None = None,
     ) -> dict[str, Any]:
-        self._get_session_or_404(session_id)
-
-        if limit is None:
-            messages = self.messages.list_by_session_id(session_id)
-            return {
-                "messages": [serialize_message(message) for message in messages],
-                "pagination": {
-                    "hasMore": False,
-                    "nextBeforeSequence": None,
-                },
-            }
-
-        if limit <= 0:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Message limit must be greater than 0",
-            )
-        if before_sequence is not None and before_sequence <= 0:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="beforeSequence must be greater than 0",
-            )
-
-        page, has_more, next_before_sequence = self.messages.list_by_session_id_page(
+        return self.timeline_service.list_timeline_payload(
             session_id,
             limit=limit,
             before_sequence=before_sequence,
         )
-        return {
-            "messages": [serialize_message(message) for message in page],
-            "pagination": {
-                "hasMore": has_more,
-                "nextBeforeSequence": next_before_sequence,
-            },
-        }
-
-    def append_message(
-        self,
-        session_id: str,
-        payload: dict[str, Any],
-        background_tasks: BackgroundTasks | None = None,
-    ) -> dict[str, Any]:
-        session = self._get_session_or_404(session_id)
-        role = _normalize_required_string(
-            payload.get("role"), detail="Message role is required"
-        )
-        if role not in {"user", "assistant", "system"}:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid message role",
-            )
-
-        content = _normalize_required_string(
-            payload.get("content"), detail="Message content is required"
-        )
-        run_id = _normalize_optional_string(payload.get("runId", payload.get("run_id")))
-        step_id = _normalize_optional_string(
-            payload.get("stepId", payload.get("step_id"))
-        )
-        metadata_json = _normalize_optional_string(
-            payload.get("metadataJson", payload.get("metadata_json"))
-        )
-        connection_id = _normalize_optional_string(
-            payload.get("connectionId", payload.get("connection_id"))
-        )
-        model_id = _normalize_optional_string(
-            payload.get("modelId", payload.get("model_id"))
-        )
-
-        message = self.messages.append(
-            session_id=session_id,
-            role=role,
-            content=content,
-            run_id=run_id,
-            step_id=step_id,
-            metadata_json=metadata_json,
-        )
-
-        should_generate_model_title = (
-            role == "assistant"
-            and session.title_source == "heuristic"
-            and session.message_count == 1
-        )
-
-        if role == "user":
-            self.apply_first_user_message_title(
-                session_id,
-                content,
-                active_connection_id=connection_id,
-                active_model_id=model_id,
-            )
-
-        refreshed = self.sessions.get_by_id(session_id)
-        self.sessions.touch(
-            session_id,
-            message_count=refreshed.message_count + 1,
-            last_message_preview=content[:280],
-            last_message_at=message.created_at,
-            active_connection_id=connection_id or refreshed.active_connection_id,
-            active_model_id=model_id or refreshed.active_model_id,
-            title_status="pending"
-            if should_generate_model_title
-            else refreshed.title_status,
-            title_generation_attempts=(refreshed.title_generation_attempts + 1)
-            if should_generate_model_title
-            else refreshed.title_generation_attempts,
-        )
-
-        if should_generate_model_title:
-            if background_tasks is not None:
-                background_tasks.add_task(self.generate_model_title, session_id)
-            else:
-                self.generate_model_title(session_id)
-
-        return serialize_message(message)
 
     def list_attachments_payload(
         self, session_id: str
@@ -399,7 +293,9 @@ class SessionService:
         )
         return serialize_draft_attachment(record)
 
-    def delete_draft_attachment(self, workspace_id: str, draft_attachment_id: str) -> None:
+    def delete_draft_attachment(
+        self, workspace_id: str, draft_attachment_id: str
+    ) -> None:
         workspace = self._get_workspace_or_404(workspace_id)
         try:
             record = self.draft_attachments.get_by_id(draft_attachment_id)
@@ -464,7 +360,7 @@ class SessionService:
     ) -> dict[str, Any]:
         session = self._get_session_or_404(session_id)
         if session.title_source == "manual":
-            return serialize_session(session)
+            return serialize_session_summary(session)
 
         normalized_title = build_heuristic_title(title)
         updated = self.sessions.touch(
@@ -473,41 +369,10 @@ class SessionService:
             title_source="model",
             title_status="ready",
         )
-        return serialize_session(updated)
+        return serialize_session_summary(updated)
 
     def generate_model_title(self, session_id: str) -> dict[str, Any]:
-        session = self._get_session_or_404(session_id)
-        if session.title_source == "manual":
-            return serialize_session(session)
-
-        first_user_message, first_assistant_message = self._get_title_seed_messages(
-            session_id
-        )
-        if first_user_message is None or first_assistant_message is None:
-            if first_user_message is not None:
-                return self._apply_title_generation_fallback(
-                    session_id, first_user_message.content
-                )
-            updated = self.sessions.touch(session_id, title_status="failed")
-            return serialize_session(updated)
-
-        generator = self.model_title_generator or build_model_title
-        try:
-            generated_title = generator(
-                first_user_message.content, first_assistant_message.content
-            )
-        except Exception:  # noqa: BLE001
-            return self._apply_title_generation_fallback(
-                session_id, first_user_message.content
-            )
-
-        normalized_title = _normalize_optional_string(generated_title)
-        if normalized_title is None:
-            return self._apply_title_generation_fallback(
-                session_id, first_user_message.content
-            )
-
-        return self.apply_model_generated_title(session_id, normalized_title)
+        return self.timeline_service.apply_title_from_timeline(session_id)
 
     def _apply_title_generation_fallback(
         self, session_id: str, first_user_message_content: str
@@ -521,23 +386,7 @@ class SessionService:
             title_source="heuristic",
             title_status="failed",
         )
-        return serialize_session(updated)
-
-    def _get_title_seed_messages(self, session_id: str):
-        first_user_message = None
-        first_assistant_message = None
-        for message in self.messages.list_by_session_id(session_id):
-            if first_user_message is None and message.role == "user":
-                first_user_message = message
-                continue
-            if (
-                first_user_message is not None
-                and first_assistant_message is None
-                and message.role == "assistant"
-            ):
-                first_assistant_message = message
-                break
-        return first_user_message, first_assistant_message
+        return serialize_session_summary(updated)
 
     def _get_workspace_or_404(self, workspace_id: str):
         try:
@@ -585,20 +434,6 @@ def serialize_session(session) -> dict[str, Any]:
     }
 
 
-def serialize_message(message) -> dict[str, Any]:
-    return {
-        "id": message.id,
-        "sessionId": message.session_id,
-        "runId": message.run_id,
-        "role": message.role,
-        "content": message.content,
-        "stepId": message.step_id,
-        "sequenceNo": message.sequence_no,
-        "createdAt": message.created_at,
-        "metadataJson": message.metadata_json,
-    }
-
-
 def serialize_attachment(attachment) -> dict[str, Any]:
     return {
         "id": attachment.id,
@@ -623,16 +458,6 @@ def serialize_draft_attachment(draft_attachment) -> dict[str, Any]:
         "createdAt": draft_attachment.created_at,
         "updatedAt": draft_attachment.updated_at,
     }
-
-
-def build_heuristic_title(text: str) -> str:
-    words = text.strip().split()
-    if not words:
-        return "New session"
-    title = " ".join(words[:8]).strip()
-    if len(title) > 60:
-        title = title[:57].rstrip() + "..."
-    return title or "New session"
 
 
 def build_model_title(user_text: str, assistant_text: str) -> str:
@@ -661,16 +486,6 @@ def build_model_title(user_text: str, assistant_text: str) -> str:
     if len(title) > 60:
         title = title[:57].rstrip() + "..."
     return title
-
-
-def build_first_user_message_fallback_title(text: str, *, max_chars: int = 50) -> str:
-    if max_chars <= 0:
-        return "New session"
-
-    normalized = " ".join(text.split())
-    if not normalized:
-        return "New session"
-    return normalized[:max_chars].strip() or "New session"
 
 
 def _strip_title_prefixes(text: str) -> str:

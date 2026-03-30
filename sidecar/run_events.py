@@ -6,12 +6,10 @@ from typing import Literal, TypeAlias
 
 RunStatus: TypeAlias = Literal["queued", "running", "completed", "failed", "cancelled"]
 RunStepKind: TypeAlias = Literal["planning", "action"]
-RunMessageRole: TypeAlias = Literal["user", "assistant", "system"]
 RunEventType: TypeAlias = Literal[
     "run.delta",
-    "run.step",
+    "run.timeline-entry",
     "run.status",
-    "run.message",
     "run.completed",
     "run.failed",
     "run.keepalive",
@@ -81,78 +79,24 @@ def delta_event(
     )
 
 
-def step_event(
+def timeline_entry_event(
     *,
     run_id: str,
     session_id: str,
     sequence: int,
     created_at: str,
-    step_id: str,
-    step_kind: RunStepKind,
-    step_number: int | None,
-    plan: str | None,
-    model_output: str,
-    code_action: str | None,
-    action_output: object | None,
-    observations: list[str],
-    error: str | None,
-    usage: RunUsage,
-    duration_ms: int,
-    has_delta: bool,
+    entry: dict[str, object],
 ) -> RunEventEnvelope:
     return RunEventEnvelope(
         id=f"{run_id}:{sequence}",
-        event="run.step",
+        event="run.timeline-entry",
         data={
-            "type": "run.step",
+            "type": "run.timeline-entry",
             "runId": run_id,
             "sessionId": session_id,
             "sequence": sequence,
             "createdAt": created_at,
-            "stepId": step_id,
-            "stepKind": step_kind,
-            "stepNumber": step_number,
-            "plan": plan,
-            "modelOutput": model_output,
-            "codeAction": code_action,
-            "actionOutput": action_output,
-            "observations": observations,
-            "error": error,
-            "usage": {
-                "inputTokens": usage.input_tokens,
-                "outputTokens": usage.output_tokens,
-                "reasoningTokens": usage.reasoning_tokens,
-            },
-            "durationMs": duration_ms,
-            "hasDelta": has_delta,
-        },
-    )
-
-
-def message_event(
-    *,
-    run_id: str,
-    session_id: str,
-    sequence: int,
-    created_at: str,
-    message_id: str,
-    role: RunMessageRole,
-    content: str,
-    step_id: str | None,
-) -> RunEventEnvelope:
-    return RunEventEnvelope(
-        id=f"{run_id}:{sequence}",
-        event="run.message",
-        data={
-            "type": "run.message",
-            "runId": run_id,
-            "sessionId": session_id,
-            "sequence": sequence,
-            "createdAt": created_at,
-            "messageId": message_id,
-            "role": role,
-            "content": content,
-            "stepId": step_id,
+            "entry": entry,
         },
     )
 

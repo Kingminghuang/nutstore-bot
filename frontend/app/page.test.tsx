@@ -3,7 +3,7 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import Home from "@/app/page"
 
 const sidecarClientMocks = vi.hoisted(() => ({
-  getRunSteps: vi.fn(),
+  getSessionTimeline: vi.fn(),
   createProvider: vi.fn(),
   updateProvider: vi.fn(),
   deleteProvider: vi.fn(),
@@ -85,7 +85,7 @@ const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => 
   }
 
   if (
-    decodedPath === "/sessions/sess_1/messages/msg_1/edit-and-run" &&
+    decodedPath === "/sessions/sess_1/timeline/msg_1/edit-and-run" &&
     init?.method === "POST"
   ) {
     return new Response(
@@ -108,28 +108,30 @@ const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => 
           activeConnectionId: "prov_openai",
           activeModelId: "gpt-5.4-mini",
         },
-        messages: [
+        entries: [
           {
             id: "msg_1",
             sessionId: "sess_1",
             runId: "run_edited_1",
-            role: "user",
-            content: String(body?.content ?? "edited"),
+            entryKind: "user_input",
+            displayRole: "user",
+            contentText: String(body?.content ?? "edited"),
             stepId: null,
+            stepNumber: null,
             sequenceNo: 1,
             createdAt: "2026-03-24T12:19:00Z",
-            metadataJson: null,
           },
           {
             id: "msg_edited_2",
             sessionId: "sess_1",
             runId: "run_edited_1",
-            role: "assistant",
-            content: "Edited run completed",
+            entryKind: "final_answer",
+            displayRole: "assistant",
+            contentText: "Edited run completed",
             stepId: null,
+            stepNumber: null,
             sequenceNo: 2,
             createdAt: "2026-03-24T12:20:00Z",
-            metadataJson: null,
           },
         ],
       }),
@@ -380,28 +382,31 @@ const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => 
           activeConnectionId: "prov_openai",
           activeModelId: "gpt-5.4-mini",
         },
-        messages: [
+        entries: [
           {
             id: "msg_1",
             sessionId: responseSessionId,
             runId: "run_1",
-            role: "user",
-            content: "Please wire the sidecar",
+            entryKind: "user_input",
+            displayRole: "user",
+            contentText: "Please wire the sidecar",
             stepId: null,
+            stepNumber: null,
             sequenceNo: 1,
             createdAt: "2026-03-24T12:00:00Z",
-            metadataJson: null,
           },
           {
             id: "msg_2",
             sessionId: responseSessionId,
             runId: "run_1",
-            role: "system",
-            content: `Run failed: ${runFailureReason}`,
+            entryKind: "system_notice",
+            displayRole: "system",
+            contentText: `Run failed: ${runFailureReason}`,
             stepId: null,
+            stepNumber: null,
             sequenceNo: 2,
             createdAt: "2026-03-24T12:12:00Z",
-            metadataJson: null,
+            contentJson: { noticeCode: "failed" },
           },
         ],
       }), {
@@ -432,18 +437,19 @@ const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => 
           activeConnectionId: "prov_openai",
           activeModelId: "gpt-5.4-mini",
         },
-        messages: useStreamingRun
+        entries: useStreamingRun
           ? [
               {
                 id: "msg_stream_user",
                 sessionId: responseSessionId,
                 runId: "run_1",
-                role: "user",
-                content: "Run through sidecar",
+                entryKind: "user_input",
+                displayRole: "user",
+                contentText: "Run through sidecar",
                 stepId: null,
+                stepNumber: null,
                 sequenceNo: 1,
                 createdAt: "2026-03-24T12:11:00Z",
-                metadataJson: null,
               },
             ]
           : [
@@ -451,23 +457,25 @@ const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => 
                 id: "msg_1",
                 sessionId: responseSessionId,
                 runId: null,
-                role: "user",
-                content: "Please wire the sidecar",
+                entryKind: "user_input",
+                displayRole: "user",
+                contentText: "Please wire the sidecar",
                 stepId: null,
+                stepNumber: null,
                 sequenceNo: 1,
                 createdAt: "2026-03-24T12:00:00Z",
-                metadataJson: null,
               },
               {
                 id: "msg_2",
                 sessionId: responseSessionId,
                 runId: "run_1",
-                role: "assistant",
-                content: "Run completed through sidecar.",
+                entryKind: "final_answer",
+                displayRole: "assistant",
+                contentText: "Run completed through sidecar.",
                 stepId: null,
+                stepNumber: null,
                 sequenceNo: 2,
                 createdAt: "2026-03-24T12:12:00Z",
-                metadataJson: null,
               },
             ],
       }),
@@ -584,6 +592,7 @@ vi.mock("@/lib/sidecar-client", () => ({
       },
     ],
   })),
+  getSessionTimeline: sidecarClientMocks.getSessionTimeline,
   getProviders: sidecarClientMocks.getProviders.mockImplementation(async () => ({
     connections: [
       {
@@ -630,7 +639,6 @@ vi.mock("@/lib/sidecar-client", () => ({
       modelId: "gpt-5.4-mini",
     },
   })),
-  getRunSteps: sidecarClientMocks.getRunSteps,
   createProvider: sidecarClientMocks.createProvider,
   updateProvider: sidecarClientMocks.updateProvider,
   deleteProvider: sidecarClientMocks.deleteProvider,
@@ -664,8 +672,175 @@ describe("Home page", () => {
     deletedSessionIds = new Set<string>()
     MockEventSource.instances = []
     fetchMock.mockClear()
-    sidecarClientMocks.getRunSteps.mockReset()
-    sidecarClientMocks.getRunSteps.mockResolvedValue({ steps: [] })
+    sidecarClientMocks.getSessionTimeline.mockReset()
+    sidecarClientMocks.getSessionTimeline.mockImplementation(async (sessionId: string, options?: { limit?: number; beforeSequence?: number | null }) => {
+      if (deletedSessionIds.has(sessionId)) {
+        throw new Error("Session not found")
+      }
+
+      if (sessionId === "sess_2") {
+        emptySessionMessagesFetchCount += 1
+        if (failFirstEmptySessionMessagesRequest && emptySessionMessagesFetchCount === 1) {
+          throw new Error("Temporary fetch failure")
+        }
+        return {
+          entries: [],
+          pagination: {
+            hasMore: false,
+            nextBeforeSequence: null,
+          },
+        }
+      }
+
+      if (usePaginatedHistory && options?.beforeSequence === 2) {
+        return {
+          entries: [
+            {
+              id: "msg_older_1",
+              sessionId: "sess_1",
+              runId: null,
+              entryKind: "user_input",
+              displayRole: "user",
+              contentText: "Please wire the sidecar",
+              stepId: null,
+              stepNumber: null,
+              sequenceNo: 1,
+              createdAt: "2026-03-24T12:00:00Z",
+            },
+          ],
+          pagination: {
+            hasMore: false,
+            nextBeforeSequence: null,
+          },
+        }
+      }
+
+      if (usePaginatedHistory) {
+        return {
+          entries: [
+            {
+              id: "msg_latest_1",
+              sessionId: "sess_1",
+              runId: null,
+              entryKind: "final_answer",
+              displayRole: "assistant",
+              contentText: "I split provider catalog from persisted connections",
+              stepId: null,
+              stepNumber: null,
+              sequenceNo: 2,
+              createdAt: "2026-03-24T12:10:00Z",
+            },
+          ],
+          pagination: {
+            hasMore: true,
+            nextBeforeSequence: 2,
+          },
+        }
+      }
+
+      return {
+        entries: forceRunFailure
+          ? [
+              {
+                id: "msg_1",
+                sessionId: "sess_1",
+                runId: "run_1",
+                entryKind: "user_input",
+                displayRole: "user",
+                contentText: "Please wire the sidecar",
+                stepId: null,
+                stepNumber: null,
+                sequenceNo: 1,
+                createdAt: "2026-03-24T12:00:00Z",
+              },
+              {
+                id: "msg_2",
+                sessionId: "sess_1",
+                runId: "run_1",
+                entryKind: "system_notice",
+                displayRole: "system",
+                contentText: `Run failed: ${runFailureReason}`,
+                stepId: null,
+                stepNumber: null,
+                sequenceNo: 2,
+                createdAt: "2026-03-24T12:12:00Z",
+                contentJson: { noticeCode: "failed" },
+              },
+            ]
+          : runCompleted
+            ? [
+                {
+                  id: "msg_1",
+                  sessionId: "sess_1",
+                  runId: "run_1",
+                  entryKind: "user_input",
+                  displayRole: "user",
+                  contentText: "Please wire the sidecar",
+                  stepId: null,
+                  stepNumber: null,
+                  sequenceNo: 1,
+                  createdAt: "2026-03-24T12:00:00Z",
+                },
+                {
+                  id: "msg_2",
+                  sessionId: "sess_1",
+                  runId: "run_1",
+                  entryKind: "final_answer",
+                  displayRole: "assistant",
+                  contentText: "Run completed through sidecar.",
+                  stepId: null,
+                  stepNumber: null,
+                  sequenceNo: 2,
+                  createdAt: "2026-03-24T12:12:00Z",
+                },
+              ]
+            : useStreamingRun
+              ? [
+                  {
+                    id: "msg_stream_user",
+                    sessionId: "sess_1",
+                    runId: "run_1",
+                    entryKind: "user_input",
+                    displayRole: "user",
+                    contentText: "Run through sidecar",
+                    stepId: null,
+                    stepNumber: null,
+                    sequenceNo: 1,
+                    createdAt: "2026-03-24T12:11:00Z",
+                  },
+                ]
+              : [
+                  {
+                    id: "msg_1",
+                    sessionId: "sess_1",
+                    runId: null,
+                    entryKind: "user_input",
+                    displayRole: "user",
+                    contentText: "Please wire the sidecar",
+                    stepId: null,
+                    stepNumber: null,
+                    sequenceNo: 1,
+                    createdAt: "2026-03-24T12:00:00Z",
+                  },
+                  {
+                    id: "msg_2",
+                    sessionId: "sess_1",
+                    runId: null,
+                    entryKind: "final_answer",
+                    displayRole: "assistant",
+                    contentText: "I split provider catalog from persisted connections",
+                    stepId: null,
+                    stepNumber: null,
+                    sequenceNo: 2,
+                    createdAt: "2026-03-24T12:10:00Z",
+                  },
+                ],
+        pagination: {
+          hasMore: false,
+          nextBeforeSequence: null,
+        },
+      }
+    })
     sidecarClientMocks.createProvider.mockReset()
     sidecarClientMocks.createProvider.mockResolvedValue({ id: "prov_new" })
     sidecarClientMocks.updateProvider.mockReset()
@@ -762,7 +937,7 @@ describe("Home page", () => {
 
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith(
-        expect.stringContaining("path=%2Fsessions%2Fsess_1%2Fmessages%2Fmsg_1%2Fedit-and-run"),
+        expect.stringContaining("path=%2Fsessions%2Fsess_1%2Ftimeline%2Fmsg_1%2Fedit-and-run"),
         expect.objectContaining({
           method: "POST",
         })
@@ -1010,22 +1185,32 @@ describe("Home page", () => {
     })
   })
 
-  it("loads and renders persisted run steps for session history", async () => {
+  it("loads and renders persisted timeline entries for session history", async () => {
     runCompleted = true
-    sidecarClientMocks.getRunSteps.mockResolvedValueOnce({
-      steps: [
+    sidecarClientMocks.getSessionTimeline.mockResolvedValueOnce({
+      entries: [
+        {
+          id: "msg_1",
+          sessionId: "sess_1",
+          runId: "run_1",
+          sequenceNo: 1,
+          entryKind: "user_input",
+          displayRole: "user",
+          stepId: null,
+          stepNumber: null,
+          contentText: "Please wire the sidecar",
+          createdAt: "2026-03-24T12:00:00Z",
+        },
         {
           id: "rstep_1",
           runId: "run_1",
           sessionId: "sess_1",
           sequenceNo: 1,
+          entryKind: "planning",
+          displayRole: "assistant",
           stepId: "step-1",
-          stepKind: "planning",
           stepNumber: null,
-          plan: "Inspect the workspace and identify the provider flow.",
-          usage: { inputTokens: 10, outputTokens: 4, reasoningTokens: 0 },
-          durationMs: 120,
-          hasDelta: true,
+          contentText: "Inspect the workspace and identify the provider flow.",
           createdAt: "2026-03-24T12:00:01Z",
         },
         {
@@ -1033,19 +1218,27 @@ describe("Home page", () => {
           runId: "run_1",
           sessionId: "sess_1",
           sequenceNo: 2,
+          entryKind: "action",
+          displayRole: "assistant",
           stepId: "step-2",
-          stepKind: "action",
           stepNumber: 1,
-          codeAction: 'print("Run completed through sidecar.")',
-          actionOutput: "Run completed through sidecar.",
-          observations: ["Execution logs:", "Run completed through sidecar."],
-          error: null,
-          usage: { inputTokens: 14, outputTokens: 6, reasoningTokens: 0 },
-          durationMs: 180,
-          hasDelta: true,
+          contentText: null,
+          contentJson: {
+            toolCalls: [],
+            observations: ["Execution logs:", "Run completed through sidecar."],
+            codeAction: 'print("Run completed through sidecar.")',
+            actionOutput: "Run completed through sidecar.",
+            error: null,
+            usage: { inputTokens: 14, outputTokens: 6, reasoningTokens: 0 },
+            durationMs: 180,
+          },
           createdAt: "2026-03-24T12:00:02Z",
         },
       ],
+      pagination: {
+        hasMore: false,
+        nextBeforeSequence: null,
+      },
     })
 
     render(<Home />)
@@ -1056,6 +1249,7 @@ describe("Home page", () => {
 
     expect(screen.getByText("Inspect the workspace and identify the provider flow.")).toBeInTheDocument()
     expect(screen.getByText("Step 1")).toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: /Code action/i }))
     expect(screen.getByText('print("Run completed through sidecar.")')).toBeInTheDocument()
   })
 
@@ -1078,15 +1272,25 @@ describe("Home page", () => {
 
     act(() => {
       MockEventSource.instances[0].emit(
-        "run.delta",
+        "run.timeline-entry",
         {
-          type: "run.delta",
+          type: "run.timeline-entry",
           runId: "run_1",
           sessionId: "sess_1",
           sequence: 1,
           createdAt: "2026-03-24T12:11:00Z",
-          stepId: "step-1",
-          text: "Run completed through sidecar.",
+          entry: {
+            id: "msg_stream_assistant",
+            sessionId: "sess_1",
+            runId: "run_1",
+            sequenceNo: 2,
+            entryKind: "final_answer",
+            displayRole: "assistant",
+            stepId: null,
+            stepNumber: null,
+            contentText: "Run completed through sidecar.",
+            createdAt: "2026-03-24T12:12:00Z",
+          },
         },
         "run_1:1"
       )
@@ -1270,11 +1474,7 @@ describe("Home page", () => {
       expect(screen.getByText("I split provider catalog from persisted connections")).toBeInTheDocument()
     })
 
-    const initialMessageCalls = fetchMock.mock.calls.filter(([input]) => {
-      const value = String(input)
-      return value.includes("path=%2Fsessions%2Fsess_1%2Fmessages%3Flimit%3D50")
-    })
-    expect(initialMessageCalls).toHaveLength(1)
+    expect(sidecarClientMocks.getSessionTimeline).toHaveBeenCalledWith("sess_1", { limit: 50 })
 
     fireEvent.click(screen.getByRole("button", { name: "Load earlier messages" }))
 
@@ -1282,12 +1482,9 @@ describe("Home page", () => {
       expect(screen.getByText("Please wire the sidecar")).toBeInTheDocument()
     })
 
-    const olderPageCalls = fetchMock.mock.calls.filter(([input]) => {
-      const value = String(input)
-      return value.includes(
-        "path=%2Fsessions%2Fsess_1%2Fmessages%3Flimit%3D50%26beforeSequence%3D2"
-      )
+    expect(sidecarClientMocks.getSessionTimeline).toHaveBeenCalledWith("sess_1", {
+      limit: 50,
+      beforeSequence: 2,
     })
-    expect(olderPageCalls).toHaveLength(1)
   })
 })

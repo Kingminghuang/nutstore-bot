@@ -5,7 +5,7 @@ import inspect
 import json
 import logging
 import threading
-from typing import Any, Callable, Literal, cast
+from typing import Any, Callable, cast
 
 from fastapi import BackgroundTasks, HTTPException, status
 
@@ -13,14 +13,12 @@ from attachment_store import AttachmentStore
 from run_cancellation import RunCancellationRegistry
 from run_event_store import RunEventStore
 from run_events import (
-    RunUsage,
     completed_event,
     delta_event,
     failed_event,
-    message_event,
     replay_ready_event,
     status_event,
-    step_event,
+    timeline_entry_event,
 )
 from local_paths import nsbot_home
 from provider_catalog import list_providers
@@ -29,12 +27,16 @@ from repositories import (
     AttachmentsRepository,
     DraftAttachmentsRepository,
     ProviderConnectionsRepository,
-    RunStepsRepository,
     RunsRepository,
     SessionsRepository,
+    TimelineEntriesRepository,
     WorkspacesRepository,
     create_id,
     now_iso_timestamp,
+)
+from agent_memory_projection import (
+    project_final_answer_to_timeline_entry,
+    project_system_notice_to_timeline_entry,
 )
 from runtime_service import (
     CodeAgentRuntimeService,
@@ -43,9 +45,11 @@ from runtime_service import (
     RuntimeProcessError,
     RuntimeWorkerConfig,
 )
+from session_manager import SessionManager
 from secret_store import LocalSecretStore
-from session_service import SessionService, serialize_message, serialize_session
+from session_service import SessionService
 from storage import transaction
+from timeline_service import serialize_timeline_entry, serialize_session_summary
 
 
 RuntimeExecutor = Callable[..., dict[str, Any]]
@@ -76,7 +80,7 @@ class RunService:
     attachments: AttachmentsRepository
     draft_attachments: DraftAttachmentsRepository
     runs: RunsRepository
-    run_steps: RunStepsRepository
+    timeline_entries: TimelineEntriesRepository
     session_service: SessionService
     attachment_store: AttachmentStore
     secret_store: LocalSecretStore
@@ -170,7 +174,9 @@ class RunService:
                     self.attachment_store.move_file(
                         draft_attachment.storage_path, target_storage_path
                     )
-                    promoted_drafts.append((draft_attachment.storage_path, target_storage_path))
+                    promoted_drafts.append(
+                        (draft_attachment.storage_path, target_storage_path)
+                    )
                     attachment = self.attachments.create(
                         attachment_id=attachment_id,
                         session_id=session_id,
@@ -226,23 +232,29 @@ class RunService:
             input_text=input_text,
         )
 
-        user_message = self.session_service.append_message(
-            session_id,
-            {
-                "role": "user",
-                "content": input_text,
-                "runId": run.id,
-                "connectionId": connection_id,
-                "modelId": model_id,
-                "metadataJson": _json_dumps_or_none(
-                    {
-                        "attachmentIds": attachment_ids,
-                    }
-                    if attachment_ids
-                    else None
-                ),
-            },
+        user_entry = self.timeline_entries.append(
+            session_id=session_id,
+            run_id=run.id,
+            entry_kind="user_input",
+            display_role="user",
+            content_text=input_text,
+            content_json=_json_dumps_or_none(
+                {"attachmentIds": attachment_ids} if attachment_ids else None
+            ),
+            created_at=run.created_at,
         )
+        self.session_service.apply_first_user_message_title(
+            session_id,
+            input_text,
+            active_connection_id=connection_id,
+            active_model_id=model_id,
+        )
+        self.session_service.timeline_service.refresh_session_summary(
+            session_id,
+            active_connection_id=connection_id,
+            active_model_id=model_id,
+        )
+
         for attachment in attachments:
             self.attachments.update_status(attachment.id, "consumed")
         self._append_event(
@@ -258,18 +270,14 @@ class RunService:
         )
         self._append_event(
             run.id,
-            message_event(
+            timeline_entry_event(
                 run_id=run.id,
                 session_id=session_id,
                 sequence=self._next_sequence(run.id),
-                created_at=user_message["createdAt"],
-                message_id=user_message["id"],
-                role="user",
-                content=user_message["content"],
-                step_id=user_message.get("stepId"),
+                created_at=user_entry.created_at,
+                entry=serialize_timeline_entry(user_entry),
             ),
         )
-
         try:
             if not bundle.connection.is_enabled:
                 raise RunValidationError(
@@ -337,27 +345,18 @@ class RunService:
 
         current_run = self.runs.get_by_id(run.id)
         current_session = self.sessions.get_by_id(session_id)
-        current_messages = [
-            serialize_message(message)
-            for message in self.session_service.messages.list_by_session_id(session_id)
+        current_entries = [
+            serialize_timeline_entry(entry)
+            for entry in self.timeline_entries.list_by_session_id(session_id)
         ]
-        assistant_message = next(
-            (
-                message
-                for message in reversed(current_messages)
-                if message.get("runId") == run.id and message.get("role") == "assistant"
-            ),
-            None,
-        )
 
         return {
             "run": serialize_run(current_run),
-            "session": serialize_session(current_session),
-            "messages": current_messages,
-            "assistantMessage": assistant_message,
+            "session": serialize_session_summary(current_session),
+            "entries": current_entries,
             "result": {
                 "deltas": [],
-                "steps": [],
+                "entries": [],
                 "finalAnswer": None,
             },
         }
@@ -366,7 +365,7 @@ class RunService:
         self,
         *,
         session_id: str,
-        message_id: str,
+        timeline_entry_id: str,
         payload: dict[str, Any],
         background_tasks: BackgroundTasks | None = None,
     ) -> dict[str, Any]:
@@ -397,13 +396,13 @@ class RunService:
                 detail="Session does not belong to workspace",
             )
 
-        message = self.session_service.messages.get_by_id(message_id)
+        message = self.timeline_entries.get_by_id(timeline_entry_id)
         if message.session_id != session_id:
             raise HTTPException(status_code=404, detail="Message not found")
-        if message.role != "user":
+        if message.entry_kind != "user_input":
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Only user messages can be edited",
+                detail="Only user input timeline entries can be edited",
             )
 
         has_active_run = any(
@@ -429,7 +428,9 @@ class RunService:
             )
         self._ensure_model_allowed(bundle, model_id)
         self._resolve_reasoning_effort(bundle, model_id, reasoning_effort)
-        secret_payload = self.secret_store.load_provider_secret(bundle.connection.secret_ref)
+        secret_payload = self.secret_store.load_provider_secret(
+            bundle.connection.secret_ref
+        )
         api_key = secret_payload.api_key if secret_payload is not None else None
         if api_key is None or api_key.strip() == "":
             raise HTTPException(
@@ -437,7 +438,7 @@ class RunService:
                 detail="Provider connection is missing an API key",
             )
 
-        suffix_messages = self.session_service.messages.list_by_session_id_from_sequence(
+        suffix_messages = self.timeline_entries.list_by_session_id_from_sequence(
             session_id, message.sequence_no
         )
         affected_run_ids = sorted(
@@ -449,9 +450,8 @@ class RunService:
         )
 
         with transaction(self.sessions.connection):
-            self.sessions.connection.execute(
-                "DELETE FROM messages WHERE session_id = ? AND sequence_no >= ?",
-                (session_id, message.sequence_no),
+            self.timeline_entries.delete_by_session_id_from_sequence(
+                session_id, message.sequence_no
             )
             if affected_run_ids:
                 placeholders = ",".join("?" for _ in affected_run_ids)
@@ -460,48 +460,16 @@ class RunService:
                     tuple(affected_run_ids),
                 )
 
-            remaining_row = self.sessions.connection.execute(
-                """
-                SELECT content, created_at
-                FROM messages
-                WHERE session_id = ?
-                ORDER BY sequence_no DESC, created_at DESC
-                LIMIT 1
-                """,
-                (session_id,),
-            ).fetchone()
-            count_row = self.sessions.connection.execute(
-                "SELECT COUNT(1) FROM messages WHERE session_id = ?",
-                (session_id,),
-            ).fetchone()
-            remaining_count = int(count_row[0]) if count_row is not None else 0
-            last_message_preview = (
-                str(remaining_row["content"])[:280]
-                if remaining_row is not None and remaining_row["content"] is not None
-                else None
-            )
-            last_message_at = (
-                str(remaining_row["created_at"])
-                if remaining_row is not None and remaining_row["created_at"] is not None
-                else None
-            )
-            self.sessions.connection.execute(
-                """
-                UPDATE sessions
-                SET message_count = ?, last_message_preview = ?, last_message_at = ?, updated_at = ?
-                WHERE id = ?
-                """,
-                (
-                    remaining_count,
-                    last_message_preview,
-                    last_message_at,
-                    now_iso_timestamp(),
-                    session_id,
-                ),
-            )
+            self.session_service.timeline_service.refresh_session_summary(session_id)
 
         if self.event_store is not None and affected_run_ids:
             self.event_store.clear_many(affected_run_ids)
+
+        runtime_sessions = SessionManager(str(nsbot_home(self.ns_bot_home)))
+        runtime_session = runtime_sessions.get_or_create(session_id)
+        for affected_run_id in affected_run_ids:
+            runtime_session.truncate_by_run_id(affected_run_id)
+        runtime_sessions.save(runtime_session)
 
         return self.create_run(
             {
@@ -525,7 +493,9 @@ class RunService:
         try:
             self.sessions.delete_by_id(session_id)
         except Exception:
-            LOGGER.exception("Failed to clean up session %s after run bootstrap failure", session_id)
+            LOGGER.exception(
+                "Failed to clean up session %s after run bootstrap failure", session_id
+            )
 
     def _start_run_thread(
         self,
@@ -642,15 +612,27 @@ class RunService:
         if not emitted_live_events:
             self._emit_runtime_events(run_id, session_id, result, started_at)
 
-        assistant_message = self.session_service.append_message(
+        timeline_entries = [
+            entry
+            for entry in list(result.get("timeline_entries") or [])
+            if str(entry.get("entry_kind") or "") != "user_input"
+        ]
+        timeline_entries.append(
+            project_final_answer_to_timeline_entry(
+                final_answer,
+                run_id=run_id,
+                session_id=session_id,
+            )
+        )
+        persisted_entries = [
+            self.timeline_entries.append(created_at=started_at, **entry)
+            for entry in timeline_entries
+        ]
+        self.session_service.timeline_service.refresh_session_summary(
             session_id,
-            {
-                "role": "assistant",
-                "content": final_answer,
-                "runId": run_id,
-                "connectionId": connection_id,
-                "modelId": model_id,
-            },
+            active_connection_id=connection_id,
+            active_model_id=model_id,
+            trigger_title_generation=True,
         )
         completed_run = self.runs.update(
             run_id,
@@ -674,15 +656,12 @@ class RunService:
         )
         self._append_event(
             run_id,
-            message_event(
+            timeline_entry_event(
                 run_id=run_id,
                 session_id=session_id,
                 sequence=self._next_sequence(run_id),
-                created_at=assistant_message["createdAt"],
-                message_id=assistant_message["id"],
-                role="assistant",
-                content=assistant_message["content"],
-                step_id=assistant_message.get("stepId"),
+                created_at=completed_run.completed_at or completed_run.updated_at,
+                entry=serialize_timeline_entry(persisted_entries[-1]),
             ),
         )
         self._append_event(
@@ -752,7 +731,9 @@ class RunService:
             return executor_any(*base_args), supports_event_callback
 
         kwargs: dict[str, Any] = {}
-        if supports_event_callback and ("event_callback" in parameters or has_var_keyword):
+        if supports_event_callback and (
+            "event_callback" in parameters or has_var_keyword
+        ):
             kwargs["event_callback"] = event_callback
         if supports_is_cancelled and ("is_cancelled" in parameters or has_var_keyword):
             kwargs["is_cancelled"] = is_cancelled
@@ -799,12 +780,12 @@ class RunService:
         )
         return {"run": serialize_run(updated_run), "cancelled": True}
 
-    def list_run_steps_payload(self, run_id: str) -> dict[str, Any]:
+    def list_run_timeline_payload(self, run_id: str) -> dict[str, Any]:
         self.runs.get_by_id(run_id)
-        serialize_step = _serialize_run_step_payload
         return {
-            "steps": [
-                serialize_step(step) for step in self.run_steps.list_by_run_id(run_id)
+            "entries": [
+                serialize_timeline_entry(entry)
+                for entry in self.timeline_entries.list_by_run_id(run_id)
             ]
         }
 
@@ -904,16 +885,16 @@ class RunService:
             started_at=started_at,
             completed_at=now_iso_timestamp(),
         )
-        self.session_service.append_message(
-            session_id,
-            {
-                "role": "system",
-                "content": f"Run failed: {error_message}",
-                "runId": run_id,
-                "connectionId": connection_id,
-                "modelId": model_id,
-            },
+        notice_entry = self.timeline_entries.append(
+            created_at=failed_run.completed_at or failed_run.updated_at,
+            **project_system_notice_to_timeline_entry(
+                f"Run failed: {error_message}",
+                run_id=run_id,
+                session_id=session_id,
+                notice_code="failed",
+            ),
         )
+        self.session_service.timeline_service.refresh_session_summary(session_id)
         current_session = self.sessions.get_by_id(session_id)
         LOGGER.warning(
             "Run failed: run_id=%s session_id=%s workspace_id=%s connection_id=%s model_id=%s error_code=%s error_message=%s",
@@ -925,16 +906,13 @@ class RunService:
             error_code,
             error_message,
         )
-        system_message = self.session_service.messages.list_by_session_id(session_id)[
-            -1
-        ]
         self._append_event(
             run_id,
             status_event(
                 run_id=run_id,
                 session_id=session_id,
                 sequence=self._next_sequence(run_id),
-                created_at=system_message.created_at,
+                created_at=notice_entry.created_at,
                 status="failed",
                 message=error_message,
             ),
@@ -945,22 +923,19 @@ class RunService:
                 run_id=run_id,
                 session_id=session_id,
                 sequence=self._next_sequence(run_id),
-                created_at=system_message.created_at,
+                created_at=notice_entry.created_at,
                 error_code=error_code,
                 error_message=error_message,
             ),
         )
         self._append_event(
             run_id,
-            message_event(
+            timeline_entry_event(
                 run_id=run_id,
                 session_id=session_id,
                 sequence=self._next_sequence(run_id),
-                created_at=system_message.created_at,
-                message_id=system_message.id,
-                role="system",
-                content=system_message.content,
-                step_id=system_message.step_id,
+                created_at=notice_entry.created_at,
+                entry=serialize_timeline_entry(notice_entry),
             ),
         )
         self._append_event(
@@ -969,7 +944,7 @@ class RunService:
                 run_id=run_id,
                 session_id=session_id,
                 sequence=self._next_sequence(run_id),
-                created_at=system_message.created_at,
+                created_at=notice_entry.created_at,
                 last_event_sequence=self._last_sequence(run_id),
             ),
             terminal=True,
@@ -977,16 +952,14 @@ class RunService:
         return {
             "detail": error_message,
             "run": serialize_run(failed_run),
-            "session": serialize_session(current_session),
-            "messages": [
-                serialize_message(message)
-                for message in self.session_service.messages.list_by_session_id(
-                    session_id
-                )
+            "session": serialize_session_summary(current_session),
+            "entries": [
+                serialize_timeline_entry(entry)
+                for entry in self.timeline_entries.list_by_session_id(session_id)
             ],
             "result": {
                 "deltas": [],
-                "steps": [],
+                "entries": [],
                 "finalAnswer": None,
             },
         }
@@ -1009,38 +982,35 @@ class RunService:
             started_at=started_at,
             completed_at=now_iso_timestamp(),
         )
-        system_message = self.session_service.append_message(
-            session_id,
-            {
-                "role": "system",
-                "content": "Run cancelled",
-                "runId": run_id,
-                "connectionId": connection_id,
-                "modelId": model_id,
-            },
+        system_message = self.timeline_entries.append(
+            created_at=cancelled_run.completed_at or cancelled_run.updated_at,
+            **project_system_notice_to_timeline_entry(
+                "Run cancelled",
+                run_id=run_id,
+                session_id=session_id,
+                notice_code="cancelled",
+            ),
         )
+        self.session_service.timeline_service.refresh_session_summary(session_id)
         self._append_event(
             run_id,
             status_event(
                 run_id=run_id,
                 session_id=session_id,
                 sequence=self._next_sequence(run_id),
-                created_at=system_message["createdAt"],
+                created_at=system_message.created_at,
                 status="cancelled",
                 message="Run cancelled",
             ),
         )
         self._append_event(
             run_id,
-            message_event(
+            timeline_entry_event(
                 run_id=run_id,
                 session_id=session_id,
                 sequence=self._next_sequence(run_id),
-                created_at=system_message["createdAt"],
-                message_id=system_message["id"],
-                role="system",
-                content=system_message["content"],
-                step_id=system_message.get("stepId"),
+                created_at=system_message.created_at,
+                entry=serialize_timeline_entry(system_message),
             ),
         )
         self._append_event(
@@ -1049,7 +1019,7 @@ class RunService:
                 run_id=run_id,
                 session_id=session_id,
                 sequence=self._next_sequence(run_id),
-                created_at=system_message["createdAt"],
+                created_at=system_message.created_at,
                 last_event_sequence=self._last_sequence(run_id),
             ),
             terminal=True,
@@ -1082,9 +1052,11 @@ class RunService:
                 ),
             )
 
-        for step in result.get("steps", []):
-            self._persist_run_step(run_id, session_id, created_at, step)
-            self._append_runtime_step_event(run_id, session_id, created_at, step)
+        for entry in result.get("timeline_entries", []):
+            persisted = self.timeline_entries.append(created_at=created_at, **entry)
+            self._append_runtime_timeline_event(
+                run_id, session_id, created_at, persisted
+            )
 
     def _handle_runtime_event(
         self,
@@ -1109,49 +1081,24 @@ class RunService:
             )
             return
 
-        if event_type == "step":
-            self._persist_run_step(run_id, session_id, created_at, payload)
-            self._append_runtime_step_event(run_id, session_id, created_at, payload)
+        if event_type == "timeline_entry":
+            persisted = self.timeline_entries.append(created_at=created_at, **payload)
+            self._append_runtime_timeline_event(
+                run_id, session_id, created_at, persisted
+            )
 
-    def _append_runtime_step_event(
-        self, run_id: str, session_id: str, created_at: str, payload: dict[str, Any]
+    def _append_runtime_timeline_event(
+        self, run_id: str, session_id: str, created_at: str, payload
     ) -> None:
         self._append_event(
             run_id,
-            _build_step_event_envelope(
+            timeline_entry_event(
                 run_id=run_id,
                 session_id=session_id,
                 sequence=self._next_sequence(run_id),
                 created_at=created_at,
-                payload=payload,
+                entry=serialize_timeline_entry(payload),
             ),
-        )
-
-    def _persist_run_step(
-        self, run_id: str, session_id: str, created_at: str, payload: dict[str, Any]
-    ) -> None:
-        self.run_steps.create(
-            run_id=run_id,
-            session_id=session_id,
-            step_id=str(payload.get("step_id") or "step-unknown"),
-            step_kind=_normalize_step_kind(payload.get("step_kind")),
-            step_number=_normalize_optional_int(payload.get("step_number")),
-            plan_text=_normalize_optional_string(payload.get("plan")),
-            code_action=_normalize_optional_string(payload.get("code_action")),
-            action_output_json=_json_dumps_or_none(payload.get("action_output")),
-            observations_json=json.dumps(
-                _normalize_step_observations(payload.get("observations")),
-                ensure_ascii=False,
-            ),
-            error_text=_normalize_optional_string(payload.get("error")),
-            usage_json=json.dumps(
-                _normalize_step_usage_dict(payload.get("usage")),
-                ensure_ascii=False,
-            ),
-            duration_ms=_normalize_step_duration_ms(payload),
-            has_delta=_normalize_step_has_delta(payload),
-            raw_model_output=_normalize_optional_string(payload.get("model_output")),
-            created_at=created_at,
         )
 
     def _append_event(self, run_id: str, envelope, *, terminal: bool = False) -> None:
@@ -1275,34 +1222,6 @@ def _serialize_run_step_payload(step) -> dict[str, Any]:
         "hasDelta": step.has_delta,
         "createdAt": step.created_at,
     }
-
-
-def _build_step_event_envelope(
-    *,
-    run_id: str,
-    session_id: str,
-    sequence: int,
-    created_at: str,
-    payload: dict[str, Any],
-):
-    return step_event(
-        run_id=run_id,
-        session_id=session_id,
-        sequence=sequence,
-        created_at=created_at,
-        step_id=str(payload.get("step_id") or "step-unknown"),
-        step_kind=_normalize_step_kind(payload.get("step_kind")),
-        step_number=_normalize_optional_int(payload.get("step_number")),
-        plan=_normalize_optional_string(payload.get("plan")),
-        model_output=str(payload.get("model_output") or ""),
-        code_action=_normalize_optional_string(payload.get("code_action")),
-        action_output=payload.get("action_output"),
-        observations=_normalize_step_observations(payload.get("observations")),
-        error=None if payload.get("error") is None else str(payload.get("error")),
-        usage=_normalize_step_usage(payload.get("usage")),
-        duration_ms=_normalize_step_duration_ms(payload),
-        has_delta=_normalize_step_has_delta(payload),
-    )
 
 
 def serialize_run(run) -> dict[str, Any]:
@@ -1432,45 +1351,6 @@ def _default_reasoning_effort(values: list[str]) -> str | None:
         if candidate in values:
             return candidate
     return values[0]
-
-
-def _normalize_step_kind(value: object) -> Literal["planning", "action"]:
-    text = str(value or "action").strip().lower()
-    return "planning" if text == "planning" else "action"
-
-
-def _normalize_step_observations(value: Any) -> list[str]:
-    return [str(item) for item in (value or [])]
-
-
-def _normalize_step_usage_dict(value: Any) -> dict[str, int]:
-    usage = value if isinstance(value, dict) else {}
-    return {
-        "inputTokens": _to_int(usage.get("input_tokens", usage.get("inputTokens", 0))),
-        "outputTokens": _to_int(
-            usage.get("output_tokens", usage.get("outputTokens", 0))
-        ),
-        "reasoningTokens": _to_int(
-            usage.get("reasoning_tokens", usage.get("reasoningTokens", 0))
-        ),
-    }
-
-
-def _normalize_step_usage(value: Any) -> RunUsage:
-    usage = _normalize_step_usage_dict(value)
-    return RunUsage(
-        input_tokens=usage["inputTokens"],
-        output_tokens=usage["outputTokens"],
-        reasoning_tokens=usage["reasoningTokens"],
-    )
-
-
-def _normalize_step_duration_ms(payload: dict[str, Any]) -> int:
-    return _to_int(payload.get("duration_ms", payload.get("durationMs", 0)))
-
-
-def _normalize_step_has_delta(payload: dict[str, Any]) -> bool:
-    return bool(payload.get("has_delta", payload.get("hasDelta")))
 
 
 def _to_int(value: object) -> int:

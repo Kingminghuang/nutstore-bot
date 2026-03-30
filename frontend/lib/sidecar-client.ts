@@ -7,49 +7,79 @@ import {
 } from "@/lib/provider-settings"
 import { redactSensitive, redactText } from "@/lib/redaction"
 
-export type RunStepUsage = {
+export type TimelineEntryUsage = {
   inputTokens: number
   outputTokens: number
   reasoningTokens: number
 }
 
-export type RunPlanningStep = {
+export type TimelineEntryBase = {
   id: string
-  runId: string
   sessionId: string
+  runId: string | null
   sequenceNo: number
-  stepId: string
-  stepKind: "planning"
-  stepNumber: null
-  plan: string
-  usage: RunStepUsage
-  durationMs: number
-  hasDelta: boolean
+  entryKind: "user_input" | "planning" | "action" | "final_answer" | "system_notice"
+  displayRole: "user" | "assistant" | "system"
+  stepId: string | null
+  stepNumber: number | null
+  contentText: string | null
   createdAt: string
 }
 
-export type RunActionStep = {
-  id: string
-  runId: string
-  sessionId: string
-  sequenceNo: number
-  stepId: string
-  stepKind: "action"
-  stepNumber: number
-  codeAction: string | null
-  actionOutput: unknown | null
-  observations: string[]
-  error: string | null
-  usage: RunStepUsage
-  durationMs: number
-  hasDelta: boolean
-  createdAt: string
+export type UserInputEntry = TimelineEntryBase & {
+  entryKind: "user_input"
+  displayRole: "user"
 }
 
-export type RunHistoryStep = RunPlanningStep | RunActionStep
+export type PlanningEntry = TimelineEntryBase & {
+  entryKind: "planning"
+  displayRole: "assistant"
+}
 
-export type RunStepsResponse = {
-  steps: RunHistoryStep[]
+export type ActionEntry = TimelineEntryBase & {
+  entryKind: "action"
+  displayRole: "assistant"
+  contentJson: {
+    toolCalls: Array<{
+      id?: string | null
+      name: string
+      argumentsText: string
+    }>
+    observations: string[]
+    codeAction: string | null
+    actionOutput: unknown | null
+    error: string | null
+    usage: TimelineEntryUsage
+    durationMs: number
+  } | null
+}
+
+export type FinalAnswerEntry = TimelineEntryBase & {
+  entryKind: "final_answer"
+  displayRole: "assistant"
+}
+
+export type SystemNoticeEntry = TimelineEntryBase & {
+  entryKind: "system_notice"
+  displayRole: "system"
+  contentJson: {
+    noticeCode?: "failed" | "cancelled" | "info"
+  } | null
+}
+
+export type TimelineEntry =
+  | UserInputEntry
+  | PlanningEntry
+  | ActionEntry
+  | FinalAnswerEntry
+  | SystemNoticeEntry
+
+export type TimelineResponse = {
+  entries: TimelineEntry[]
+  pagination?: {
+    hasMore?: boolean
+    nextBeforeSequence?: number | null
+  }
 }
 
 class NSBotClientError extends Error {
@@ -118,8 +148,19 @@ export async function deleteProvider(providerId: string): Promise<void> {
   await sidecarFetch<void>(`/providers/${providerId}`, { method: "DELETE" })
 }
 
-export async function getRunSteps(runId: string): Promise<RunStepsResponse> {
-  return sidecarFetch<RunStepsResponse>(`/runs/${runId}/steps`)
+export async function getSessionTimeline(
+  sessionId: string,
+  options?: { limit?: number; beforeSequence?: number | null }
+): Promise<TimelineResponse> {
+  const params = new URLSearchParams()
+  if (options?.limit != null) {
+    params.set("limit", String(options.limit))
+  }
+  if (options?.beforeSequence != null) {
+    params.set("beforeSequence", String(options.beforeSequence))
+  }
+  const query = params.size > 0 ? `?${params.toString()}` : ""
+  return sidecarFetch<TimelineResponse>(`/sessions/${sessionId}/timeline${query}`)
 }
 
 async function sidecarFetch<T>(path: string, init?: RequestInit): Promise<T> {

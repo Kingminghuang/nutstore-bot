@@ -19,10 +19,11 @@ const project = {
       lastMessagePreview: "hello",
       activeConnectionId: "prov_openai",
       activeModelId: "gpt-5.4",
-      messages: [],
+      timelineEntries: [],
       hasMoreHistory: false,
       nextBeforeSequence: null,
       isLoadingHistory: false,
+      timelineHydrationStatus: "loaded",
     },
   ],
 }

@@ -120,16 +120,18 @@ class SessionRecord:
 
 
 @dataclass(frozen=True)
-class MessageRecord:
+class TimelineEntryRecord:
     id: str
     session_id: str
     run_id: str | None
-    role: str
-    content: str
+    entry_kind: str
+    display_role: str
     step_id: str | None
     sequence_no: int
+    step_number: int | None
+    content_text: str | None
+    content_json: str | None
     created_at: str
-    metadata_json: str | None
 
 
 @dataclass(frozen=True)
@@ -174,27 +176,6 @@ class RunRecord:
     started_at: str | None
     completed_at: str | None
     updated_at: str
-
-
-@dataclass(frozen=True)
-class RunStepRecord:
-    id: str
-    run_id: str
-    session_id: str
-    sequence_no: int
-    step_id: str
-    step_kind: str
-    step_number: int | None
-    plan_text: str | None
-    code_action: str | None
-    action_output_json: str | None
-    observations_json: str
-    error_text: str | None
-    usage_json: str
-    duration_ms: int
-    has_delta: bool
-    raw_model_output: str | None
-    created_at: str
 
 
 class WorkspacesRepository:
@@ -505,8 +486,9 @@ class SessionsRepository:
 
     def touch(self, session_id: str, **updates: object) -> SessionRecord:
         existing = self.get_by_id(session_id)
+        updated_at = updates.get("updated_at")
         payload = {
-            "updated_at": updates.get("updated_at", now_iso_timestamp()),
+            "updated_at": updated_at if updated_at is not None else now_iso_timestamp(),
             "last_message_at": updates.get("last_message_at", existing.last_message_at),
             "last_message_preview": updates.get(
                 "last_message_preview", existing.last_message_preview
@@ -561,7 +543,7 @@ class SessionsRepository:
         return self.get_by_id(session_id)
 
 
-class MessagesRepository:
+class TimelineEntriesRepository:
     def __init__(self, connection: sqlite3.Connection):
         self.connection = connection
 
@@ -569,53 +551,58 @@ class MessagesRepository:
         self,
         *,
         session_id: str,
-        role: str,
-        content: str,
-        message_id: str | None = None,
+        entry_kind: str,
+        display_role: str,
+        content_text: str | None,
+        content_json: str | None = None,
+        timeline_entry_id: str | None = None,
         run_id: str | None = None,
         step_id: str | None = None,
         sequence_no: int | None = None,
+        step_number: int | None = None,
         created_at: str | None = None,
-        metadata_json: str | None = None,
-    ) -> MessageRecord:
-        record_id = message_id or create_id("msg")
+    ) -> TimelineEntryRecord:
+        record_id = timeline_entry_id or create_id("tle")
         sequence = sequence_no or self._next_sequence_number(session_id)
         timestamp = created_at or now_iso_timestamp()
         self.connection.execute(
             """
-            INSERT INTO messages (
-                id, session_id, run_id, role, content, step_id, sequence_no, created_at, metadata_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO timeline_entries (
+                id, session_id, run_id, sequence_no, entry_kind, display_role,
+                step_id, step_number, content_text, content_json, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 record_id,
                 session_id,
                 run_id,
-                role,
-                content,
-                step_id,
                 sequence,
+                entry_kind,
+                display_role,
+                step_id,
+                step_number,
+                content_text,
+                content_json,
                 timestamp,
-                metadata_json,
             ),
         )
         self.connection.commit()
         return self.get_by_id(record_id)
 
-    def get_by_id(self, message_id: str) -> MessageRecord:
+    def get_by_id(self, timeline_entry_id: str) -> TimelineEntryRecord:
         row = self.connection.execute(
-            "SELECT * FROM messages WHERE id = ?", (message_id,)
+            "SELECT * FROM timeline_entries WHERE id = ?", (timeline_entry_id,)
         ).fetchone()
         if row is None:
-            raise ValueError(f"Message not found: {message_id}")
-        return _map_message(row)
+            raise ValueError(f"Timeline entry not found: {timeline_entry_id}")
+        return _map_timeline_entry(row)
 
-    def list_by_session_id(self, session_id: str) -> list[MessageRecord]:
+    def list_by_session_id(self, session_id: str) -> list[TimelineEntryRecord]:
         rows = self.connection.execute(
-            "SELECT * FROM messages WHERE session_id = ? ORDER BY sequence_no ASC, created_at ASC",
+            "SELECT * FROM timeline_entries WHERE session_id = ? ORDER BY sequence_no ASC, created_at ASC",
             (session_id,),
         ).fetchall()
-        return [_map_message(row) for row in rows]
+        return [_map_timeline_entry(row) for row in rows]
 
     def list_by_session_id_page(
         self,
@@ -623,7 +610,7 @@ class MessagesRepository:
         *,
         limit: int,
         before_sequence: int | None = None,
-    ) -> tuple[list[MessageRecord], bool, int | None]:
+    ) -> tuple[list[TimelineEntryRecord], bool, int | None]:
         where_sql = "session_id = ?"
         params: list[object] = [session_id]
         if before_sequence is not None:
@@ -634,7 +621,7 @@ class MessagesRepository:
         rows = self.connection.execute(
             f"""
             SELECT *
-            FROM messages
+            FROM timeline_entries
             WHERE {where_sql}
             ORDER BY sequence_no DESC, created_at DESC
             LIMIT ?
@@ -647,36 +634,48 @@ class MessagesRepository:
             rows = rows[:limit]
 
         rows.reverse()
-        records = [_map_message(row) for row in rows]
+        records = [_map_timeline_entry(row) for row in rows]
         next_before_sequence = records[0].sequence_no if has_more and records else None
         return records, has_more, next_before_sequence
 
-    def list_by_session_id_from_sequence(
-        self, session_id: str, from_sequence: int
-    ) -> list[MessageRecord]:
+    def list_by_run_id(self, run_id: str) -> list[TimelineEntryRecord]:
         rows = self.connection.execute(
             """
             SELECT *
-            FROM messages
+            FROM timeline_entries
+            WHERE run_id = ?
+            ORDER BY sequence_no ASC, created_at ASC
+            """,
+            (run_id,),
+        ).fetchall()
+        return [_map_timeline_entry(row) for row in rows]
+
+    def list_by_session_id_from_sequence(
+        self, session_id: str, from_sequence: int
+    ) -> list[TimelineEntryRecord]:
+        rows = self.connection.execute(
+            """
+            SELECT *
+            FROM timeline_entries
             WHERE session_id = ? AND sequence_no >= ?
             ORDER BY sequence_no ASC, created_at ASC
             """,
             (session_id, from_sequence),
         ).fetchall()
-        return [_map_message(row) for row in rows]
+        return [_map_timeline_entry(row) for row in rows]
 
     def delete_by_session_id_from_sequence(
         self, session_id: str, from_sequence: int
     ) -> None:
         self.connection.execute(
-            "DELETE FROM messages WHERE session_id = ? AND sequence_no >= ?",
+            "DELETE FROM timeline_entries WHERE session_id = ? AND sequence_no >= ?",
             (session_id, from_sequence),
         )
         self.connection.commit()
 
     def _next_sequence_number(self, session_id: str) -> int:
         row = self.connection.execute(
-            "SELECT COALESCE(MAX(sequence_no), 0) FROM messages WHERE session_id = ?",
+            "SELECT COALESCE(MAX(sequence_no), 0) FROM timeline_entries WHERE session_id = ?",
             (session_id,),
         ).fetchone()
         return int(row[0]) + 1 if row is not None else 1
@@ -940,7 +939,9 @@ class DraftAttachmentsRepository:
         ).fetchall()
         return [_map_draft_attachment(row) for row in rows]
 
-    def list_by_ids(self, draft_attachment_ids: list[str]) -> list[DraftAttachmentRecord]:
+    def list_by_ids(
+        self, draft_attachment_ids: list[str]
+    ) -> list[DraftAttachmentRecord]:
         if not draft_attachment_ids:
             return []
         placeholders = ",".join("?" for _ in draft_attachment_ids)
@@ -958,98 +959,15 @@ class DraftAttachmentsRepository:
         self.connection.commit()
 
 
-class RunStepsRepository:
-    def __init__(self, connection: sqlite3.Connection):
-        self.connection = connection
-
-    def create(
-        self,
-        *,
-        run_id: str,
-        session_id: str,
-        step_id: str,
-        step_kind: str,
-        sequence_no: int | None = None,
-        step_number: int | None = None,
-        plan_text: str | None = None,
-        code_action: str | None = None,
-        action_output_json: str | None = None,
-        observations_json: str = "[]",
-        error_text: str | None = None,
-        usage_json: str = '{"inputTokens":0,"outputTokens":0,"reasoningTokens":0}',
-        duration_ms: int = 0,
-        has_delta: bool = False,
-        raw_model_output: str | None = None,
-        created_at: str | None = None,
-        run_step_id: str | None = None,
-    ) -> RunStepRecord:
-        record_id = run_step_id or create_id("rstep")
-        sequence = sequence_no or self._next_sequence_number(run_id)
-        timestamp = created_at or now_iso_timestamp()
-        self.connection.execute(
-            """
-            INSERT INTO run_steps (
-                id, run_id, session_id, sequence_no, step_id, step_kind, step_number,
-                plan_text, code_action, action_output_json, observations_json, error_text,
-                usage_json, duration_ms, has_delta, raw_model_output, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                record_id,
-                run_id,
-                session_id,
-                sequence,
-                step_id,
-                step_kind,
-                step_number,
-                plan_text,
-                code_action,
-                action_output_json,
-                observations_json,
-                error_text,
-                usage_json,
-                duration_ms,
-                1 if has_delta else 0,
-                raw_model_output,
-                timestamp,
-            ),
-        )
-        self.connection.commit()
-        return self.get_by_id(record_id)
-
-    def get_by_id(self, run_step_id: str) -> RunStepRecord:
-        row = self.connection.execute(
-            "SELECT * FROM run_steps WHERE id = ?", (run_step_id,)
-        ).fetchone()
-        if row is None:
-            raise ValueError(f"Run step not found: {run_step_id}")
-        return _map_run_step(row)
-
-    def list_by_run_id(self, run_id: str) -> list[RunStepRecord]:
-        rows = self.connection.execute(
-            "SELECT * FROM run_steps WHERE run_id = ? ORDER BY sequence_no ASC, created_at ASC",
-            (run_id,),
-        ).fetchall()
-        return [_map_run_step(row) for row in rows]
-
-    def _next_sequence_number(self, run_id: str) -> int:
-        row = self.connection.execute(
-            "SELECT COALESCE(MAX(sequence_no), 0) FROM run_steps WHERE run_id = ?",
-            (run_id,),
-        ).fetchone()
-        return int(row[0]) + 1 if row is not None else 1
-
-
 @dataclass(frozen=True)
 class Repositories:
     workspaces: WorkspacesRepository
     providers: ProviderConnectionsRepository
     sessions: SessionsRepository
-    messages: MessagesRepository
+    timeline_entries: TimelineEntriesRepository
     attachments: AttachmentsRepository
     draft_attachments: DraftAttachmentsRepository
     runs: RunsRepository
-    run_steps: RunStepsRepository
 
 
 def create_repositories(connection: sqlite3.Connection) -> Repositories:
@@ -1057,11 +975,10 @@ def create_repositories(connection: sqlite3.Connection) -> Repositories:
         workspaces=WorkspacesRepository(connection),
         providers=ProviderConnectionsRepository(connection),
         sessions=SessionsRepository(connection),
-        messages=MessagesRepository(connection),
+        timeline_entries=TimelineEntriesRepository(connection),
         attachments=AttachmentsRepository(connection),
         draft_attachments=DraftAttachmentsRepository(connection),
         runs=RunsRepository(connection),
-        run_steps=RunStepsRepository(connection),
     )
 
 
@@ -1144,17 +1061,19 @@ def _map_session(row: sqlite3.Row) -> SessionRecord:
     )
 
 
-def _map_message(row: sqlite3.Row) -> MessageRecord:
-    return MessageRecord(
+def _map_timeline_entry(row: sqlite3.Row) -> TimelineEntryRecord:
+    return TimelineEntryRecord(
         id=str(row["id"]),
         session_id=str(row["session_id"]),
         run_id=_nullable_str(row["run_id"]),
-        role=str(row["role"]),
-        content=str(row["content"]),
+        entry_kind=str(row["entry_kind"]),
+        display_role=str(row["display_role"]),
         step_id=_nullable_str(row["step_id"]),
         sequence_no=int(row["sequence_no"]),
+        step_number=None if row["step_number"] is None else int(row["step_number"]),
+        content_text=_nullable_str(row["content_text"]),
+        content_json=_nullable_str(row["content_json"]),
         created_at=str(row["created_at"]),
-        metadata_json=_nullable_str(row["metadata_json"]),
     )
 
 
@@ -1202,28 +1121,6 @@ def _map_run(row: sqlite3.Row) -> RunRecord:
         started_at=_nullable_str(row["started_at"]),
         completed_at=_nullable_str(row["completed_at"]),
         updated_at=str(row["updated_at"]),
-    )
-
-
-def _map_run_step(row: sqlite3.Row) -> RunStepRecord:
-    return RunStepRecord(
-        id=str(row["id"]),
-        run_id=str(row["run_id"]),
-        session_id=str(row["session_id"]),
-        sequence_no=int(row["sequence_no"]),
-        step_id=str(row["step_id"]),
-        step_kind=str(row["step_kind"]),
-        step_number=None if row["step_number"] is None else int(row["step_number"]),
-        plan_text=_nullable_str(row["plan_text"]),
-        code_action=_nullable_str(row["code_action"]),
-        action_output_json=_nullable_str(row["action_output_json"]),
-        observations_json=str(row["observations_json"]),
-        error_text=_nullable_str(row["error_text"]),
-        usage_json=str(row["usage_json"]),
-        duration_ms=int(row["duration_ms"]),
-        has_delta=bool(row["has_delta"]),
-        raw_model_output=_nullable_str(row["raw_model_output"]),
-        created_at=str(row["created_at"]),
     )
 
 
