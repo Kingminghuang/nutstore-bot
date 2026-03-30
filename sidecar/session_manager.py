@@ -220,6 +220,21 @@ class SessionManager:
 
         self.cache[session.key] = session
 
+    def delete(self, key: str) -> None:
+        path = self.session_path(key)
+        self.invalidate(key)
+
+        if not path.exists():
+            return
+        if not path.is_file():
+            LOGGER.warning(
+                "Session path is not a file; skipping delete",
+                extra={"session_key": key, "path": str(path)},
+            )
+            return
+
+        path.unlink()
+
     def invalidate(self, key: str) -> None:
         self.cache.pop(key, None)
 

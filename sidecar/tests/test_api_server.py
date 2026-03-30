@@ -62,6 +62,7 @@ from python_runtime.runtime_service import (
     RuntimeProcessError,
     RuntimeWorkerConfig,
 )
+from python_runtime.session_manager import SessionManager
 
 
 class ApiServerTests(unittest.TestCase):
@@ -2399,6 +2400,14 @@ class ApiServerTests(unittest.TestCase):
         workspace = self._create_workspace("workspace-delete-session")
         provider = self._create_provider()
         session = self._create_session(workspace["id"], str(provider["id"]))
+        runtime_sessions = SessionManager(str(self.temp_dir))
+        runtime_session = runtime_sessions.get_or_create(str(session["id"]))
+        runtime_session.messages.append(
+            {"role": "user", "content": "Delete this session"}
+        )
+        runtime_sessions.save(runtime_session)
+        runtime_session_path = runtime_sessions.session_path(str(session["id"]))
+        self.assertTrue(runtime_session_path.exists())
 
         self._append_timeline_entry(
             session_id=str(session["id"]),
@@ -2437,6 +2446,7 @@ class ApiServerTests(unittest.TestCase):
             headers={"Authorization": "Bearer test-token"},
         )
         self.assertEqual(delete_response.status_code, 204)
+        self.assertFalse(runtime_session_path.exists())
 
         sessions_response = self.client.get(
             f"/workspaces/{workspace['id']}/sessions",

@@ -17,6 +17,7 @@ from repositories import (
     WorkspacesRepository,
     create_id,
 )
+from session_manager import SessionManager
 from session_titles import (
     build_first_user_message_fallback_title,
     build_heuristic_title,
@@ -149,6 +150,16 @@ class SessionService:
 
     def delete_session(self, session_id: str) -> None:
         session = self._get_session_or_404(session_id)
+        try:
+            runtime_sessions = SessionManager(
+                str(self.attachment_store.attachments_dir.parent)
+            )
+            runtime_sessions.delete(session.session_key)
+        except Exception:
+            LOGGER.exception(
+                "Failed to remove persisted session file",
+                extra={"session_id": session.id, "session_key": session.session_key},
+            )
         self.sessions.delete_by_id(session.id)
 
     def update_session(
