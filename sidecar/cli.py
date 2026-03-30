@@ -3,6 +3,9 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 import json
 import os
 from pathlib import Path
+import platform
+import shutil
+import subprocess
 import sys
 import time
 from urllib.parse import parse_qs, urlencode, urlparse
@@ -20,7 +23,7 @@ from secret_store import LocalSecretStore
 from storage import connect_database
 
 
-COMMANDS = {"run", "providers", "models", "auth", "help"}
+COMMANDS = {"run", "providers", "models", "auth", "init", "help"}
 NUTSTORE_CUSTOM_SLUG = "nutstore"
 NUTSTORE_DISPLAY_NAME = "Nut Store"
 AUTH_PENDING_FILE = "auth-nutstore-pending.json"
@@ -270,6 +273,141 @@ def _upsert_nutstore_provider(
     return provider_service.update_provider(existing.connection.id, payload)
 
 
+def _runtime_paths() -> dict[str, Path]:
+    sidecar_root = Path(__file__).resolve().parent
+    repo_root = sidecar_root.parent
+    return {
+        "repo_root": repo_root,
+        "sidecar_root": sidecar_root,
+        "templates_dir": repo_root / "templates",
+        "search_tools_cache_root": sidecar_root / "vendor" / "search-tools",
+        "prepare_search_tools_script": sidecar_root
+        / "scripts"
+        / "prepare_search_tools.py",
+    }
+
+
+def _resolve_target_triple() -> str:
+    machine = platform.machine().lower()
+    if sys.platform == "darwin":
+        if machine in {"arm64", "aarch64"}:
+            return "aarch64-apple-darwin"
+        if machine in {"x86_64", "amd64"}:
+            return "x86_64-apple-darwin"
+    if sys.platform.startswith("win") and machine in {"x86_64", "amd64"}:
+        return "x86_64-pc-windows-msvc"
+    raise ValueError(
+        f"Unsupported platform/arch for vendored search tools: {sys.platform}/{machine}"
+    )
+
+
+def _resolve_binary_name(tool_name: str) -> str:
+    return f"{tool_name}.exe" if sys.platform.startswith("win") else tool_name
+
+
+def _run_prepare_search_tools(
+    *,
+    sidecar_root: Path,
+    target: str,
+    prepare_search_tools_script: Path,
+) -> None:
+    if not prepare_search_tools_script.exists():
+        raise RuntimeError(f"Missing prepare script: {prepare_search_tools_script}")
+    result = subprocess.run(
+        [
+            "uv",
+            "run",
+            "python",
+            str(prepare_search_tools_script.relative_to(sidecar_root)),
+            "--target",
+            target,
+        ],
+        cwd=str(sidecar_root),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode == 0:
+        return
+    stderr = (result.stderr or "").strip()
+    stdout = (result.stdout or "").strip()
+    detail = stderr or stdout or "Failed to prepare search tools"
+    raise RuntimeError(detail)
+
+
+def _handle_init_command(args: argparse.Namespace) -> int:
+    ns_bot_home = Path(args.ns_bot_home).expanduser().resolve()
+    ns_bot_home_existed = ns_bot_home.exists()
+    ns_bot_home.mkdir(parents=True, exist_ok=True)
+    bin_dir = ns_bot_home / "bin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+
+    runtime_paths = _runtime_paths()
+    templates_source = runtime_paths["templates_dir"]
+    templates_target = ns_bot_home / "templates"
+    templates_copied = False
+    if templates_source.exists() and not templates_target.exists():
+        shutil.copytree(templates_source, templates_target)
+        templates_copied = True
+
+    target = _resolve_target_triple()
+    fd_binary_name = _resolve_binary_name("fd")
+    rg_binary_name = _resolve_binary_name("rg")
+    fd_target = bin_dir / fd_binary_name
+    rg_target = bin_dir / rg_binary_name
+    fd_cache = (
+        runtime_paths["search_tools_cache_root"] / target / "fd" / fd_binary_name
+    )
+    rg_cache = (
+        runtime_paths["search_tools_cache_root"] / target / "rg" / rg_binary_name
+    )
+
+    search_tools_downloaded = False
+    search_tools_copied = False
+    need_fd = not fd_target.exists()
+    need_rg = not rg_target.exists()
+    if need_fd or need_rg:
+        if not fd_cache.exists() or not rg_cache.exists():
+            _run_prepare_search_tools(
+                sidecar_root=runtime_paths["sidecar_root"],
+                target=target,
+                prepare_search_tools_script=runtime_paths["prepare_search_tools_script"],
+            )
+            search_tools_downloaded = True
+
+        if need_fd:
+            if not fd_cache.exists():
+                raise RuntimeError(f"Missing vendored fd binary: {fd_cache}")
+            shutil.copy2(fd_cache, fd_target)
+            search_tools_copied = True
+        if need_rg:
+            if not rg_cache.exists():
+                raise RuntimeError(f"Missing vendored rg binary: {rg_cache}")
+            shutil.copy2(rg_cache, rg_target)
+            search_tools_copied = True
+
+    if not sys.platform.startswith("win"):
+        os.chmod(fd_target, 0o755)
+        os.chmod(rg_target, 0o755)
+
+    _print_json(
+        {
+            "ok": True,
+            "nsBotHome": str(ns_bot_home),
+            "templatesPath": str(templates_target),
+            "fdExecutable": str(fd_target),
+            "rgExecutable": str(rg_target),
+            "prepared": {
+                "nsBotHomeCreated": not ns_bot_home_existed,
+                "templatesCopied": templates_copied,
+                "searchToolsCopied": search_tools_copied,
+                "searchToolsDownloaded": search_tools_downloaded,
+            },
+        }
+    )
+    return 0
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="NSBot CLI for provider/model management and runtime execution"
@@ -400,6 +538,8 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Optional override for preferred model id",
     )
 
+    subparsers.add_parser("init", help="Initialize NS_BOT_HOME resources")
+
     run = subparsers.add_parser("run", help="Execute one task")
     run.add_argument("user_input", type=str, help="Task prompt")
     run.add_argument(
@@ -471,13 +611,13 @@ def _build_parser() -> argparse.ArgumentParser:
     run.add_argument(
         "--fd-executable",
         type=str,
-        default="",
+        default=os.getenv("NSBOT_FD_EXECUTABLE", "").strip(),
         help="Path to fd executable",
     )
     run.add_argument(
         "--rg-executable",
         type=str,
-        default="",
+        default=os.getenv("NSBOT_RG_EXECUTABLE", "").strip(),
         help="Path to rg executable",
     )
     run.add_argument(
@@ -1207,6 +1347,8 @@ def _handle_run_command(args: argparse.Namespace) -> int:
                     "hasApiKey": bool(config.api_key),
                     "requestTimeoutMs": config.request_timeout_ms,
                     "maxSteps": config.max_steps,
+                    "fdExecutable": config.fd_executable,
+                    "rgExecutable": config.rg_executable,
                 },
                 "workspacePath": args.workspace_path,
                 "sessionKey": args.session_key or None,
@@ -1267,6 +1409,8 @@ def main(argv: list[str] | None = None) -> int:
             return _handle_models_command(args)
         if args.command == "auth":
             return _handle_auth_command(args)
+        if args.command == "init":
+            return _handle_init_command(args)
         if args.command == "run":
             return _handle_run_command(args)
         if args.command == "help":

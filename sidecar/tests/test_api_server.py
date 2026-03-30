@@ -1559,6 +1559,46 @@ class ApiServerTests(unittest.TestCase):
             "Please help me integrate frontend and sidecar local",
         )
 
+    def test_post_run_passes_configured_fd_and_rg_to_runtime(self) -> None:
+        workspace = self._create_workspace("workspace-search-tools")
+        provider = self._create_provider()
+        session = self._create_session(workspace["id"], str(provider["id"]))
+        self._set_sync_run_launcher()
+        captured: dict[str, str | None] = {}
+
+        def fake_runtime_executor(config, run_id, user_input, auth_context, metadata):
+            del run_id, user_input, auth_context, metadata
+            captured["fd"] = config.fd_executable
+            captured["rg"] = config.rg_executable
+            return {
+                "deltas": [],
+                "timeline_entries": [],
+                "final_answer": "ok",
+            }
+
+        self.app.state.run_service = replace(
+            self.app.state.run_service,
+            runtime_executor=fake_runtime_executor,
+            fd_executable="/tmp/nsbot/bin/fd",
+            rg_executable="/tmp/nsbot/bin/rg",
+        )
+
+        response = self.client.post(
+            "/runs",
+            headers={"Authorization": "Bearer test-token"},
+            json={
+                "sessionId": session["id"],
+                "workspaceId": workspace["id"],
+                "connectionId": provider["id"],
+                "modelId": "gpt-5.4",
+                "input": "search tooling should work",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(captured["fd"], "/tmp/nsbot/bin/fd")
+        self.assertEqual(captured["rg"], "/tmp/nsbot/bin/rg")
+
     def test_update_and_delete_provider(self) -> None:
         created = self.client.post(
             "/providers",

@@ -89,6 +89,8 @@ class RunService:
     ns_bot_home: str | None = None
     runtime_executor: RuntimeExecutor | None = None
     run_launcher: RunLauncher | None = None
+    fd_executable: str | None = None
+    rg_executable: str | None = None
 
     def create_run(
         self, payload: dict[str, Any], background_tasks: BackgroundTasks | None = None
@@ -309,6 +311,8 @@ class RunService:
                 api_key=api_key,
                 model=model_id,
                 direct_reasoning_effort=resolved_reasoning_effort,
+                fd_executable=self.fd_executable,
+                rg_executable=self.rg_executable,
             )
             metadata = RunMetadata(
                 workspace_path=workspace.real_path,

@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import io
 import json
+import subprocess
 import shutil
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
+from unittest import mock
+from pathlib import Path
 
 from cli import main as cli_main
 from provider_catalog import list_providers
@@ -230,6 +233,198 @@ class CliProviderModelTests(unittest.TestCase):
         self.assertEqual(payload["resolved"]["runtimeProvider"], "custom")
         self.assertEqual(payload["resolved"]["modelId"], "demo-direct-model")
         self.assertEqual(payload["runtime"]["hasApiKey"], True)
+
+    def test_run_diagnose_uses_fd_rg_from_env_when_flags_absent(self) -> None:
+        with mock.patch.dict(
+            "os.environ",
+            {
+                "NSBOT_FD_EXECUTABLE": "/opt/tools/fd",
+                "NSBOT_RG_EXECUTABLE": "/opt/tools/rg",
+            },
+            clear=False,
+        ):
+            code, stdout, _stderr = _run_cli(
+                [
+                    "--ns-bot-home",
+                    self.temp_dir,
+                    "run",
+                    "diagnose direct",
+                    "--diagnose",
+                    "--provider",
+                    "custom",
+                    "--base-url",
+                    "https://llm.example.com/v1",
+                    "--api-key",
+                    "sk-direct",
+                    "--model",
+                    "demo-direct-model",
+                ]
+            )
+
+        self.assertEqual(code, 0)
+        payload = json.loads(stdout)
+        self.assertEqual(payload["runtime"]["fdExecutable"], "/opt/tools/fd")
+        self.assertEqual(payload["runtime"]["rgExecutable"], "/opt/tools/rg")
+
+    def test_init_creates_ns_bot_home_and_copies_resources_from_cache(self) -> None:
+        runtime_root = Path(tempfile.mkdtemp(prefix="sidecar-runtime-"))
+        try:
+            templates_dir = runtime_root / "templates"
+            templates_dir.mkdir(parents=True, exist_ok=True)
+            (templates_dir / "TOOLS.md").write_text("tool template", encoding="utf-8")
+
+            cache_root = runtime_root / "vendor" / "search-tools"
+            target = "aarch64-apple-darwin"
+            fd_cache = cache_root / target / "fd" / "fd"
+            rg_cache = cache_root / target / "rg" / "rg"
+            fd_cache.parent.mkdir(parents=True, exist_ok=True)
+            rg_cache.parent.mkdir(parents=True, exist_ok=True)
+            fd_cache.write_text("fake-fd", encoding="utf-8")
+            rg_cache.write_text("fake-rg", encoding="utf-8")
+
+            ns_home = Path(self.temp_dir) / "bootstrap"
+            with mock.patch("cli._runtime_paths", return_value={
+                "repo_root": runtime_root,
+                "sidecar_root": runtime_root,
+                "templates_dir": templates_dir,
+                "search_tools_cache_root": cache_root,
+                "prepare_search_tools_script": runtime_root / "scripts" / "prepare_search_tools.py",
+            }), mock.patch("cli._resolve_target_triple", return_value=target):
+                code, stdout, _stderr = _run_cli(
+                    ["--ns-bot-home", str(ns_home), "init"]
+                )
+
+            self.assertEqual(code, 0)
+            payload = json.loads(stdout)
+            self.assertEqual(payload["ok"], True)
+            self.assertTrue((ns_home / "bin").exists())
+            self.assertTrue((ns_home / "templates" / "TOOLS.md").exists())
+            self.assertTrue((ns_home / "bin" / "fd").exists())
+            self.assertTrue((ns_home / "bin" / "rg").exists())
+            self.assertEqual(payload["prepared"]["templatesCopied"], True)
+            self.assertEqual(payload["prepared"]["searchToolsCopied"], True)
+            self.assertEqual(payload["prepared"]["searchToolsDownloaded"], False)
+        finally:
+            shutil.rmtree(runtime_root, ignore_errors=True)
+
+    def test_init_skips_templates_copy_when_already_present(self) -> None:
+        runtime_root = Path(tempfile.mkdtemp(prefix="sidecar-runtime-"))
+        try:
+            templates_dir = runtime_root / "templates"
+            templates_dir.mkdir(parents=True, exist_ok=True)
+            (templates_dir / "TOOLS.md").write_text("tool template", encoding="utf-8")
+
+            cache_root = runtime_root / "vendor" / "search-tools"
+            target = "aarch64-apple-darwin"
+            for tool in ("fd", "rg"):
+                tool_path = cache_root / target / tool / tool
+                tool_path.parent.mkdir(parents=True, exist_ok=True)
+                tool_path.write_text(f"fake-{tool}", encoding="utf-8")
+
+            ns_home = Path(self.temp_dir) / "bootstrap2"
+            (ns_home / "templates").mkdir(parents=True, exist_ok=True)
+            (ns_home / "templates" / "TOOLS.md").write_text("existing", encoding="utf-8")
+
+            with mock.patch("cli._runtime_paths", return_value={
+                "repo_root": runtime_root,
+                "sidecar_root": runtime_root,
+                "templates_dir": templates_dir,
+                "search_tools_cache_root": cache_root,
+                "prepare_search_tools_script": runtime_root / "scripts" / "prepare_search_tools.py",
+            }), mock.patch("cli._resolve_target_triple", return_value=target):
+                code, stdout, _stderr = _run_cli(
+                    ["--ns-bot-home", str(ns_home), "init"]
+                )
+
+            self.assertEqual(code, 0)
+            payload = json.loads(stdout)
+            self.assertEqual(payload["prepared"]["templatesCopied"], False)
+            self.assertEqual(
+                (ns_home / "templates" / "TOOLS.md").read_text(encoding="utf-8"),
+                "existing",
+            )
+        finally:
+            shutil.rmtree(runtime_root, ignore_errors=True)
+
+    def test_init_downloads_search_tools_when_cache_missing(self) -> None:
+        runtime_root = Path(tempfile.mkdtemp(prefix="sidecar-runtime-"))
+        try:
+            templates_dir = runtime_root / "templates"
+            templates_dir.mkdir(parents=True, exist_ok=True)
+            (templates_dir / "TOOLS.md").write_text("tool template", encoding="utf-8")
+
+            cache_root = runtime_root / "vendor" / "search-tools"
+            target = "aarch64-apple-darwin"
+            script_path = runtime_root / "scripts" / "prepare_search_tools.py"
+            script_path.parent.mkdir(parents=True, exist_ok=True)
+            script_path.write_text("# placeholder", encoding="utf-8")
+            ns_home = Path(self.temp_dir) / "bootstrap3"
+
+            def fake_run(*_args, **_kwargs):
+                fd_cache = cache_root / target / "fd" / "fd"
+                rg_cache = cache_root / target / "rg" / "rg"
+                fd_cache.parent.mkdir(parents=True, exist_ok=True)
+                rg_cache.parent.mkdir(parents=True, exist_ok=True)
+                fd_cache.write_text("fake-fd", encoding="utf-8")
+                rg_cache.write_text("fake-rg", encoding="utf-8")
+                return subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+
+            with mock.patch("cli._runtime_paths", return_value={
+                "repo_root": runtime_root,
+                "sidecar_root": runtime_root,
+                "templates_dir": templates_dir,
+                "search_tools_cache_root": cache_root,
+                "prepare_search_tools_script": script_path,
+            }), mock.patch("cli._resolve_target_triple", return_value=target), mock.patch("cli.subprocess.run", side_effect=fake_run):
+                code, stdout, _stderr = _run_cli(
+                    ["--ns-bot-home", str(ns_home), "init"]
+                )
+
+            self.assertEqual(code, 0)
+            payload = json.loads(stdout)
+            self.assertEqual(payload["prepared"]["searchToolsDownloaded"], True)
+            self.assertTrue((ns_home / "bin" / "fd").exists())
+            self.assertTrue((ns_home / "bin" / "rg").exists())
+        finally:
+            shutil.rmtree(runtime_root, ignore_errors=True)
+
+    def test_init_returns_error_when_prepare_search_tools_fails(self) -> None:
+        runtime_root = Path(tempfile.mkdtemp(prefix="sidecar-runtime-"))
+        try:
+            templates_dir = runtime_root / "templates"
+            templates_dir.mkdir(parents=True, exist_ok=True)
+            (templates_dir / "TOOLS.md").write_text("tool template", encoding="utf-8")
+
+            cache_root = runtime_root / "vendor" / "search-tools"
+            target = "aarch64-apple-darwin"
+            script_path = runtime_root / "scripts" / "prepare_search_tools.py"
+            script_path.parent.mkdir(parents=True, exist_ok=True)
+            script_path.write_text("# placeholder", encoding="utf-8")
+            ns_home = Path(self.temp_dir) / "bootstrap4"
+
+            with mock.patch("cli._runtime_paths", return_value={
+                "repo_root": runtime_root,
+                "sidecar_root": runtime_root,
+                "templates_dir": templates_dir,
+                "search_tools_cache_root": cache_root,
+                "prepare_search_tools_script": script_path,
+            }), mock.patch("cli._resolve_target_triple", return_value=target), mock.patch(
+                "cli.subprocess.run",
+                return_value=subprocess.CompletedProcess(
+                    args=[],
+                    returncode=1,
+                    stdout="",
+                    stderr="download failed",
+                ),
+            ):
+                code, _stdout, stderr = _run_cli(
+                    ["--ns-bot-home", str(ns_home), "init"]
+                )
+
+            self.assertEqual(code, 1)
+            self.assertIn("download failed", stderr)
+        finally:
+            shutil.rmtree(runtime_root, ignore_errors=True)
 
 
 if __name__ == "__main__":

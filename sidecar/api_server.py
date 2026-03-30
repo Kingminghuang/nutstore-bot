@@ -52,6 +52,8 @@ class ApiServerConfig:
     port: int = DEFAULT_PORT
     token: str | None = None
     ns_bot_home: str | None = None
+    fd_executable: str | None = None
+    rg_executable: str | None = None
     version: str = "0.1.0"
 
 
@@ -96,6 +98,8 @@ def create_app(config: ApiServerConfig | None = None) -> FastAPI:
         event_store=RunEventStore(),
         cancellation_registry=RunCancellationRegistry(),
         ns_bot_home=cfg.ns_bot_home,
+        fd_executable=cfg.fd_executable,
+        rg_executable=cfg.rg_executable,
     )
 
     @asynccontextmanager
@@ -437,6 +441,8 @@ def main() -> int:
         port=int(os.environ.get("NS_BOT_PORT", str(DEFAULT_PORT))),
         token=os.environ.get("NS_BOT_TOKEN") or generate_local_auth_token(),
         ns_bot_home=os.environ.get("NS_BOT_HOME"),
+        fd_executable=os.environ.get("NSBOT_FD_EXECUTABLE") or None,
+        rg_executable=os.environ.get("NSBOT_RG_EXECUTABLE") or None,
     )
 
     publish_service_discovery(config, config.token)
