@@ -172,10 +172,13 @@ export default function Home() {
   const [providerError, setProviderError] = useState<string | null>(null)
   const [workspaceError, setWorkspaceError] = useState<string | null>(null)
   const [runError, setRunError] = useState<string | null>(null)
+  const [sessionRunStatusById, setSessionRunStatusById] = useState<Record<string, boolean>>({})
+  const [sessionActiveRunIdById, setSessionActiveRunIdById] = useState<Record<string, string | null>>({})
   const [attachmentsBySession, setAttachmentsBySession] = useState<Record<string, ComposerAttachment[]>>({})
   const [draftAttachmentsByWorkspace, setDraftAttachmentsByWorkspace] = useState<Record<string, DraftAttachment[]>>({})
   const [uploadingAttachmentTargetId, setUploadingAttachmentTargetId] = useState<string | null>(null)
   const eventSourceRef = useRef<EventSource | null>(null)
+  const sessionActiveRunIdByIdRef = useRef<Record<string, string | null>>({})
   const lastHydrationAttemptSessionIdRef = useRef<string | null>(null)
   const isDragging = useRef(false)
 
@@ -284,6 +287,10 @@ export default function Home() {
   }, [])
 
   useEffect(() => {
+    sessionActiveRunIdByIdRef.current = sessionActiveRunIdById
+  }, [sessionActiveRunIdById])
+
+  useEffect(() => {
     setSelectedReasoningEffort((current) =>
       normalizeSelectedReasoningEffort(selectedModel, modelOptionGroups, current)
     )
@@ -297,6 +304,8 @@ export default function Home() {
           null,
     [activeSessionId, activeWorkspaceId, sessionsByWorkspace]
   )
+  const activeSessionRunId = activeSessionId ? (sessionActiveRunIdById[activeSessionId] ?? null) : null
+  const isActiveSessionRunning = activeSessionId ? Boolean(sessionRunStatusById[activeSessionId]) : false
 
   const isDraftSessionActive =
     activeWorkspaceId != null &&
@@ -513,11 +522,26 @@ export default function Home() {
     const source = new EventSource(`/api/sidecar/proxy?path=${encodeURIComponent(`/runs/${runId}/events`)}`)
     eventSourceRef.current = source
 
+    const markRunInactiveIfCurrent = (targetRunId: string) => {
+      if (sessionActiveRunIdByIdRef.current[sessionId] !== targetRunId) {
+        return
+      }
+      setSessionRunStatusById((prev) => ({
+        ...prev,
+        [sessionId]: false,
+      }))
+      setSessionActiveRunIdById((prev) => ({
+        ...prev,
+        [sessionId]: null,
+      }))
+    }
+
     const closeSource = () => {
       source.close()
       if (eventSourceRef.current === source) {
         eventSourceRef.current = null
       }
+      markRunInactiveIfCurrent(runId)
     }
 
     const updateActiveSession = (updateSession: (session: Session) => Session) => {
@@ -550,6 +574,22 @@ export default function Home() {
     const applyTerminalEvent = (event: Extract<RunStreamEvent, { type: "run.completed" | "run.failed" }>) => {
       refreshSessionSummary()
       setRunError(event.type === "run.failed" ? event.errorMessage : null)
+      markRunInactiveIfCurrent(event.runId)
+    }
+
+    const applyStatusEvent = (event: Extract<RunStreamEvent, { type: "run.status" }>) => {
+      if (event.status === "queued" || event.status === "running") {
+        setSessionRunStatusById((prev) => ({
+          ...prev,
+          [sessionId]: true,
+        }))
+        setSessionActiveRunIdById((prev) => ({
+          ...prev,
+          [sessionId]: event.runId,
+        }))
+        return
+      }
+      markRunInactiveIfCurrent(event.runId)
     }
 
     const applyEvent = (event: RunStreamEvent) => {
@@ -560,11 +600,16 @@ export default function Home() {
         applyTimelineEntryEvent(event)
         return
       }
+      if (event.type === "run.status") {
+        applyStatusEvent(event)
+        return
+      }
       if (event.type === "run.completed" || event.type === "run.failed") {
         applyTerminalEvent(event)
         return
       }
       if (event.type === "run.replay-ready") {
+        markRunInactiveIfCurrent(event.runId)
         closeSource()
       }
     }
@@ -584,7 +629,7 @@ export default function Home() {
       }
     }
 
-    ;["run.timeline-entry", "run.completed", "run.failed", "run.replay-ready"].forEach((eventName) => {
+    ;["run.status", "run.timeline-entry", "run.completed", "run.failed", "run.replay-ready"].forEach((eventName) => {
       source.addEventListener(eventName, handleMessageEvent as EventListener)
     })
 
@@ -662,6 +707,17 @@ export default function Home() {
           setActiveDraftWorkspaceId(null)
         }
         setActiveSessionId(runResponse.session.id)
+        setSessionRunStatusById((prev) => ({
+          ...prev,
+          [runResponse.session.id]: runResponse.run.status === "queued" || runResponse.run.status === "running",
+        }))
+        setSessionActiveRunIdById((prev) => ({
+          ...prev,
+          [runResponse.session.id]:
+            runResponse.run.status === "queued" || runResponse.run.status === "running"
+              ? runResponse.run.id
+              : null,
+        }))
 
         if (runResponse.run.status === "queued" || runResponse.run.status === "running") {
           startRunEventStream(runResponse.run.id, activeWorkspaceId, runResponse.session.id)
@@ -861,6 +917,14 @@ export default function Home() {
         }))
 
         if (runResponse.run.status === "queued" || runResponse.run.status === "running") {
+          setSessionRunStatusById((prev) => ({
+            ...prev,
+            [activeSessionId]: true,
+          }))
+          setSessionActiveRunIdById((prev) => ({
+            ...prev,
+            [activeSessionId]: runResponse.run.id,
+          }))
           startRunEventStream(runResponse.run.id, activeWorkspaceId, activeSessionId)
         }
       } catch (error) {
@@ -1070,6 +1134,8 @@ export default function Home() {
         onRemoveAttachment={handleRemoveAttachment}
         onEditTimelineEntryAndRerun={handleEditTimelineEntryAndRerun}
         onOpenSettings={() => setSettingsOpen(true)}
+        isSessionRunning={isActiveSessionRunning}
+        activeRunId={activeSessionRunId}
       />
       <SettingsModal
         isOpen={settingsOpen}

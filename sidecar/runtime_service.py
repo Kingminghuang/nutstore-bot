@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import logging
 import platform
 from dataclasses import dataclass
 from pathlib import Path
@@ -21,6 +22,7 @@ from local_code_executor import LocalCodeExecutor
 from memory import MemoryConsolidator, MemoryStore
 from native_code_agent import NativeCodeAgent
 from agent_memory_projection import (
+    extract_action_thought,
     project_agent_memory_to_session_messages,
     project_agent_memory_to_timeline_entries,
     project_final_answer_to_session_message,
@@ -31,6 +33,7 @@ from tools import build_workspace_tools, path_identity, resolve_path_arg
 
 
 WORKSPACE_BASED_INSTRUCTION = "DO NOT use any web search tool, you can only use the tools provided. Complete task based on the files on your workspace"
+LOGGER = logging.getLogger(__name__)
 
 
 class RuntimeProcessError(RuntimeError):
@@ -285,6 +288,29 @@ class CodeAgentRuntimeService:
                 if isinstance(event, ActionStep):
                     step_id = allocate_step_id(current_step_id)
                     usage = self._usage_dict(event.token_usage)
+                    stream_step_text = stream_buffer_by_step.get(step_id)
+                    extracted_thought = extract_action_thought(event.model_output)
+                    thought_source = "model_output"
+                    if extracted_thought is None and stream_step_text:
+                        extracted_thought = extract_action_thought(stream_step_text)
+                        thought_source = (
+                            "run.delta" if extracted_thought is not None else "none"
+                        )
+                    elif extracted_thought is None:
+                        thought_source = "none"
+
+                    LOGGER.info(
+                        "ActionStep thought extraction: run_id=%s step_id=%s source=%s has_thought=%s preview=%s",
+                        run_id,
+                        step_id,
+                        thought_source,
+                        extracted_thought is not None,
+                        (
+                            (extracted_thought or "")[:120]
+                            if extracted_thought is not None
+                            else ""
+                        ),
+                    )
                     tool_calls: list[dict[str, Any]] = []
                     for tool_call in event.tool_calls or []:
                         tool_calls.append(
@@ -308,6 +334,7 @@ class CodeAgentRuntimeService:
                         "content_text": None,
                         "content_json": json.dumps(
                             {
+                                "thought": extracted_thought,
                                 "toolCalls": tool_calls,
                                 "observations": self._observation_list(
                                     event.observations

@@ -81,16 +81,29 @@ Home (Page)
 │   │   │       ├── TimelineEntryRow(entryKind="planning", role="assistant")
 │   │   │       │   └── PlanningStepCard
 │   │   │       ├── TimelineEntryRow(entryKind="action", role="assistant")
-│   │   │       │   └── ActionStepCard (Observations / Code action / Action output / Footnote)
+│   │   │       │   └── ActionStepCard
+│   │   │       │       ├── ThoughtPanel (可折叠，默认折叠；仅存在可展示 Thought 文本时渲染)
+│   │   │       │       │   └── 提取策略: 结构化优先（JSON.thought）-> 文本回退（从 model_output 的 Thought: 段提取）
+│   │   │       │       ├── ToolCallsPanel (默认折叠; 仅过滤后存在可展示 toolCalls 时渲染)
+│   │   │       │       │   └── 过滤规则: name="python_interpreter" 的 tool call 不展示
+│   │   │       │       ├── CodeActionPanel (仅有内容时渲染)
+│   │   │       │       ├── ObservationsPanel (仅有内容时渲染; 保留 Show/Hide 折叠交互)
+│   │   │       │       ├── StepFootnote
+│   │   │       │       └── StepRunningIndicator (仅当前 activeRunId 下最新 Action 且会话处于 running/queued 时显示)
 │   │   │       ├── TimelineEntryRow(entryKind="final_answer", role="assistant")
 │   │   │           ├── AgentAvatar (gradient dot)
 │   │   │           └── AgentMessageBubble
-│   │   │               ├── AgentMarkdownContent (Markdown 渲染内容)
-│   │   │               │   ├── Paragraph (whitespace-pre-wrap)
-│   │   │               │   └── CodeBlock (``` fenced block)
-│   │   │               └── MarkdownActions (anchor=left-bottom, hover 或 focus-within 时显示)
+│   │   │               ├── AgentMessageContent (final_answer 已实现: fenced code block 分段 + 非代码块 Markdown 渲染)
+│   │   │               │   ├── As-Is: CodeBlock (``` fenced block -> <pre><code> 样式)
+│   │   │               │   ├── As-Is: MarkdownPart (非代码块片段 -> react-markdown + remark-gfm)
+│   │   │               │   ├── As-Is: 代码块片段继续沿用现有 <pre><code> 视觉样式
+│   │   │               │   ├── As-Is: 默认不启用 raw HTML (不接入 rehype-raw)
+│   │   │               │   └── As-Is: 外链使用 target="_blank" + rel="noreferrer noopener"
+│   │   │               └── MessageActions (anchor=left-bottom, hover 或 focus-within 时显示)
 │   │   │                   ├── ActionButton("Copy", icon=Copy)
 │   │   │                   └── Tooltip("Copy", hover 或 focus 时显示)
+│   │   │       ├── PreStepRunLoading (仅会话 running/queued 且当前 activeRunId 尚无 planning/action StepCard 时显示)
+│   │   │       │   └── 隐藏条件: 首个 StepCard 出现或 run 结束
 │   │   │       └── TimelineEntryRow(entryKind="system_notice", role="system")
 │   │   │           └── System notice bubble
 │   │   └── ScrollToBottomButton (绝对定位 absolute bottom, icon=ArrowDown, 未到底部时显示)
@@ -101,8 +114,8 @@ Home (Page)
 │           │   ├── IconButton(icon=Plus, 支持从 activeProject 所在文件夹中选取文件)
 │           │   ├── ModelSelector({selectedModel}, icon=ChevronDown)
 │           │   │   └── DropdownMenu(List of Models)
-│           │   ├── ReasoningSelector(label="Reasoning")
-│           │   │   └── Select(Auto / low / medium / high ...)
+│           │   ├── ReasoningSelector
+│           │   │   └── DropdownMenu(Auto / low / medium / high ...)
 │           │   └── PermissionSelector(icon=ShieldCheck)
 │           │       └── DropdownMenu("Default permissions", "Full access")
 │           └── RightActions
@@ -113,46 +126,46 @@ Home (Page)
 │                   └── 状态: 正在生成回复中 -> IconButton(icon=Square/Stop, active=true)
 │
 └── SettingsModal (条件渲染: isOpen)
-    ├── ModalHeader
-    │   ├── BackButton(icon=ArrowLeft) (按需显示)
-    │   ├── Title(当前页面名称)
-    │   └── CloseButton(icon=X)
-    └── ModalContent (基于 currentPage 状态)
-        ├── ProvidersPage ("providers")
-        │   ├── ConnectedProviders
-        │   │   ├── EmptyState("No connected providers")
-        │   │   └── ConnectedProviderItem("Provider N")
-│   │       ├── ClickableBody (点击后进入 ProviderConfigPage)
-│   │       │   ├── ProviderIcon
-│   │       │   ├── ProviderName
-│   │       │   ├── ProviderDescription
-│   │       │   ├── ValidationStatusBadge("Connected" / "Not validated" / 其他失败态)
-│   │       │   ├── ValidationMessage (可选, 展示最近一次校验结果摘要)
-│   │       │   └── ModelCountBadge
-│   │       └── DisconnectButton(icon=Trash2, hover 或 focus-within 时显示)
-        │   ├── PopularProviders
-        │   │   └── ProviderItem(name, description, btn="+ Connect" / "Edit")
-        │   └── CustomProviderSection ("Configure custom provider")
-        │
-        ├── CustomProviderPage ("custom-provider")
-        │   ├── ConfigurationInputs (Provider ID, Display Name, Base URL, API Key)
-        │   ├── ModelsListConfig
-        │   └── SubmitButton("Save and continue")
-        │
-        ├── ConnectProviderPage ("connect-provider")
-        │   ├── ProviderInfo (Icon & Description)
-        │   ├── Input(API key)
-        │   └── SubmitButton("Connect and continue")
-        │
-        └── ProviderConfigPage ("provider-config")
-            ├── ProviderMetaInputs
-            │   ├── Input(Provider ID, custom provider 可编辑 / built-in 只读)
-            │   ├── Input(Display name)
-            │   └── Input(Base URL)
-            ├── Input(API key)
-            ├── ModelsListConfig (带有增删功能)
-            ├── HeadersListConfig (带有增删功能)
-            └── SubmitButton("Save provider")
+   ├── ModalHeader
+   │   ├── BackButton(icon=ArrowLeft) (按需显示)
+   │   ├── Title(当前页面名称)
+   │   └── CloseButton(icon=X)
+   └── ModalContent (基于 currentPage 状态)
+      ├── ProvidersPage ("providers")
+      │   ├── ConnectedProviders
+      │   │   ├── EmptyState("No connected providers")
+      │   │   └── ConnectedProviderItem("Provider N")
+      │   │       ├── ClickableBody (点击后进入 ProviderConfigPage)
+      │   │       │   ├── ProviderIcon
+      │   │       │   ├── ProviderName
+      │   │       │   ├── ProviderDescription
+      │   │       │   ├── ValidationStatusBadge("Connected" / "Not validated" / 其他失败态)
+      │   │       │   ├── ValidationMessage (可选, 展示最近一次校验结果摘要)
+      │   │       │   └── ModelCountBadge
+      │   │       └── DisconnectButton(icon=Trash2, hover 或 focus-within 时显示)
+      │   ├── PopularProviders
+      │   │   └── ProviderItem(name, description, btn="+ Connect" / "Edit")
+      │   └── CustomProviderSection ("Configure custom provider")
+      │
+      ├── CustomProviderPage ("custom-provider")
+      │   ├── ConfigurationInputs (Provider ID, Display Name, Base URL, API Key)
+      │   ├── ModelsListConfig
+      │   └── SubmitButton("Save and continue")
+      │
+      ├── ConnectProviderPage ("connect-provider")
+      │   ├── ProviderInfo (Icon & Description)
+      │   ├── Input(API key)
+      │   └── SubmitButton("Connect and continue")
+      │
+      └── ProviderConfigPage ("provider-config")
+         ├── ProviderMetaInputs
+         │   ├── Input(Provider ID, custom provider 可编辑 / built-in 只读)
+         │   ├── Input(Display name)
+         │   └── Input(Base URL)
+         ├── Input(API key)
+         ├── ModelsListConfig (带有增删功能)
+         ├── HeadersListConfig (带有增删功能)
+         └── SubmitButton("Save provider")
 ```
 
 ### 分析总结
@@ -161,7 +174,9 @@ Home (Page)
 3. **复合交互的侧边栏**: 项目组通过 `hover` 状态挂载了比较多的隐藏交互（例如针对 "github" Project 的 "More options" 菜单和 "Start new session" 悬浮按钮）。**强调：类似 DropdownMenu 这样的弹出菜单需采用 Portal 等机制渲染脱离普通文档流，严格避免被 Sidebar 的边界或 `overflow` 属性遮挡。**
 4. **主内容区的滚动与状态流**: `MainContent` 内部采用纵向弹性（`flex-col`），首尾的 `Header` 和 `ComposerPanel` 空间固定，中间使用 `flex-1 overflow-y-auto` 划分出独立的一块主内容滚动区域。并利用这块滚动容器的相对定位能力，放置了一个通过滚动距离判定的绝对位置悬浮“到底部”快捷按钮。`ModelSelector` 的候选模型仅来自**已完成校验且状态为 `connected`** 的 provider；`Not validated` 或校验失败的 provider 不会进入模型列表。
 5. **Provider 管理流已闭环**: `ProvidersPage` 不再只是空状态展示，当前已支持“查看 Connected providers -> 点击进入 ProviderConfigPage 编辑 -> 断开删除”的完整管理流；`PopularProviders` 对已连接项会切换为 `Edit` 而非重复 `+ Connect`。在保存 provider 后，前端会自动对其**主模型（优先 `preferredModelId`）**发起一次真实连通性校验，校验结果会回写到 `ConnectedProviders` 的状态 badge / message，并进一步决定其模型是否可以出现在 `ModelSelector`。
-6. **时间线条目动作与编辑态**: `TimelineEntryList` 采用按 `entryKind + displayRole` 的渲染分支。`UserMessageBubble` 在右下角于 hover 或 focus-within 时显示 `Copy` 与 `Edit`，点击 `Edit` 进入行内编辑态（`EditTextarea + Cancel/Send`），提交中进入 `submitting` 子状态。`AgentMessageBubble` 对 markdown 内容在左下角于 hover 或 focus-within 时显示 `Copy`，复制源 markdown 字符串（含代码块），而非渲染后的 DOM 纯文本；`planning/action/system_notice` 走专门时间线卡片样式。
+6. **时间线条目动作与编辑态**: `TimelineEntryList` 采用按 `entryKind + displayRole` 的渲染分支。`UserMessageBubble` 在右下角于 hover 或 focus-within 时显示 `Copy` 与 `Edit`，点击 `Edit` 进入行内编辑态（`EditTextarea + Cancel/Send`），提交中进入 `submitting` 子状态。`AgentMessageBubble` 在左下角于 hover 或 focus-within 时显示 `Copy`，复制源 `entry.contentText` 原始字符串（可能包含 markdown 标记与代码块），而非渲染后的 DOM 纯文本。`final_answer` 的 `AgentMessageContent` 已实现“代码块保留现有样式，非代码块交给 `react-markdown + remark-gfm` 渲染，且默认不启用 `rehype-raw`”；`planning/action/system_notice` 走专门时间线卡片样式，其中 `planning` 仍维持“纯文本 + fenced code block”渲染。
+7. **ActionStepCard 展示策略更新**: 组件展示顺序为 `Thought -> toolCalls -> Code action -> Observations -> Footnote -> StepRunningIndicator`；`Action output` 已移除。`Thought` 改为可折叠且默认折叠，仅在存在可展示文本时渲染；提取遵循“结构化优先（JSON.thought）-> 文本回退（从 model_output 的 Thought: 段提取）”，提取失败或为空则不渲染。`toolCalls` 展示区默认折叠，且会过滤 `python_interpreter`，若过滤后为空则该组件不渲染。`Code action` 无内容不渲染，`Observations` 仅在有内容时渲染并保留折叠交互。`StepRunningIndicator` 仅在“当前 `activeRunId` 下的最新 Action 且会话处于 running/queued”时显示。此处“不显示”表示组件不渲染，而不是仅折叠内容。
+8. **MainScrollArea 空档期运行提示**: 当会话已进入 `running/queued`，但时间线里当前 `activeRunId` 仍未出现任何 `planning/action` StepCard 时，在 `TimelineEntryList` 底部展示 `PreStepRunLoading`（轻量 assistant loading 气泡 + `ThinkingDots`）；首个 StepCard 出现或 run 结束后自动隐藏。多轮会话中，上一轮 StepCard 不参与当前 run 的 loading/running 判定。
 
 ### TimelineEntryList 行为接口与受控状态（UI Tree 约定）
 1. **行为回调**:
@@ -178,4 +193,22 @@ Home (Page)
    - `isSubmittingEdit`
    - `canEdit` (默认 `true`; 预留历史锁定扩展)
 4. **AgentMessageBubble 受控能力**:
-   - `onCopyMarkdown` (复制 markdown 原文)
+   - `onCopyMessage(contentText)` (复制原始 `entry.contentText` 字符串)
+
+### final_answer 渲染策略（已实现）
+1. **As-Is（当前实现）**:
+   - `AgentMessageContent(content: string)` 先按 ```fenced code block``` 分段。
+   - 代码块片段使用现有 `<pre><code>` 样式渲染。
+   - 非代码块片段按 `react-markdown + remark-gfm` 渲染（支持标题、列表、加粗、链接、GFM 表格）。
+   - 默认不启用 raw HTML（不接入 `rehype-raw`），降低 XSS 风险。
+   - 外链统一使用安全属性：`target="_blank"` + `rel="noreferrer noopener"`。
+2. **依赖补充**:
+   - 前端依赖：`react-markdown`、`remark-gfm`。
+3. **复制行为约定**:
+   - Copy 操作保持不变：复制源 `entry.contentText` 字符串，不复制渲染后的 DOM 文本。
+4. **预期渲染样例（非代码块片段）**:
+   - `### 小标题` -> 标题渲染。
+   - `- 列表项` -> 列表渲染。
+   - `**加粗**` -> 强调渲染。
+   - `[文档链接](https://example.com)` -> 链接渲染（附带安全属性）。
+   - GFM 表格语法 -> 表格渲染。

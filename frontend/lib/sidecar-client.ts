@@ -40,6 +40,7 @@ export type ActionEntry = TimelineEntryBase & {
   entryKind: "action"
   displayRole: "assistant"
   contentJson: {
+    thought?: string | null
     toolCalls: Array<{
       id?: string | null
       name: string

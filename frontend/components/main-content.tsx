@@ -16,6 +16,8 @@ import {
   Square,
   X,
 } from "lucide-react"
+import ReactMarkdown from "react-markdown"
+import remarkGfm from "remark-gfm"
 
 import type {
   ComposerAttachment,
@@ -60,6 +62,8 @@ interface MainContentProps {
   onRemoveAttachment: (attachmentId: string) => Promise<void>
   onEditTimelineEntryAndRerun: (entryId: string, nextContent: string) => Promise<void>
   onOpenSettings?: () => void
+  isSessionRunning?: boolean
+  activeRunId?: string | null
 }
 
 export function MainContent({
@@ -84,10 +88,13 @@ export function MainContent({
   onRemoveAttachment,
   onEditTimelineEntryAndRerun,
   onOpenSettings,
+  isSessionRunning = false,
+  activeRunId = null,
 }: MainContentProps) {
   const [permissionOpen, setPermissionOpen] = useState(false)
   const [permission, setPermission] = useState<Permission>("default")
   const [modelOpen, setModelOpen] = useState(false)
+  const [reasoningOpen, setReasoningOpen] = useState(false)
   const [inputValue, setInputValue] = useState("")
   const [isGenerating, setIsGenerating] = useState(false)
   const [showScrollBtn, setShowScrollBtn] = useState(false)
@@ -95,10 +102,12 @@ export function MainContent({
   const [editingEntryId, setEditingEntryId] = useState<string | null>(null)
   const [editingValue, setEditingValue] = useState("")
   const [isSubmittingEdit, setIsSubmittingEdit] = useState(false)
+  const [copiedEntryId, setCopiedEntryId] = useState<string | null>(null)
 
   const scrollRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const copyResetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const pendingHistoryScrollRestore = useRef<{ previousTop: number; previousHeight: number } | null>(null)
 
   const messages = activeSession?.timelineEntries ?? EMPTY_ENTRIES
@@ -110,7 +119,31 @@ export function MainContent({
     [modelOptionGroups, selectedModel]
   )
   const supportsReasoningEffort = reasoningEffortOptions.length > 0
+  const selectedReasoningEffortLabel = selectedReasoningEffort ?? "Auto"
   const showProviderNotice = Boolean(providerError || (!hasAvailableModels && !isLoadingModels))
+  const latestActionEntryId = useMemo(() => {
+    if (!activeRunId) {
+      return null
+    }
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      const entry = messages[i]
+      if (entry.entryKind === "action" && entry.runId === activeRunId) {
+        return entry.id
+      }
+    }
+    return null
+  }, [activeRunId, messages])
+  const noStepCardYet = useMemo(
+    () =>
+      activeRunId != null &&
+      !messages.some(
+        (entry) =>
+          entry.runId === activeRunId && (entry.entryKind === "planning" || entry.entryKind === "action")
+      ),
+    [activeRunId, messages]
+  )
+  const showPreStepLoading =
+    activeRunId != null && isSessionRunning && hasMessages && noStepCardYet && !isGenerating
 
   useEffect(() => {
     if (!showProviderNotice || hasAnimatedProviderNotice) {
@@ -121,6 +154,15 @@ export function MainContent({
     })
     return () => cancelAnimationFrame(frame)
   }, [hasAnimatedProviderNotice, showProviderNotice])
+
+  useEffect(() => {
+    return () => {
+      if (copyResetTimerRef.current) {
+        clearTimeout(copyResetTimerRef.current)
+        copyResetTimerRef.current = null
+      }
+    }
+  }, [])
 
   const selectedModelLabel = useMemo(() => {
     if (isLoadingModels) {
@@ -211,7 +253,7 @@ export function MainContent({
     }
   }
 
-  const copyMessage = async (content: string) => {
+  const copyMessage = async (entryId: string, content: string) => {
     if (typeof navigator === "undefined") {
       return
     }
@@ -221,6 +263,14 @@ export function MainContent({
     }
     try {
       await clipboard.writeText(content)
+      setCopiedEntryId(entryId)
+      if (copyResetTimerRef.current) {
+        clearTimeout(copyResetTimerRef.current)
+      }
+      copyResetTimerRef.current = setTimeout(() => {
+        setCopiedEntryId((current) => (current === entryId ? null : current))
+        copyResetTimerRef.current = null
+      }, 3000)
     } catch {
       // Ignore clipboard failures.
     }
@@ -275,6 +325,7 @@ export function MainContent({
       className="flex-1 flex flex-col bg-background h-screen"
       onClick={() => {
         setModelOpen(false)
+        setReasoningOpen(false)
         setPermissionOpen(false)
       }}
     >
@@ -321,11 +372,19 @@ export function MainContent({
               <TimelineEntryView
                 key={entry.id}
                 entry={entry}
+                showRunningIndicator={
+                  activeRunId != null &&
+                  isSessionRunning &&
+                  entry.entryKind === "action" &&
+                  entry.runId === activeRunId &&
+                  entry.id === latestActionEntryId
+                }
                 isEditing={editingEntryId === entry.id}
                 editingValue={editingValue}
                 isSubmittingEdit={isSubmittingEdit}
-                onCopyMessage={(content) => {
-                  void copyMessage(content)
+                copied={copiedEntryId === entry.id}
+                onCopyMessage={(entryId, content) => {
+                  void copyMessage(entryId, content)
                 }}
                 onEditValueChange={setEditingValue}
                 onStartEdit={startEditTimelineEntry}
@@ -335,6 +394,7 @@ export function MainContent({
                 }}
               />
             ))}
+            {showPreStepLoading ? <PreStepRunLoading /> : null}
             {isGenerating && (
               <div className="flex gap-3 items-start">
                 <div className="w-7 h-7 rounded-full bg-gradient-to-br from-[#e87b5f] to-[#8bc28f] flex-shrink-0 mt-0.5" />
@@ -480,6 +540,7 @@ export function MainContent({
                       return
                     }
                     setModelOpen(!modelOpen)
+                    setReasoningOpen(false)
                     setPermissionOpen(false)
                   }}
                   disabled={isLoadingModels || (!hasAvailableModels && !onOpenSettings)}
@@ -533,24 +594,40 @@ export function MainContent({
 
               {supportsReasoningEffort && (
                 <div className="relative">
-                  <label className="flex items-center gap-2 text-sm text-muted-foreground">
-                    <span>Reasoning</span>
-                    <select
-                      value={selectedReasoningEffort ?? ""}
-                      onChange={(event) => {
-                        onSelectedReasoningEffortChange(event.target.value || null)
-                      }}
-                      className="rounded-lg border border-[#e8e4e0] bg-background px-2.5 py-1.5 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-foreground/20"
-                      aria-label="Reasoning effort"
-                    >
-                      <option value="">Auto</option>
-                      {reasoningEffortOptions.map((option) => (
-                        <option key={option} value={option}>
-                          {option}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
+                  <button
+                    onClick={() => {
+                      setReasoningOpen(!reasoningOpen)
+                      setModelOpen(false)
+                      setPermissionOpen(false)
+                    }}
+                    className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors"
+                    aria-label="Reasoning effort"
+                  >
+                    <span>{selectedReasoningEffortLabel}</span>
+                    <ChevronDown className="w-3.5 h-3.5" />
+                  </button>
+                  {reasoningOpen && (
+                    <div className="absolute bottom-full mb-2 left-0 bg-background border border-[#e8e4e0] rounded-xl shadow-md overflow-hidden z-20 w-44">
+                      {[null, ...reasoningEffortOptions].map((option) => {
+                        const isSelected = (option ?? null) === (selectedReasoningEffort ?? null)
+                        const label = option ?? "Auto"
+
+                        return (
+                          <button
+                            key={option ?? "auto"}
+                            onClick={() => {
+                              onSelectedReasoningEffortChange(option)
+                              setReasoningOpen(false)
+                            }}
+                            className="w-full flex items-center justify-between px-4 py-2 text-sm text-foreground/80 hover:bg-[#efe9e4] transition-colors"
+                          >
+                            <span>{label}</span>
+                            {isSelected && <Check className="w-4 h-4 text-foreground/70 flex-shrink-0" />}
+                          </button>
+                        )
+                      })}
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -559,6 +636,7 @@ export function MainContent({
                   onClick={() => {
                     setPermissionOpen(!permissionOpen)
                     setModelOpen(false)
+                    setReasoningOpen(false)
                   }}
                   className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors"
                 >
@@ -637,6 +715,8 @@ export function MainContent({
 
 function TimelineEntryView({
   entry,
+  showRunningIndicator,
+  copied,
   isEditing,
   editingValue,
   isSubmittingEdit,
@@ -647,10 +727,12 @@ function TimelineEntryView({
   onSubmitEdit,
 }: {
   entry: TimelineEntry
+  showRunningIndicator: boolean
+  copied: boolean
   isEditing: boolean
   editingValue: string
   isSubmittingEdit: boolean
-  onCopyMessage: (content: string) => void
+  onCopyMessage: (entryId: string, content: string) => void
   onEditValueChange: (value: string) => void
   onStartEdit: (messageId: string, content: string) => void
   onCancelEdit: () => void
@@ -660,7 +742,7 @@ function TimelineEntryView({
     return <PlanningStepCard step={entry} />
   }
   if (entry.entryKind === "action") {
-    return <ActionStepCard step={entry} />
+    return <ActionStepCard step={entry} showRunningIndicator={showRunningIndicator} />
   }
   if (entry.displayRole === "user") {
     return (
@@ -706,11 +788,11 @@ function TimelineEntryView({
                 <TooltipTrigger asChild>
                   <button
                     type="button"
-                    onClick={() => onCopyMessage(entry.contentText ?? "")}
+                    onClick={() => onCopyMessage(entry.id, entry.contentText ?? "")}
                     className="h-9 w-9 rounded-full border border-[#e8e4e0] bg-[#f3efeb] text-muted-foreground hover:text-foreground hover:bg-[#efe9e4] transition-colors inline-flex items-center justify-center"
                     aria-label="Copy user message"
                   >
-                    <Copy className="w-4 h-4" />
+                    {copied ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
                   </button>
                 </TooltipTrigger>
                 <TooltipContent side="top" sideOffset={6}>
@@ -743,17 +825,21 @@ function TimelineEntryView({
     <div className="flex gap-3 items-start">
       <div className="w-7 h-7 rounded-full bg-gradient-to-br from-[#e87b5f] to-[#8bc28f] flex-shrink-0 mt-0.5" />
       <div className="group flex-1 min-w-0 flex flex-col gap-2">
-        <AgentMessageContent content={entry.contentText ?? ""} />
+        {entry.entryKind === "final_answer" ? (
+          <FinalAnswerContent content={entry.contentText ?? ""} />
+        ) : (
+          <AgentMessageContent content={entry.contentText ?? ""} />
+        )}
         <div className="flex items-center gap-2 opacity-0 pointer-events-none transition-opacity group-hover:opacity-100 group-hover:pointer-events-auto group-focus-within:opacity-100 group-focus-within:pointer-events-auto">
           <Tooltip>
             <TooltipTrigger asChild>
               <button
                 type="button"
-                onClick={() => onCopyMessage(entry.contentText ?? "")}
+                onClick={() => onCopyMessage(entry.id, entry.contentText ?? "")}
                 className="h-9 w-9 rounded-full border border-[#e8e4e0] bg-[#f3efeb] text-muted-foreground hover:text-foreground hover:bg-[#efe9e4] transition-colors inline-flex items-center justify-center"
                 aria-label="Copy assistant message"
               >
-                <Copy className="w-4 h-4" />
+                {copied ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
               </button>
             </TooltipTrigger>
             <TooltipContent side="top" sideOffset={6}>
@@ -775,34 +861,53 @@ function PlanningStepCard({ step }: { step: PlanningEntry }) {
   )
 }
 
-function ActionStepCard({ step }: { step: ActionEntry }) {
+function ActionStepCard({
+  step,
+  showRunningIndicator,
+}: {
+  step: ActionEntry
+  showRunningIndicator: boolean
+}) {
   const payload = step.contentJson
+  const [showThoughtPanel, setShowThoughtPanel] = useState(false)
+  const [showToolCallsPanel, setShowToolCallsPanel] = useState(false)
   const [showObservationsPanel, setShowObservationsPanel] = useState(false)
   const [showCodeActionPanel, setShowCodeActionPanel] = useState(false)
-  const [showActionOutputPanel, setShowActionOutputPanel] = useState(false)
+  const thoughtText = normalizeThought(payload?.thought)
+  const visibleToolCalls = (payload?.toolCalls ?? []).filter(
+    (toolCall) => toolCall.name !== "python_interpreter"
+  )
+  const hasToolCalls = visibleToolCalls.length > 0
   const hasCodeAction = Boolean(payload?.codeAction)
-  const hasActionOutput = payload?.actionOutput !== null && payload?.actionOutput !== ""
   const hasObservations = (payload?.observations?.length ?? 0) > 0
 
   return (
     <div className="rounded-2xl border border-[#e8e4e0] bg-[#fcfaf8] px-4 py-3 space-y-3">
       <div className="text-xs uppercase tracking-[0.12em] text-foreground/45">Step {step.stepNumber}</div>
-      {(payload?.toolCalls?.length ?? 0) > 0 ? (
-        <div className="rounded-xl border border-[#e8e4e0] bg-background px-3 py-2 text-sm text-foreground/80 space-y-2">
-          {payload?.toolCalls.map((toolCall, index) => (
-            <div key={`${toolCall.name}-${index}`} className="whitespace-pre-wrap">
-              {toolCall.name}({toolCall.argumentsText})
-            </div>
-          ))}
-        </div>
-      ) : null}
-      {hasObservations ? (
+      {thoughtText ? (
         <CollapsiblePanel
-          label="Observations"
-          open={showObservationsPanel}
-          onToggle={() => setShowObservationsPanel((current) => !current)}
+          label="Thought"
+          open={showThoughtPanel}
+          onToggle={() => setShowThoughtPanel((current) => !current)}
         >
-          <CodeBlock label="observations" content={payload?.observations.join("\n") ?? ""} />
+          <div className="rounded-xl border border-[#e8e4e0] bg-background px-3 py-2">
+            <p className="text-sm text-foreground/85 whitespace-pre-wrap">{thoughtText}</p>
+          </div>
+        </CollapsiblePanel>
+      ) : null}
+      {hasToolCalls ? (
+        <CollapsiblePanel
+          label="Tool calls"
+          open={showToolCallsPanel}
+          onToggle={() => setShowToolCallsPanel((current) => !current)}
+        >
+          <div className="rounded-xl border border-[#e8e4e0] bg-background px-3 py-2 text-sm text-foreground/80 space-y-2">
+            {visibleToolCalls.map((toolCall, index) => (
+              <div key={`${toolCall.name}-${index}`} className="whitespace-pre-wrap">
+                {toolCall.name}({toolCall.argumentsText})
+              </div>
+            ))}
+          </div>
         </CollapsiblePanel>
       ) : null}
       {hasCodeAction ? (
@@ -814,13 +919,13 @@ function ActionStepCard({ step }: { step: ActionEntry }) {
           <CodeBlock label="python" content={payload?.codeAction ?? ""} />
         </CollapsiblePanel>
       ) : null}
-      {hasActionOutput ? (
+      {hasObservations ? (
         <CollapsiblePanel
-          label="Action output"
-          open={showActionOutputPanel}
-          onToggle={() => setShowActionOutputPanel((current) => !current)}
+          label="Observations"
+          open={showObservationsPanel}
+          onToggle={() => setShowObservationsPanel((current) => !current)}
         >
-          <DataBlock label="Result" value={payload?.actionOutput} />
+          <CodeBlock label="observations" content={payload?.observations.join("\n") ?? ""} />
         </CollapsiblePanel>
       ) : null}
       {payload?.error ? (
@@ -832,6 +937,7 @@ function ActionStepCard({ step }: { step: ActionEntry }) {
         usage={payload?.usage ?? { inputTokens: 0, outputTokens: 0, reasoningTokens: 0 }}
         durationMs={payload?.durationMs ?? 0}
       />
+      {showRunningIndicator ? <StepRunningIndicator /> : null}
     </div>
   )
 }
@@ -861,9 +967,12 @@ function CollapsiblePanel({
   )
 }
 
-function DataBlock({ label, value }: { label: string; value: unknown }) {
-  const content = typeof value === "string" ? value : JSON.stringify(value, null, 2)
-  return <CodeBlock label={label} content={content} />
+function normalizeThought(thought: string | null | undefined): string | null {
+  if (!thought) {
+    return null
+  }
+  const trimmed = thought.trim().replace(/^thought\s*:\s*/i, "")
+  return trimmed.length > 0 ? trimmed : null
 }
 
 function CodeBlock({ label, content }: { label: string; content: string }) {
@@ -918,6 +1027,67 @@ function AgentMessageContent({ content }: { content: string }) {
   )
 }
 
+function FinalAnswerContent({ content }: { content: string }) {
+  const parts = content.split(/(```[\s\S]*?```)/g)
+  return (
+    <div className="space-y-2 text-sm text-foreground/85">
+      {parts.map((part, i) => {
+        if (part.startsWith("```") && part.endsWith("```")) {
+          const lines = part.slice(3, -3).split("\n")
+          const lang = lines[0]
+          const code = lines.slice(1).join("\n")
+          return (
+            <pre key={i} className="bg-[#1e1e1e] text-[#d4d4d4] rounded-xl px-4 py-3 text-xs overflow-x-auto font-mono">
+              {lang && <div className="text-[#6a9955] mb-2 text-xs">{lang}</div>}
+              <code>{code}</code>
+            </pre>
+          )
+        }
+
+        return (
+          <ReactMarkdown
+            key={i}
+            remarkPlugins={[remarkGfm]}
+            components={{
+              p: ({ children }) => <p className="whitespace-pre-wrap leading-relaxed">{children}</p>,
+              ul: ({ children }) => <ul className="list-disc pl-6 space-y-1">{children}</ul>,
+              ol: ({ children }) => <ol className="list-decimal pl-6 space-y-1">{children}</ol>,
+              li: ({ children }) => <li className="leading-relaxed">{children}</li>,
+              h1: ({ children }) => <h1 className="text-xl font-semibold leading-tight">{children}</h1>,
+              h2: ({ children }) => <h2 className="text-lg font-semibold leading-tight">{children}</h2>,
+              h3: ({ children }) => <h3 className="text-base font-semibold leading-tight">{children}</h3>,
+              a: ({ children, href }) => (
+                <a
+                  href={href}
+                  target="_blank"
+                  rel="noreferrer noopener"
+                  className="underline underline-offset-2 hover:text-foreground"
+                >
+                  {children}
+                </a>
+              ),
+              code: ({ children }) => (
+                <code className="rounded bg-[#efe9e4] px-1 py-0.5 text-[0.85em] font-mono">{children}</code>
+              ),
+              table: ({ children }) => (
+                <div className="overflow-x-auto">
+                  <table className="w-full border-collapse text-sm">{children}</table>
+                </div>
+              ),
+              thead: ({ children }) => <thead className="border-b border-[#e8e4e0]">{children}</thead>,
+              tbody: ({ children }) => <tbody>{children}</tbody>,
+              th: ({ children }) => <th className="px-2 py-1 text-left font-semibold">{children}</th>,
+              td: ({ children }) => <td className="px-2 py-1 align-top">{children}</td>,
+            }}
+          >
+            {part}
+          </ReactMarkdown>
+        )
+      })}
+    </div>
+  )
+}
+
 function ThinkingDots() {
   return (
     <div className="flex gap-1 items-center py-1">
@@ -928,6 +1098,26 @@ function ThinkingDots() {
           style={{ animationDelay: `${i * 0.15}s` }}
         />
       ))}
+    </div>
+  )
+}
+
+function StepRunningIndicator() {
+  return (
+    <div className="flex items-center gap-2 rounded-xl border border-[#e8e4e0] bg-background px-3 py-2">
+      <ThinkingDots />
+      <span className="text-xs text-foreground/60">Running...</span>
+    </div>
+  )
+}
+
+function PreStepRunLoading() {
+  return (
+    <div className="flex gap-3 items-start" data-testid="pre-step-run-loading">
+      <div className="w-7 h-7 rounded-full bg-gradient-to-br from-[#e87b5f] to-[#8bc28f] flex-shrink-0 mt-0.5" />
+      <div className="bg-[#faf8f6] border border-[#e8e4e0] rounded-2xl px-4 py-3">
+        <ThinkingDots />
+      </div>
     </div>
   )
 }

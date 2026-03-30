@@ -1066,6 +1066,7 @@ describe("Home page", () => {
           stepNumber: 1,
           contentText: null,
           contentJson: {
+            thought: "Inspect workspace provider flow.",
             toolCalls: [],
             observations: ["Execution logs:", "Run completed through sidecar."],
             codeAction: 'print("Run completed through sidecar.")',
@@ -1114,12 +1115,73 @@ describe("Home page", () => {
 
     act(() => {
       MockEventSource.instances[0].emit(
+        "run.status",
+        {
+          type: "run.status",
+          runId: "run_1",
+          sessionId: "sess_1",
+          sequence: 1,
+          createdAt: "2026-03-24T12:10:59Z",
+          status: "running",
+          message: "Run in progress",
+        },
+        "run_1:0"
+      )
+    })
+
+    await waitFor(() => {
+      expect(screen.getByTestId("pre-step-run-loading")).toBeInTheDocument()
+    })
+
+    act(() => {
+      MockEventSource.instances[0].emit(
         "run.timeline-entry",
         {
           type: "run.timeline-entry",
           runId: "run_1",
           sessionId: "sess_1",
-          sequence: 1,
+          sequence: 2,
+          createdAt: "2026-03-24T12:11:00Z",
+          entry: {
+            id: "entry_action_running",
+            sessionId: "sess_1",
+            runId: "run_1",
+            sequenceNo: 2,
+            entryKind: "action",
+            displayRole: "assistant",
+            stepId: "step-1",
+            stepNumber: 1,
+            contentText: null,
+            createdAt: "2026-03-24T12:11:00Z",
+            contentJson: {
+              thought: "Inspect workspace",
+              toolCalls: [],
+              observations: ["Execution logs:", "running"],
+              codeAction: 'print(\"running\")',
+              actionOutput: null,
+              error: null,
+              usage: { inputTokens: 12, outputTokens: 4, reasoningTokens: 0 },
+              durationMs: 180,
+            },
+          },
+        },
+        "run_1:3"
+      )
+    })
+
+    await waitFor(() => {
+      expect(screen.getByText("Running...")).toBeInTheDocument()
+    })
+    expect(screen.queryByTestId("pre-step-run-loading")).not.toBeInTheDocument()
+
+    act(() => {
+      MockEventSource.instances[0].emit(
+        "run.timeline-entry",
+        {
+          type: "run.timeline-entry",
+          runId: "run_1",
+          sessionId: "sess_1",
+          sequence: 3,
           createdAt: "2026-03-24T12:11:00Z",
           entry: {
             id: "msg_stream_assistant",
@@ -1142,11 +1204,11 @@ describe("Home page", () => {
           type: "run.completed",
           runId: "run_1",
           sessionId: "sess_1",
-          sequence: 2,
+          sequence: 4,
           createdAt: "2026-03-24T12:12:00Z",
           finalAnswer: "Run completed through sidecar.",
         },
-        "run_1:2"
+        "run_1:4"
       )
       MockEventSource.instances[0].emit(
         "run.replay-ready",
@@ -1154,19 +1216,326 @@ describe("Home page", () => {
           type: "run.replay-ready",
           runId: "run_1",
           sessionId: "sess_1",
-          sequence: 3,
+          sequence: 5,
           createdAt: "2026-03-24T12:12:01Z",
-          lastEventSequence: 2,
+          lastEventSequence: 4,
         },
-        "run_1:3"
+        "run_1:5"
       )
     })
 
     await waitFor(() => {
       expect(screen.getByText("Run completed through sidecar.")).toBeInTheDocument()
     })
+    expect(screen.queryByText("Running...")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("pre-step-run-loading")).not.toBeInTheDocument()
 
     expect(workspaceSessionsFetchCount).toBe(2)
+  })
+
+  it("scopes loading indicators to the active run id across multiple runs in one session", async () => {
+    useStreamingRun = true
+    render(<Home />)
+
+    await waitFor(() => {
+      expect(screen.getByText("OpenAI - gpt-5.4-mini")).toBeInTheDocument()
+    })
+
+    fireEvent.change(screen.getByPlaceholderText("Ask for follow-up changes"), {
+      target: { value: "Run through sidecar" },
+    })
+    fireEvent.click(screen.getByLabelText("Send"))
+
+    await waitFor(() => {
+      expect(MockEventSource.instances).toHaveLength(1)
+    })
+
+    act(() => {
+      MockEventSource.instances[0].emit(
+        "run.status",
+        {
+          type: "run.status",
+          runId: "run_1",
+          sessionId: "sess_1",
+          sequence: 1,
+          createdAt: "2026-03-24T12:10:59Z",
+          status: "running",
+          message: "Run in progress",
+        },
+        "run_1:0"
+      )
+      MockEventSource.instances[0].emit(
+        "run.timeline-entry",
+        {
+          type: "run.timeline-entry",
+          runId: "run_1",
+          sessionId: "sess_1",
+          sequence: 2,
+          createdAt: "2026-03-24T12:11:00Z",
+          entry: {
+            id: "entry_action_run_1",
+            sessionId: "sess_1",
+            runId: "run_1",
+            sequenceNo: 2,
+            entryKind: "action",
+            displayRole: "assistant",
+            stepId: "step-1",
+            stepNumber: 1,
+            contentText: null,
+            createdAt: "2026-03-24T12:11:00Z",
+            contentJson: {
+              thought: "Inspect workspace",
+              toolCalls: [],
+              observations: ["Execution logs:", "run 1"],
+              codeAction: 'print(\"run 1\")',
+              actionOutput: null,
+              error: null,
+              usage: { inputTokens: 12, outputTokens: 4, reasoningTokens: 0 },
+              durationMs: 180,
+            },
+          },
+        },
+        "run_1:1"
+      )
+    })
+
+    await waitFor(() => {
+      expect(screen.getByText("Running...")).toBeInTheDocument()
+    })
+    expect(screen.queryByTestId("pre-step-run-loading")).not.toBeInTheDocument()
+
+    act(() => {
+      MockEventSource.instances[0].emit(
+        "run.completed",
+        {
+          type: "run.completed",
+          runId: "run_1",
+          sessionId: "sess_1",
+          sequence: 3,
+          createdAt: "2026-03-24T12:12:00Z",
+          finalAnswer: "Run 1 completed",
+        },
+        "run_1:2"
+      )
+    })
+
+    await waitFor(() => {
+      expect(screen.queryByText("Running...")).not.toBeInTheDocument()
+    })
+
+    act(() => {
+      MockEventSource.instances[0].emit(
+        "run.status",
+        {
+          type: "run.status",
+          runId: "run_2",
+          sessionId: "sess_1",
+          sequence: 4,
+          createdAt: "2026-03-24T12:12:10Z",
+          status: "running",
+          message: "Run in progress",
+        },
+        "run_2:0"
+      )
+    })
+
+    await waitFor(() => {
+      expect(screen.getByTestId("pre-step-run-loading")).toBeInTheDocument()
+    })
+    expect(screen.queryByText("Running...")).not.toBeInTheDocument()
+
+    act(() => {
+      MockEventSource.instances[0].emit(
+        "run.timeline-entry",
+        {
+          type: "run.timeline-entry",
+          runId: "run_2",
+          sessionId: "sess_1",
+          sequence: 5,
+          createdAt: "2026-03-24T12:12:11Z",
+          entry: {
+            id: "entry_action_run_2",
+            sessionId: "sess_1",
+            runId: "run_2",
+            sequenceNo: 3,
+            entryKind: "action",
+            displayRole: "assistant",
+            stepId: "step-2",
+            stepNumber: 2,
+            contentText: null,
+            createdAt: "2026-03-24T12:12:11Z",
+            contentJson: {
+              thought: "Check updated status",
+              toolCalls: [],
+              observations: ["Execution logs:", "run 2"],
+              codeAction: 'print(\"run 2\")',
+              actionOutput: null,
+              error: null,
+              usage: { inputTokens: 10, outputTokens: 3, reasoningTokens: 0 },
+              durationMs: 120,
+            },
+          },
+        },
+        "run_2:1"
+      )
+    })
+
+    await waitFor(() => {
+      expect(screen.getByText("Running...")).toBeInTheDocument()
+    })
+    expect(screen.queryByTestId("pre-step-run-loading")).not.toBeInTheDocument()
+    expect(screen.getAllByText("Running...")).toHaveLength(1)
+  })
+
+  it("does not clear active run indicators when an older run terminal event arrives out of order", async () => {
+    useStreamingRun = true
+    render(<Home />)
+
+    await waitFor(() => {
+      expect(screen.getByText("OpenAI - gpt-5.4-mini")).toBeInTheDocument()
+    })
+
+    fireEvent.change(screen.getByPlaceholderText("Ask for follow-up changes"), {
+      target: { value: "Run through sidecar" },
+    })
+    fireEvent.click(screen.getByLabelText("Send"))
+
+    await waitFor(() => {
+      expect(MockEventSource.instances).toHaveLength(1)
+    })
+
+    act(() => {
+      MockEventSource.instances[0].emit(
+        "run.status",
+        {
+          type: "run.status",
+          runId: "run_1",
+          sessionId: "sess_1",
+          sequence: 1,
+          createdAt: "2026-03-24T12:10:59Z",
+          status: "running",
+          message: "Run in progress",
+        },
+        "run_1:0"
+      )
+      MockEventSource.instances[0].emit(
+        "run.timeline-entry",
+        {
+          type: "run.timeline-entry",
+          runId: "run_1",
+          sessionId: "sess_1",
+          sequence: 2,
+          createdAt: "2026-03-24T12:11:00Z",
+          entry: {
+            id: "entry_action_old",
+            sessionId: "sess_1",
+            runId: "run_1",
+            sequenceNo: 2,
+            entryKind: "action",
+            displayRole: "assistant",
+            stepId: "step-1",
+            stepNumber: 1,
+            contentText: null,
+            createdAt: "2026-03-24T12:11:00Z",
+            contentJson: {
+              thought: "old run thought",
+              toolCalls: [],
+              observations: ["Execution logs:", "run 1"],
+              codeAction: 'print(\"run 1\")',
+              actionOutput: null,
+              error: null,
+              usage: { inputTokens: 12, outputTokens: 4, reasoningTokens: 0 },
+              durationMs: 180,
+            },
+          },
+        },
+        "run_1:1"
+      )
+    })
+
+    await waitFor(() => {
+      expect(screen.getByText("Running...")).toBeInTheDocument()
+    })
+
+    act(() => {
+      MockEventSource.instances[0].emit(
+        "run.status",
+        {
+          type: "run.status",
+          runId: "run_2",
+          sessionId: "sess_1",
+          sequence: 3,
+          createdAt: "2026-03-24T12:12:10Z",
+          status: "running",
+          message: "Run in progress",
+        },
+        "run_2:0"
+      )
+    })
+
+    await waitFor(() => {
+      expect(screen.getByTestId("pre-step-run-loading")).toBeInTheDocument()
+    })
+    expect(screen.queryByText("Running...")).not.toBeInTheDocument()
+
+    act(() => {
+      MockEventSource.instances[0].emit(
+        "run.completed",
+        {
+          type: "run.completed",
+          runId: "run_1",
+          sessionId: "sess_1",
+          sequence: 4,
+          createdAt: "2026-03-24T12:12:11Z",
+          finalAnswer: "old run done",
+        },
+        "run_1:2"
+      )
+    })
+
+    expect(screen.getByTestId("pre-step-run-loading")).toBeInTheDocument()
+    expect(screen.queryByText("Running...")).not.toBeInTheDocument()
+
+    act(() => {
+      MockEventSource.instances[0].emit(
+        "run.timeline-entry",
+        {
+          type: "run.timeline-entry",
+          runId: "run_2",
+          sessionId: "sess_1",
+          sequence: 5,
+          createdAt: "2026-03-24T12:12:12Z",
+          entry: {
+            id: "entry_action_new",
+            sessionId: "sess_1",
+            runId: "run_2",
+            sequenceNo: 3,
+            entryKind: "action",
+            displayRole: "assistant",
+            stepId: "step-2",
+            stepNumber: 2,
+            contentText: null,
+            createdAt: "2026-03-24T12:12:12Z",
+            contentJson: {
+              thought: "new run thought",
+              toolCalls: [],
+              observations: ["Execution logs:", "run 2"],
+              codeAction: 'print(\"run 2\")',
+              actionOutput: null,
+              error: null,
+              usage: { inputTokens: 10, outputTokens: 3, reasoningTokens: 0 },
+              durationMs: 120,
+            },
+          },
+        },
+        "run_2:1"
+      )
+    })
+
+    await waitFor(() => {
+      expect(screen.getByText("Running...")).toBeInTheDocument()
+    })
+    expect(screen.queryByTestId("pre-step-run-loading")).not.toBeInTheDocument()
   })
 
   it("surfaces run failures without replacing existing messages", async () => {
@@ -1213,9 +1582,8 @@ describe("Home page", () => {
       expect(screen.getByText("OpenAI - gpt-5.4-mini")).toBeInTheDocument()
     })
 
-    fireEvent.change(screen.getByLabelText("Reasoning effort"), {
-      target: { value: "high" },
-    })
+    fireEvent.click(screen.getByLabelText("Reasoning effort"))
+    fireEvent.click(screen.getByRole("button", { name: "high" }))
     fireEvent.change(screen.getByPlaceholderText("Ask for follow-up changes"), {
       target: { value: "Use a more detailed chain of thought" },
     })

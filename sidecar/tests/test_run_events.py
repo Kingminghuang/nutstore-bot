@@ -46,6 +46,7 @@ class RunEventTests(unittest.TestCase):
                 "displayRole": "assistant",
                 "stepNumber": 1,
                 "contentJson": {
+                    "thought": "inspect file changes",
                     "codeAction": "print('hello')",
                     "actionOutput": {"status": "ok"},
                     "observations": ["changed file"],
@@ -73,6 +74,9 @@ class RunEventTests(unittest.TestCase):
         self.assertEqual(step.data["entry"]["stepNumber"], 1)
         self.assertEqual(
             step.data["entry"]["contentJson"]["codeAction"], "print('hello')"
+        )
+        self.assertEqual(
+            step.data["entry"]["contentJson"]["thought"], "inspect file changes"
         )
         self.assertEqual(
             step.data["entry"]["contentJson"]["actionOutput"], {"status": "ok"}

@@ -2015,7 +2015,7 @@ class ApiServerTests(unittest.TestCase):
                         "step_id": "step-1",
                         "step_number": 1,
                         "content_text": None,
-                        "content_json": '{"toolCalls":[],"observations":["Found 3 files"],"codeAction":null,"actionOutput":null,"error":null,"usage":{"inputTokens":11,"outputTokens":7,"reasoningTokens":0},"durationMs":120}',
+                        "content_json": '{"thought":"search workspace files","toolCalls":[],"observations":["Found 3 files"],"codeAction":null,"actionOutput":null,"error":null,"usage":{"inputTokens":11,"outputTokens":7,"reasoningTokens":0},"durationMs":120}',
                     }
                 ],
                 "final_answer": "Completed with SSE events.",
@@ -2129,7 +2129,7 @@ class ApiServerTests(unittest.TestCase):
                         "step_id": "step-2",
                         "step_number": 1,
                         "content_text": None,
-                        "content_json": '{"toolCalls":[],"observations":["Execution logs:","done"],"codeAction":"print(\\"done\\")","actionOutput":{"result":"done"},"error":null,"usage":{"inputTokens":9,"outputTokens":3,"reasoningTokens":0},"durationMs":180}',
+                        "content_json": '{"thought":"verify result output","toolCalls":[],"observations":["Execution logs:","done"],"codeAction":"print(\\"done\\")","actionOutput":{"result":"done"},"error":null,"usage":{"inputTokens":9,"outputTokens":3,"reasoningTokens":0},"durationMs":180}',
                     },
                 ],
                 "final_answer": "Done.",

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 from smolagents.memory import ActionStep, FinalAnswerStep, PlanningStep, TaskStep
@@ -28,6 +29,35 @@ def _message_role_to_text(role: MessageRole | str) -> str:
     if value in {"user", "assistant", "system", "tool-call", "tool-response"}:
         return value
     return "assistant"
+
+
+def extract_action_thought(model_output: Any) -> str | None:
+    raw_text = _message_content_to_text(model_output).strip()
+    if raw_text == "":
+        return None
+
+    # Structured output path: {"thought": "...", "code": "..."}
+    try:
+        parsed = json.loads(raw_text)
+    except json.JSONDecodeError:
+        parsed = None
+    if isinstance(parsed, dict):
+        thought_value = parsed.get("thought")
+        if isinstance(thought_value, str):
+            normalized = thought_value.strip()
+            if normalized:
+                return normalized
+
+    # Fallback path for plain text model output containing Thought + code block.
+    match = re.search(
+        r"Thought\s*:\s*(.*?)(?=\n\s*(?:<code>|```)|\Z)",
+        raw_text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if not match:
+        return None
+    thought_text = match.group(1).strip()
+    return thought_text or None
 
 
 def project_chat_message_to_session_message(
@@ -154,6 +184,7 @@ def project_agent_memory_to_timeline_entries(
                 )
             content_json = json.dumps(
                 {
+                    "thought": extract_action_thought(step.model_output),
                     "toolCalls": tool_calls,
                     "observations": [
                         line

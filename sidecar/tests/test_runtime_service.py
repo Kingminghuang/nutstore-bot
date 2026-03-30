@@ -134,6 +134,7 @@ class RuntimeServiceTests(unittest.TestCase):
         self.assertGreaterEqual(len(result["deltas"]), 1)
         self.assertEqual(result["timeline_entries"][0]["entry_kind"], "action")
         payload = json.loads(result["timeline_entries"][0]["content_json"])
+        self.assertEqual(payload["thought"], "solve quickly")
         self.assertGreaterEqual(len(payload["observations"]), 1)
         self.assertEqual(payload["usage"]["reasoningTokens"], 0)
 
