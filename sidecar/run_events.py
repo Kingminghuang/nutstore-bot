@@ -5,7 +5,6 @@ from typing import Literal, TypeAlias
 
 
 RunStatus: TypeAlias = Literal["queued", "running", "completed", "failed", "cancelled"]
-RunStepKind: TypeAlias = Literal["planning", "action"]
 RunEventType: TypeAlias = Literal[
     "run.delta",
     "run.timeline-entry",

@@ -216,7 +216,7 @@ class CodeAgentRuntimeService:
         )
 
         deltas: list[dict[str, Any]] = []
-        steps: list[dict[str, Any]] = []
+        timeline_entries: list[dict[str, Any]] = []
         stream_buffer_by_step: dict[str, str] = {}
         current_step_id: str | None = None
         step_index = 0
@@ -262,54 +262,81 @@ class CodeAgentRuntimeService:
 
                 if isinstance(event, PlanningStep):
                     step_id = allocate_step_id(current_step_id)
-                    step_payload = {
+                    timeline_entry_payload = {
+                        "session_id": session_key,
+                        "run_id": run_id,
+                        "entry_kind": "planning",
+                        "display_role": "assistant",
                         "step_id": step_id,
                         "step_number": None,
-                        "step_kind": "planning",
-                        "plan": event.plan or "",
-                        "model_output": event.plan or "",
-                        "code_action": None,
-                        "action_output": None,
-                        "observations": [],
-                        "error": None,
-                        "usage": self._usage_dict(event.token_usage),
-                        "duration_ms": self._duration_ms(event),
-                        "has_delta": stream_buffer_by_step.get(step_id, "") != "",
+                        "content_text": event.plan or "",
+                        "content_json": None,
                     }
-                    steps.append(step_payload)
+                    timeline_entries.append(timeline_entry_payload)
                     if event_callback is not None:
                         event_callback(
                             {
-                                "type": "step",
-                                "payload": step_payload,
+                                "type": "timeline_entry",
+                                "payload": timeline_entry_payload,
                             }
                         )
                     continue
 
                 if isinstance(event, ActionStep):
                     step_id = allocate_step_id(current_step_id)
-                    step_payload = {
+                    usage = self._usage_dict(event.token_usage)
+                    tool_calls: list[dict[str, Any]] = []
+                    for tool_call in event.tool_calls or []:
+                        tool_calls.append(
+                            {
+                                "id": tool_call.id,
+                                "name": tool_call.name,
+                                "argumentsText": json.dumps(
+                                    tool_call.arguments, ensure_ascii=False
+                                )
+                                if not isinstance(tool_call.arguments, str)
+                                else tool_call.arguments,
+                            }
+                        )
+                    timeline_entry_payload = {
+                        "session_id": session_key,
+                        "run_id": run_id,
+                        "entry_kind": "action",
+                        "display_role": "assistant",
                         "step_id": step_id,
                         "step_number": int(event.step_number),
-                        "step_kind": "action",
-                        "plan": None,
-                        "model_output": str(event.model_output or ""),
-                        "code_action": None
-                        if event.code_action is None
-                        else str(event.code_action),
-                        "action_output": _serialize_action_output(event.action_output),
-                        "observations": self._observation_list(event.observations),
-                        "error": None if event.error is None else str(event.error),
-                        "usage": self._usage_dict(event.token_usage),
-                        "duration_ms": self._duration_ms(event),
-                        "has_delta": stream_buffer_by_step.get(step_id, "") != "",
+                        "content_text": None,
+                        "content_json": json.dumps(
+                            {
+                                "toolCalls": tool_calls,
+                                "observations": self._observation_list(
+                                    event.observations
+                                ),
+                                "codeAction": None
+                                if event.code_action is None
+                                else str(event.code_action),
+                                "actionOutput": _serialize_action_output(
+                                    event.action_output
+                                ),
+                                "error": None
+                                if event.error is None
+                                else str(event.error),
+                                "usage": {
+                                    "inputTokens": usage.get("input_tokens", 0),
+                                    "outputTokens": usage.get("output_tokens", 0),
+                                    "reasoningTokens": usage.get("reasoning_tokens", 0),
+                                },
+                                "durationMs": self._duration_ms(event),
+                            },
+                            ensure_ascii=False,
+                        ),
                     }
-                    steps.append(step_payload)
+                    timeline_entries.append(timeline_entry_payload)
                     if event_callback is not None:
                         event_callback(
                             {
-                                "type": "step",
-                                "payload": step_payload,
+                                "type": "timeline_entry",
+                                "payload": timeline_entry_payload,
                             }
                         )
                     if event.is_final_answer and event.action_output is not None:
@@ -348,10 +375,10 @@ class CodeAgentRuntimeService:
 
         return {
             "deltas": deltas,
-            "steps": steps,
             "final_answer": final_answer,
             "session_messages": projected_messages,
-            "timeline_entries": project_agent_memory_to_timeline_entries(
+            "timeline_entries": timeline_entries
+            or project_agent_memory_to_timeline_entries(
                 agent.memory,
                 run_id=run_id,
                 session_id=session_key,

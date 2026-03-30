@@ -16,193 +16,182 @@ class StoragePaths:
     secrets_dir: Path
 
 
-@dataclass(frozen=True)
-class Migration:
-    version: int
-    sql: str
+SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS workspaces (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  path_label TEXT NOT NULL,
+  real_path TEXT NOT NULL UNIQUE,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
 
+CREATE TABLE IF NOT EXISTS provider_connections (
+  id TEXT PRIMARY KEY,
+  kind TEXT NOT NULL CHECK (kind IN ('builtin', 'custom')),
+  runtime_provider TEXT NOT NULL CHECK (
+    runtime_provider IN ('anthropic', 'deepseek', 'gemini', 'openai', 'custom')
+  ),
+  catalog_provider_id TEXT,
+  custom_slug TEXT,
+  display_name TEXT NOT NULL,
+  base_url TEXT,
+  secret_ref TEXT NOT NULL,
+  api_key_configured INTEGER NOT NULL DEFAULT 0,
+  health_status TEXT NOT NULL DEFAULT 'unknown',
+  health_message TEXT,
+  last_validated_at TEXT,
+  model_policy TEXT NOT NULL DEFAULT 'all_catalog' CHECK (
+    model_policy IN ('all_catalog', 'restricted', 'custom_only')
+  ),
+  preferred_model_id TEXT,
+  is_enabled INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
 
-MIGRATIONS: tuple[Migration, ...] = (
-    Migration(
-        version=1,
-        sql="""
-        CREATE TABLE IF NOT EXISTS workspaces (
-          id TEXT PRIMARY KEY,
-          name TEXT NOT NULL,
-          path_label TEXT NOT NULL,
-          real_path TEXT NOT NULL UNIQUE,
-          created_at TEXT NOT NULL,
-          updated_at TEXT NOT NULL
-        );
+CREATE UNIQUE INDEX IF NOT EXISTS uq_builtin_provider_connection
+ON provider_connections(catalog_provider_id)
+WHERE kind = 'builtin';
 
-        CREATE TABLE IF NOT EXISTS provider_connections (
-          id TEXT PRIMARY KEY,
-          kind TEXT NOT NULL CHECK (kind IN ('builtin', 'custom')),
-          runtime_provider TEXT NOT NULL CHECK (
-            runtime_provider IN ('anthropic', 'deepseek', 'gemini', 'openai', 'custom')
-          ),
-          catalog_provider_id TEXT,
-          custom_slug TEXT,
-          display_name TEXT NOT NULL,
-          base_url TEXT,
-          secret_ref TEXT NOT NULL,
-          api_key_configured INTEGER NOT NULL DEFAULT 0,
-          health_status TEXT NOT NULL DEFAULT 'unknown',
-          health_message TEXT,
-          last_validated_at TEXT,
-          model_policy TEXT NOT NULL DEFAULT 'all_catalog' CHECK (
-            model_policy IN ('all_catalog', 'restricted', 'custom_only')
-          ),
-          preferred_model_id TEXT,
-          is_enabled INTEGER NOT NULL DEFAULT 1,
-          created_at TEXT NOT NULL,
-          updated_at TEXT NOT NULL
-        );
+CREATE TABLE IF NOT EXISTS provider_models (
+  id TEXT PRIMARY KEY,
+  connection_id TEXT NOT NULL,
+  source TEXT NOT NULL CHECK (source IN ('catalog', 'custom')),
+  model_id TEXT NOT NULL,
+  display_name TEXT,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY (connection_id) REFERENCES provider_connections(id) ON DELETE CASCADE
+);
 
-        CREATE UNIQUE INDEX IF NOT EXISTS uq_builtin_provider_connection
-        ON provider_connections(catalog_provider_id)
-        WHERE kind = 'builtin';
+CREATE INDEX IF NOT EXISTS idx_provider_models_connection
+ON provider_models(connection_id, sort_order, model_id);
 
-        CREATE TABLE IF NOT EXISTS provider_models (
-          id TEXT PRIMARY KEY,
-          connection_id TEXT NOT NULL,
-          source TEXT NOT NULL CHECK (source IN ('catalog', 'custom')),
-          model_id TEXT NOT NULL,
-          display_name TEXT,
-          enabled INTEGER NOT NULL DEFAULT 1,
-          sort_order INTEGER NOT NULL DEFAULT 0,
-          created_at TEXT NOT NULL,
-          updated_at TEXT NOT NULL,
-          FOREIGN KEY (connection_id) REFERENCES provider_connections(id) ON DELETE CASCADE
-        );
+CREATE TABLE IF NOT EXISTS provider_headers (
+  id TEXT PRIMARY KEY,
+  connection_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  value_kind TEXT NOT NULL CHECK (value_kind IN ('plain', 'secret')),
+  plain_value TEXT,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY (connection_id) REFERENCES provider_connections(id) ON DELETE CASCADE
+);
 
-        CREATE INDEX IF NOT EXISTS idx_provider_models_connection
-        ON provider_models(connection_id, sort_order, model_id);
+CREATE TABLE IF NOT EXISTS sessions (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  session_key TEXT NOT NULL UNIQUE,
+  title TEXT NOT NULL,
+  title_source TEXT NOT NULL CHECK (
+    title_source IN ('placeholder', 'heuristic', 'model', 'manual')
+  ),
+  title_status TEXT NOT NULL DEFAULT 'idle' CHECK (
+    title_status IN ('idle', 'pending', 'ready', 'failed')
+  ),
+  title_generation_attempts INTEGER NOT NULL DEFAULT 0,
+  last_message_preview TEXT,
+  message_count INTEGER NOT NULL DEFAULT 0,
+  active_connection_id TEXT,
+  active_model_id TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  last_message_at TEXT,
+  FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE,
+  FOREIGN KEY (active_connection_id) REFERENCES provider_connections(id)
+);
 
-        CREATE TABLE IF NOT EXISTS provider_headers (
-          id TEXT PRIMARY KEY,
-          connection_id TEXT NOT NULL,
-          name TEXT NOT NULL,
-          value_kind TEXT NOT NULL CHECK (value_kind IN ('plain', 'secret')),
-          plain_value TEXT,
-          sort_order INTEGER NOT NULL DEFAULT 0,
-          created_at TEXT NOT NULL,
-          updated_at TEXT NOT NULL,
-          FOREIGN KEY (connection_id) REFERENCES provider_connections(id) ON DELETE CASCADE
-        );
+CREATE INDEX IF NOT EXISTS idx_sessions_workspace_updated
+ON sessions(workspace_id, updated_at DESC);
 
-        CREATE TABLE IF NOT EXISTS sessions (
-          id TEXT PRIMARY KEY,
-          workspace_id TEXT NOT NULL,
-          session_key TEXT NOT NULL UNIQUE,
-          title TEXT NOT NULL,
-          title_source TEXT NOT NULL CHECK (
-            title_source IN ('placeholder', 'heuristic', 'model', 'manual')
-          ),
-          title_status TEXT NOT NULL DEFAULT 'idle' CHECK (
-            title_status IN ('idle', 'pending', 'ready', 'failed')
-          ),
-          title_generation_attempts INTEGER NOT NULL DEFAULT 0,
-          last_message_preview TEXT,
-          message_count INTEGER NOT NULL DEFAULT 0,
-          active_connection_id TEXT,
-          active_model_id TEXT,
-          created_at TEXT NOT NULL,
-          updated_at TEXT NOT NULL,
-          last_message_at TEXT,
-          FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE,
-          FOREIGN KEY (active_connection_id) REFERENCES provider_connections(id)
-        );
+CREATE TABLE IF NOT EXISTS runs (
+  id TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL,
+  workspace_id TEXT NOT NULL,
+  connection_id TEXT NOT NULL,
+  model_id TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (
+    status IN ('queued', 'running', 'completed', 'failed', 'cancelled')
+  ),
+  input_text TEXT NOT NULL,
+  final_answer TEXT,
+  error_code TEXT,
+  error_message TEXT,
+  created_at TEXT NOT NULL,
+  started_at TEXT,
+  completed_at TEXT,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE,
+  FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE,
+  FOREIGN KEY (connection_id) REFERENCES provider_connections(id)
+);
 
-        CREATE INDEX IF NOT EXISTS idx_sessions_workspace_updated
-        ON sessions(workspace_id, updated_at DESC);
+CREATE TABLE IF NOT EXISTS timeline_entries (
+  id TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL,
+  run_id TEXT,
+  sequence_no INTEGER NOT NULL,
+  entry_kind TEXT NOT NULL CHECK (
+    entry_kind IN ('user_input', 'planning', 'action', 'final_answer', 'system_notice')
+  ),
+  display_role TEXT NOT NULL CHECK (
+    display_role IN ('user', 'assistant', 'system')
+  ),
+  step_id TEXT,
+  step_number INTEGER,
+  content_text TEXT,
+  content_json TEXT,
+  created_at TEXT NOT NULL,
+  FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE,
+  FOREIGN KEY (run_id) REFERENCES runs(id) ON DELETE CASCADE
+);
 
-        CREATE TABLE IF NOT EXISTS runs (
-          id TEXT PRIMARY KEY,
-          session_id TEXT NOT NULL,
-          workspace_id TEXT NOT NULL,
-          connection_id TEXT NOT NULL,
-          model_id TEXT NOT NULL,
-          status TEXT NOT NULL CHECK (
-            status IN ('queued', 'running', 'completed', 'failed', 'cancelled')
-          ),
-          input_text TEXT NOT NULL,
-          final_answer TEXT,
-          error_code TEXT,
-          error_message TEXT,
-          created_at TEXT NOT NULL,
-          started_at TEXT,
-          completed_at TEXT,
-          updated_at TEXT NOT NULL,
-          FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE,
-          FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE,
-          FOREIGN KEY (connection_id) REFERENCES provider_connections(id)
-        );
+CREATE UNIQUE INDEX IF NOT EXISTS uq_timeline_entries_session_sequence
+ON timeline_entries(session_id, sequence_no);
 
-        CREATE TABLE IF NOT EXISTS timeline_entries (
-          id TEXT PRIMARY KEY,
-          session_id TEXT NOT NULL,
-          run_id TEXT,
-          sequence_no INTEGER NOT NULL,
-          entry_kind TEXT NOT NULL CHECK (
-            entry_kind IN ('user_input', 'planning', 'action', 'final_answer', 'system_notice')
-          ),
-          display_role TEXT NOT NULL CHECK (
-            display_role IN ('user', 'assistant', 'system')
-          ),
-          step_id TEXT,
-          step_number INTEGER,
-          content_text TEXT,
-          content_json TEXT,
-          created_at TEXT NOT NULL,
-          FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE,
-          FOREIGN KEY (run_id) REFERENCES runs(id) ON DELETE CASCADE
-        );
+CREATE INDEX IF NOT EXISTS idx_timeline_entries_session_created
+ON timeline_entries(session_id, created_at, sequence_no);
 
-        CREATE UNIQUE INDEX IF NOT EXISTS uq_timeline_entries_session_sequence
-        ON timeline_entries(session_id, sequence_no);
+CREATE INDEX IF NOT EXISTS idx_timeline_entries_run_sequence
+ON timeline_entries(run_id, sequence_no, created_at);
 
-        CREATE INDEX IF NOT EXISTS idx_timeline_entries_session_created
-        ON timeline_entries(session_id, created_at, sequence_no);
+CREATE TABLE IF NOT EXISTS attachments (
+  id TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL,
+  workspace_id TEXT NOT NULL,
+  file_name TEXT NOT NULL,
+  mime_type TEXT NOT NULL,
+  size_bytes INTEGER NOT NULL,
+  storage_path TEXT NOT NULL UNIQUE,
+  status TEXT NOT NULL CHECK (status IN ('uploaded', 'consumed', 'deleted', 'missing')),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE,
+  FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
+);
 
-        CREATE INDEX IF NOT EXISTS idx_timeline_entries_run_sequence
-        ON timeline_entries(run_id, sequence_no, created_at);
+CREATE INDEX IF NOT EXISTS idx_attachments_session_status
+ON attachments(session_id, status, created_at);
 
-        CREATE TABLE IF NOT EXISTS attachments (
-          id TEXT PRIMARY KEY,
-          session_id TEXT NOT NULL,
-          workspace_id TEXT NOT NULL,
-          file_name TEXT NOT NULL,
-          mime_type TEXT NOT NULL,
-          size_bytes INTEGER NOT NULL,
-          storage_path TEXT NOT NULL UNIQUE,
-          status TEXT NOT NULL CHECK (status IN ('uploaded', 'consumed', 'deleted', 'missing')),
-          created_at TEXT NOT NULL,
-          updated_at TEXT NOT NULL,
-          FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE,
-          FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
-        );
+CREATE TABLE IF NOT EXISTS draft_attachments (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  file_name TEXT NOT NULL,
+  mime_type TEXT NOT NULL,
+  size_bytes INTEGER NOT NULL,
+  storage_path TEXT NOT NULL UNIQUE,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
+);
 
-        CREATE INDEX IF NOT EXISTS idx_attachments_session_status
-        ON attachments(session_id, status, created_at);
-
-        CREATE TABLE IF NOT EXISTS draft_attachments (
-          id TEXT PRIMARY KEY,
-          workspace_id TEXT NOT NULL,
-          file_name TEXT NOT NULL,
-          mime_type TEXT NOT NULL,
-          size_bytes INTEGER NOT NULL,
-          storage_path TEXT NOT NULL UNIQUE,
-          created_at TEXT NOT NULL,
-          updated_at TEXT NOT NULL,
-          FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_draft_attachments_workspace_created
-        ON draft_attachments(workspace_id, created_at, id);
-        """,
-    ),
-)
+CREATE INDEX IF NOT EXISTS idx_draft_attachments_workspace_created
+ON draft_attachments(workspace_id, created_at, id);
+"""
 
 
 def prepare_storage(ns_bot_home: str | None = None) -> StoragePaths:
@@ -224,27 +213,13 @@ def connect_database(
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA foreign_keys = ON;")
     connection.execute("PRAGMA journal_mode = WAL;")
-    apply_migrations(connection)
+    initialize_schema(connection)
     return connection
 
 
-def apply_migrations(connection: sqlite3.Connection) -> None:
-    current_version = get_user_version(connection)
-
-    for migration in MIGRATIONS:
-        if migration.version <= current_version:
-            continue
-
-        with transaction(connection):
-            connection.executescript(migration.sql)
-            connection.execute(f"PRAGMA user_version = {migration.version};")
-
-
-def get_user_version(connection: sqlite3.Connection) -> int:
-    row = connection.execute("PRAGMA user_version;").fetchone()
-    if row is None:
-        return 0
-    return int(row[0])
+def initialize_schema(connection: sqlite3.Connection) -> None:
+    with transaction(connection):
+        connection.executescript(SCHEMA_SQL)
 
 
 def list_tables(connection: sqlite3.Connection) -> list[str]:

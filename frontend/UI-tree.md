@@ -62,8 +62,8 @@ Home (Page)
 │   │   │       ├── Heading("Let's start")
 │   │   │       └── SubHeading({activeProjectLabel})
 │   │   ├── (条件渲染: 有对话记录时)
-│   │   │   └── MessageList
-│   │   │       ├── MessageRow(role="user")
+│   │   │   └── TimelineEntryList
+│   │   │       ├── TimelineEntryRow(entryKind="user_input", role="user")
 │   │   │       │   ├── UserMessageBubble ("User message")
 │   │   │       │   │   ├── 状态: view
 │   │   │       │   │   │   └── BubbleContent (whitespace-pre-wrap)
@@ -78,7 +78,11 @@ Home (Page)
 │   │   │       │       ├── ActionButton("Copy", icon=Copy)
 │   │   │       │       ├── ActionButton("Edit", icon=Pencil)
 │   │   │       │       └── Tooltip("Copy" / "Edit", hover 或 focus 时显示)
-│   │   │       └── MessageRow(role="assistant")
+│   │   │       ├── TimelineEntryRow(entryKind="planning", role="assistant")
+│   │   │       │   └── PlanningStepCard
+│   │   │       ├── TimelineEntryRow(entryKind="action", role="assistant")
+│   │   │       │   └── ActionStepCard (Observations / Code action / Action output / Footnote)
+│   │   │       ├── TimelineEntryRow(entryKind="final_answer", role="assistant")
 │   │   │           ├── AgentAvatar (gradient dot)
 │   │   │           └── AgentMessageBubble
 │   │   │               ├── AgentMarkdownContent (Markdown 渲染内容)
@@ -87,6 +91,8 @@ Home (Page)
 │   │   │               └── MarkdownActions (anchor=left-bottom, hover 或 focus-within 时显示)
 │   │   │                   ├── ActionButton("Copy", icon=Copy)
 │   │   │                   └── Tooltip("Copy", hover 或 focus 时显示)
+│   │   │       └── TimelineEntryRow(entryKind="system_notice", role="system")
+│   │   │           └── System notice bubble
 │   │   └── ScrollToBottomButton (绝对定位 absolute bottom, icon=ArrowDown, 未到底部时显示)
 │   └── ComposerPanel (底部固定)
 │       ├── InputField(placeholder="Ask for follow-up changes")
@@ -95,6 +101,8 @@ Home (Page)
 │           │   ├── IconButton(icon=Plus, 支持从 activeProject 所在文件夹中选取文件)
 │           │   ├── ModelSelector({selectedModel}, icon=ChevronDown)
 │           │   │   └── DropdownMenu(List of Models)
+│           │   ├── ReasoningSelector(label="Reasoning")
+│           │   │   └── Select(Auto / low / medium / high ...)
 │           │   └── PermissionSelector(icon=ShieldCheck)
 │           │       └── DropdownMenu("Default permissions", "Full access")
 │           └── RightActions
@@ -153,18 +161,18 @@ Home (Page)
 3. **复合交互的侧边栏**: 项目组通过 `hover` 状态挂载了比较多的隐藏交互（例如针对 "github" Project 的 "More options" 菜单和 "Start new session" 悬浮按钮）。**强调：类似 DropdownMenu 这样的弹出菜单需采用 Portal 等机制渲染脱离普通文档流，严格避免被 Sidebar 的边界或 `overflow` 属性遮挡。**
 4. **主内容区的滚动与状态流**: `MainContent` 内部采用纵向弹性（`flex-col`），首尾的 `Header` 和 `ComposerPanel` 空间固定，中间使用 `flex-1 overflow-y-auto` 划分出独立的一块主内容滚动区域。并利用这块滚动容器的相对定位能力，放置了一个通过滚动距离判定的绝对位置悬浮“到底部”快捷按钮。`ModelSelector` 的候选模型仅来自**已完成校验且状态为 `connected`** 的 provider；`Not validated` 或校验失败的 provider 不会进入模型列表。
 5. **Provider 管理流已闭环**: `ProvidersPage` 不再只是空状态展示，当前已支持“查看 Connected providers -> 点击进入 ProviderConfigPage 编辑 -> 断开删除”的完整管理流；`PopularProviders` 对已连接项会切换为 `Edit` 而非重复 `+ Connect`。在保存 provider 后，前端会自动对其**主模型（优先 `preferredModelId`）**发起一次真实连通性校验，校验结果会回写到 `ConnectedProviders` 的状态 badge / message，并进一步决定其模型是否可以出现在 `ModelSelector`。
-6. **消息气泡动作与编辑态**: `MessageList` 采用按角色拆分的消息行结构。`UserMessageBubble` 在右下角于 hover 或 focus-within 时显示 `Copy` 与 `Edit`，点击 `Edit` 进入行内编辑态（`EditTextarea + Cancel/Send`），提交中进入 `submitting` 子状态。`AgentMessageBubble` 对 markdown 内容在左下角于 hover 或 focus-within 时显示 `Copy`，复制源 markdown 字符串（含代码块），而非渲染后的 DOM 纯文本。
+6. **时间线条目动作与编辑态**: `TimelineEntryList` 采用按 `entryKind + displayRole` 的渲染分支。`UserMessageBubble` 在右下角于 hover 或 focus-within 时显示 `Copy` 与 `Edit`，点击 `Edit` 进入行内编辑态（`EditTextarea + Cancel/Send`），提交中进入 `submitting` 子状态。`AgentMessageBubble` 对 markdown 内容在左下角于 hover 或 focus-within 时显示 `Copy`，复制源 markdown 字符串（含代码块），而非渲染后的 DOM 纯文本；`planning/action/system_notice` 走专门时间线卡片样式。
 
-### MessageList 行为接口与受控状态（UI Tree 约定）
+### TimelineEntryList 行为接口与受控状态（UI Tree 约定）
 1. **行为回调**:
-   - `onCopyMessage(messageId, role)`: 统一处理 user/assistant 消息复制。
-   - `onStartEditMessage(messageId)`: 进入 user 消息编辑态。
-   - `onCancelEditMessage(messageId)`: 取消编辑并回到 view。
-   - `onSubmitEditMessage(messageId, nextContent)`: 提交编辑并触发“从该消息开始重跑后续 assistant 输出”。
-2. **MessageList 可注入回调**:
-   - `onCopyMessage`
-   - `onEditMessageSubmit`
-   - `onEditMessageCancel`
+   - `onCopyTimelineEntry(entryId, role)`: 统一处理 user/assistant 时间线文本复制。
+   - `onStartEditTimelineEntry(entryId)`: 进入 `user_input` 条目编辑态。
+   - `onCancelEditTimelineEntry(entryId)`: 取消编辑并回到 view。
+   - `onSubmitEditTimelineEntry(entryId, nextContent)`: 提交编辑并触发“从该条目开始重跑后续 assistant 输出”。
+2. **TimelineEntryList 可注入回调**:
+   - `onCopyTimelineEntry`
+   - `onSubmitEditTimelineEntry`
+   - `onCancelEditTimelineEntry`
 3. **UserMessageBubble 受控能力**:
    - `isEditing`
    - `isSubmittingEdit`

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import shutil
 import tempfile
 import unittest
@@ -131,9 +132,10 @@ class RuntimeServiceTests(unittest.TestCase):
 
         self.assertEqual(result["final_answer"], "ok")
         self.assertGreaterEqual(len(result["deltas"]), 1)
-        self.assertEqual(result["steps"][0]["step_kind"], "action")
-        self.assertTrue(result["steps"][0]["has_delta"])
-        self.assertEqual(result["steps"][0]["usage"]["reasoning_tokens"], 0)
+        self.assertEqual(result["timeline_entries"][0]["entry_kind"], "action")
+        payload = json.loads(result["timeline_entries"][0]["content_json"])
+        self.assertGreaterEqual(len(payload["observations"]), 1)
+        self.assertEqual(payload["usage"]["reasoningTokens"], 0)
 
     def test_direct_mode_execution(self) -> None:
         cfg = replace(
@@ -358,7 +360,7 @@ class RuntimeServiceTests(unittest.TestCase):
             service_instance = service_cls.return_value
             service_instance.process.return_value = {
                 "deltas": [],
-                "steps": [],
+                "timeline_entries": [],
                 "final_answer": "ok",
             }
 

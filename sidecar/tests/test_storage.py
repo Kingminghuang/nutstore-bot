@@ -6,7 +6,6 @@ import unittest
 
 from python_runtime.storage import (
     connect_database,
-    get_user_version,
     list_tables,
     prepare_storage,
 )
@@ -25,10 +24,9 @@ class StorageTests(unittest.TestCase):
         self.assertTrue(paths.secrets_dir.exists())
         self.assertTrue(str(paths.database).endswith("sidecar.db"))
 
-    def test_connect_database_applies_migrations(self) -> None:
+    def test_connect_database_initializes_schema(self) -> None:
         connection = connect_database(self.temp_dir)
         try:
-            self.assertEqual(get_user_version(connection), 1)
             tables = list_tables(connection)
             self.assertIn("workspaces", tables)
             self.assertIn("provider_connections", tables)

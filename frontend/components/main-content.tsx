@@ -53,12 +53,12 @@ interface MainContentProps {
   runError: string | null
   hasMoreHistory: boolean
   isLoadingHistory: boolean
-  onLoadEarlierMessages: () => Promise<void>
+  onLoadEarlierTimeline: () => Promise<void>
   composerAttachments: Array<ComposerAttachment | DraftAttachment>
   isUploadingAttachment: boolean
   onAttachFiles: (files: File[]) => Promise<void>
   onRemoveAttachment: (attachmentId: string) => Promise<void>
-  onEditMessageAndRerun: (messageId: string, nextContent: string) => Promise<void>
+  onEditTimelineEntryAndRerun: (entryId: string, nextContent: string) => Promise<void>
   onOpenSettings?: () => void
 }
 
@@ -77,12 +77,12 @@ export function MainContent({
   runError,
   hasMoreHistory,
   isLoadingHistory,
-  onLoadEarlierMessages,
+  onLoadEarlierTimeline,
   composerAttachments,
   isUploadingAttachment,
   onAttachFiles,
   onRemoveAttachment,
-  onEditMessageAndRerun,
+  onEditTimelineEntryAndRerun,
   onOpenSettings,
 }: MainContentProps) {
   const [permissionOpen, setPermissionOpen] = useState(false)
@@ -92,7 +92,7 @@ export function MainContent({
   const [isGenerating, setIsGenerating] = useState(false)
   const [showScrollBtn, setShowScrollBtn] = useState(false)
   const [hasAnimatedProviderNotice, setHasAnimatedProviderNotice] = useState(false)
-  const [editingMessageId, setEditingMessageId] = useState<string | null>(null)
+  const [editingEntryId, setEditingEntryId] = useState<string | null>(null)
   const [editingValue, setEditingValue] = useState("")
   const [isSubmittingEdit, setIsSubmittingEdit] = useState(false)
 
@@ -146,7 +146,7 @@ export function MainContent({
     scrollElement.scrollTop = scrollElement.scrollHeight
   }, [messages])
 
-  const handleLoadEarlierMessages = async () => {
+  const handleLoadEarlierTimeline = async () => {
     if (!hasMoreHistory || isLoadingHistory) {
       return
     }
@@ -158,7 +158,7 @@ export function MainContent({
       }
     }
     try {
-      await onLoadEarlierMessages()
+      await onLoadEarlierTimeline()
     } catch {
       pendingHistoryScrollRestore.current = null
     }
@@ -226,24 +226,24 @@ export function MainContent({
     }
   }
 
-  const startEditMessage = (messageId: string, content: string) => {
+  const startEditTimelineEntry = (entryId: string, content: string) => {
     if (isSubmittingEdit) {
       return
     }
-    setEditingMessageId(messageId)
+    setEditingEntryId(entryId)
     setEditingValue(content)
   }
 
-  const cancelEditMessage = () => {
+  const cancelEditTimelineEntry = () => {
     if (isSubmittingEdit) {
       return
     }
-    setEditingMessageId(null)
+    setEditingEntryId(null)
     setEditingValue("")
   }
 
-  const submitEditedMessage = async () => {
-    if (!editingMessageId || isSubmittingEdit) {
+  const submitEditedTimelineEntry = async () => {
+    if (!editingEntryId || isSubmittingEdit) {
       return
     }
     const nextContent = editingValue.trim()
@@ -252,8 +252,8 @@ export function MainContent({
     }
     setIsSubmittingEdit(true)
     try {
-      await onEditMessageAndRerun(editingMessageId, nextContent)
-      setEditingMessageId(null)
+      await onEditTimelineEntryAndRerun(editingEntryId, nextContent)
+      setEditingEntryId(null)
       setEditingValue("")
     } catch {
       // Parent state already surfaces request errors.
@@ -303,7 +303,7 @@ export function MainContent({
               <div className="flex justify-center">
                 <button
                   onClick={() => {
-                    void handleLoadEarlierMessages()
+                    void handleLoadEarlierTimeline()
                   }}
                   disabled={isLoadingHistory}
                   className={cn(
@@ -321,17 +321,17 @@ export function MainContent({
               <TimelineEntryView
                 key={entry.id}
                 entry={entry}
-                isEditing={editingMessageId === entry.id}
+                isEditing={editingEntryId === entry.id}
                 editingValue={editingValue}
                 isSubmittingEdit={isSubmittingEdit}
                 onCopyMessage={(content) => {
                   void copyMessage(content)
                 }}
                 onEditValueChange={setEditingValue}
-                onStartEdit={startEditMessage}
-                onCancelEdit={cancelEditMessage}
+                onStartEdit={startEditTimelineEntry}
+                onCancelEdit={cancelEditTimelineEntry}
                 onSubmitEdit={() => {
-                  void submitEditedMessage()
+                  void submitEditedTimelineEntry()
                 }}
               />
             ))}

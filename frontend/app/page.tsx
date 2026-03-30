@@ -1051,7 +1051,7 @@ export default function Home() {
         runError={runError}
         hasMoreHistory={activeSession?.hasMoreHistory ?? false}
         isLoadingHistory={activeSession?.isLoadingHistory ?? false}
-        onLoadEarlierMessages={handleLoadEarlierTimeline}
+        onLoadEarlierTimeline={handleLoadEarlierTimeline}
         composerAttachments={
           activeSessionId
             ? attachmentsBySession[activeSessionId] ?? []
@@ -1068,7 +1068,7 @@ export default function Home() {
         }
         onAttachFiles={handleAttachFiles}
         onRemoveAttachment={handleRemoveAttachment}
-        onEditMessageAndRerun={handleEditTimelineEntryAndRerun}
+        onEditTimelineEntryAndRerun={handleEditTimelineEntryAndRerun}
         onOpenSettings={() => setSettingsOpen(true)}
       />
       <SettingsModal

@@ -81,12 +81,12 @@ function renderMainContent(
       runError={null}
       hasMoreHistory={false}
       isLoadingHistory={false}
-      onLoadEarlierMessages={vi.fn(async () => undefined)}
+      onLoadEarlierTimeline={vi.fn(async () => undefined)}
       composerAttachments={[]}
       isUploadingAttachment={false}
       onAttachFiles={vi.fn(async () => undefined)}
       onRemoveAttachment={vi.fn(async () => undefined)}
-      onEditMessageAndRerun={vi.fn(async () => undefined)}
+      onEditTimelineEntryAndRerun={vi.fn(async () => undefined)}
     />
   )
 
@@ -135,12 +135,12 @@ describe("MainContent model selector", () => {
         runError={null}
         hasMoreHistory={false}
         isLoadingHistory={false}
-        onLoadEarlierMessages={vi.fn(async () => undefined)}
+        onLoadEarlierTimeline={vi.fn(async () => undefined)}
         composerAttachments={[]}
         isUploadingAttachment={false}
         onAttachFiles={vi.fn(async () => undefined)}
         onRemoveAttachment={vi.fn(async () => undefined)}
-        onEditMessageAndRerun={vi.fn(async () => undefined)}
+        onEditTimelineEntryAndRerun={vi.fn(async () => undefined)}
       />
     )
 
@@ -167,12 +167,12 @@ describe("MainContent model selector", () => {
         runError={null}
         hasMoreHistory={false}
         isLoadingHistory={false}
-        onLoadEarlierMessages={vi.fn(async () => undefined)}
+        onLoadEarlierTimeline={vi.fn(async () => undefined)}
         composerAttachments={[]}
         isUploadingAttachment={false}
         onAttachFiles={vi.fn(async () => undefined)}
         onRemoveAttachment={vi.fn(async () => undefined)}
-        onEditMessageAndRerun={vi.fn(async () => undefined)}
+        onEditTimelineEntryAndRerun={vi.fn(async () => undefined)}
         onOpenSettings={onOpenSettings}
       />
     )
@@ -263,7 +263,7 @@ describe("MainContent model selector", () => {
         writeText: vi.fn(async () => undefined),
       },
     })
-    const onEditMessageAndRerun = vi.fn(async () => undefined)
+    const onEditTimelineEntryAndRerun = vi.fn(async () => undefined)
 
     render(
       <MainContent
@@ -306,12 +306,12 @@ describe("MainContent model selector", () => {
         runError={null}
         hasMoreHistory={false}
         isLoadingHistory={false}
-        onLoadEarlierMessages={vi.fn(async () => undefined)}
+        onLoadEarlierTimeline={vi.fn(async () => undefined)}
         composerAttachments={[]}
         isUploadingAttachment={false}
         onAttachFiles={vi.fn(async () => undefined)}
         onRemoveAttachment={vi.fn(async () => undefined)}
-        onEditMessageAndRerun={onEditMessageAndRerun}
+        onEditTimelineEntryAndRerun={onEditTimelineEntryAndRerun}
       />
     )
 
@@ -326,7 +326,7 @@ describe("MainContent model selector", () => {
     fireEvent.click(screen.getByText("Send"))
 
     await waitFor(() => {
-      expect(onEditMessageAndRerun).toHaveBeenCalledWith("msg_user", "please update this now")
+      expect(onEditTimelineEntryAndRerun).toHaveBeenCalledWith("msg_user", "please update this now")
     })
   })
 })

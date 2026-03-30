@@ -974,7 +974,7 @@ class ApiServerTests(unittest.TestCase):
             self.app.state.run_service,
             runtime_executor=lambda *_args, **_kwargs: {
                 "deltas": [],
-                "steps": [],
+                "timeline_entries": [],
                 "final_answer": "Edited run complete",
             },
         )
@@ -1231,7 +1231,7 @@ class ApiServerTests(unittest.TestCase):
             self.app.state.run_service,
             runtime_executor=lambda *_args, **_kwargs: {
                 "deltas": [],
-                "steps": [],
+                "timeline_entries": [],
                 "final_answer": "Attachment accepted",
             },
         )
@@ -1527,7 +1527,7 @@ class ApiServerTests(unittest.TestCase):
             del config, run_id, user_input, auth_context, metadata
             return {
                 "deltas": [],
-                "steps": [],
+                "timeline_entries": [],
                 "final_answer": "Fallback title flow complete.",
             }
 
@@ -1670,7 +1670,7 @@ class ApiServerTests(unittest.TestCase):
             captured["metadata"] = metadata
             return {
                 "deltas": [],
-                "steps": [],
+                "timeline_entries": [],
                 "final_answer": "Implemented sidecar run orchestration.",
             }
 
@@ -1769,7 +1769,7 @@ class ApiServerTests(unittest.TestCase):
             captured["config"] = config
             return {
                 "deltas": [],
-                "steps": [],
+                "timeline_entries": [],
                 "final_answer": "Reasoning set explicitly.",
             }
 
@@ -1902,7 +1902,7 @@ class ApiServerTests(unittest.TestCase):
             captured["metadata"] = metadata
             return {
                 "deltas": [],
-                "steps": [],
+                "timeline_entries": [],
                 "final_answer": "Custom gateway run complete.",
             }
 
@@ -1955,7 +1955,7 @@ class ApiServerTests(unittest.TestCase):
         def fake_runtime_executor(config, run_id, user_input, auth_context, metadata):
             return {
                 "deltas": [],
-                "steps": [],
+                "timeline_entries": [],
                 "final_answer": "Queued run completed later.",
             }
 
@@ -2006,20 +2006,16 @@ class ApiServerTests(unittest.TestCase):
                         "text": "Searching workspace",
                     }
                 ],
-                "steps": [
+                "timeline_entries": [
                     {
+                        "session_id": str(session["id"]),
+                        "run_id": run_id,
+                        "entry_kind": "action",
+                        "display_role": "assistant",
                         "step_id": "step-1",
-                        "step_kind": "action",
-                        "model_output": "Used grep",
-                        "observations": ["Found 3 files"],
-                        "error": None,
-                        "usage": {
-                            "input_tokens": 11,
-                            "output_tokens": 7,
-                            "reasoning_tokens": 0,
-                        },
-                        "duration_ms": 120,
-                        "has_delta": True,
+                        "step_number": 1,
+                        "content_text": None,
+                        "content_json": '{"toolCalls":[],"observations":["Found 3 files"],"codeAction":null,"actionOutput":null,"error":null,"usage":{"inputTokens":11,"outputTokens":7,"reasoningTokens":0},"durationMs":120}',
                     }
                 ],
                 "final_answer": "Completed with SSE events.",
@@ -2114,42 +2110,26 @@ class ApiServerTests(unittest.TestCase):
         def fake_runtime_executor(config, run_id, user_input, auth_context, metadata):
             return {
                 "deltas": [],
-                "steps": [
+                "timeline_entries": [
                     {
+                        "session_id": str(session["id"]),
+                        "run_id": run_id,
+                        "entry_kind": "planning",
+                        "display_role": "assistant",
                         "step_id": "step-1",
                         "step_number": None,
-                        "step_kind": "planning",
-                        "plan": "Inspect the workspace and outline the approach.",
-                        "model_output": "Inspect the workspace and outline the approach.",
-                        "code_action": None,
-                        "action_output": None,
-                        "observations": [],
-                        "error": None,
-                        "usage": {
-                            "input_tokens": 11,
-                            "output_tokens": 4,
-                            "reasoning_tokens": 0,
-                        },
-                        "duration_ms": 120,
-                        "has_delta": True,
+                        "content_text": "Inspect the workspace and outline the approach.",
+                        "content_json": None,
                     },
                     {
+                        "session_id": str(session["id"]),
+                        "run_id": run_id,
+                        "entry_kind": "action",
+                        "display_role": "assistant",
                         "step_id": "step-2",
                         "step_number": 1,
-                        "step_kind": "action",
-                        "plan": None,
-                        "model_output": "Ignored model output",
-                        "code_action": 'print("done")',
-                        "action_output": {"result": "done"},
-                        "observations": ["Execution logs:", "done"],
-                        "error": None,
-                        "usage": {
-                            "input_tokens": 9,
-                            "output_tokens": 3,
-                            "reasoning_tokens": 0,
-                        },
-                        "duration_ms": 180,
-                        "has_delta": False,
+                        "content_text": None,
+                        "content_json": '{"toolCalls":[],"observations":["Execution logs:","done"],"codeAction":"print(\\"done\\")","actionOutput":{"result":"done"},"error":null,"usage":{"inputTokens":9,"outputTokens":3,"reasoningTokens":0},"durationMs":180}',
                     },
                 ],
                 "final_answer": "Done.",
@@ -2181,9 +2161,11 @@ class ApiServerTests(unittest.TestCase):
         self.assertEqual(steps_response.status_code, 200)
 
         body = steps_response.json()
-        self.assertEqual(len(body["entries"]), 2)
+        self.assertEqual(len(body["entries"]), 4)
         self.assertEqual(body["entries"][0]["entryKind"], "user_input")
-        self.assertEqual(body["entries"][1]["entryKind"], "final_answer")
+        self.assertEqual(body["entries"][1]["entryKind"], "planning")
+        self.assertEqual(body["entries"][2]["entryKind"], "action")
+        self.assertEqual(body["entries"][3]["entryKind"], "final_answer")
 
     def test_cancel_run_marks_run_cancelled_and_emits_terminal_events(self) -> None:
         workspace = self._create_workspace("workspace-run-cancel")
@@ -2205,7 +2187,7 @@ class ApiServerTests(unittest.TestCase):
                 raise RuntimeProcessError("cancelled", "Run cancelled")
             return {
                 "deltas": [],
-                "steps": [],
+                "timeline_entries": [],
                 "final_answer": "Should not complete",
             }
 
@@ -2295,7 +2277,7 @@ class ApiServerTests(unittest.TestCase):
         def fake_runtime_executor(*args, **kwargs):
             return {
                 "deltas": [],
-                "steps": [],
+                "timeline_entries": [],
                 "final_answer": "Draft attachment run complete.",
             }
 

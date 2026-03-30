@@ -612,22 +612,14 @@ class RunService:
         if not emitted_live_events:
             self._emit_runtime_events(run_id, session_id, result, started_at)
 
-        timeline_entries = [
-            entry
-            for entry in list(result.get("timeline_entries") or [])
-            if str(entry.get("entry_kind") or "") != "user_input"
-        ]
-        timeline_entries.append(
-            project_final_answer_to_timeline_entry(
+        final_answer_entry = self.timeline_entries.append(
+            created_at=started_at,
+            **project_final_answer_to_timeline_entry(
                 final_answer,
                 run_id=run_id,
                 session_id=session_id,
-            )
+            ),
         )
-        persisted_entries = [
-            self.timeline_entries.append(created_at=started_at, **entry)
-            for entry in timeline_entries
-        ]
         self.session_service.timeline_service.refresh_session_summary(
             session_id,
             active_connection_id=connection_id,
@@ -661,7 +653,7 @@ class RunService:
                 session_id=session_id,
                 sequence=self._next_sequence(run_id),
                 created_at=completed_run.completed_at or completed_run.updated_at,
-                entry=serialize_timeline_entry(persisted_entries[-1]),
+                entry=serialize_timeline_entry(final_answer_entry),
             ),
         )
         self._append_event(
@@ -1177,53 +1169,6 @@ def execute_runtime_run(
     )
 
 
-def _serialize_run_step_payload(step) -> dict[str, Any]:
-    usage = _json_loads_dict(
-        step.usage_json,
-        fallback={
-            "inputTokens": 0,
-            "outputTokens": 0,
-            "reasoningTokens": 0,
-        },
-    )
-    observations = _json_loads_list(step.observations_json)
-    action_output = _json_loads_value(step.action_output_json)
-
-    if step.step_kind == "planning":
-        return {
-            "id": step.id,
-            "runId": step.run_id,
-            "sessionId": step.session_id,
-            "sequenceNo": step.sequence_no,
-            "stepId": step.step_id,
-            "stepKind": "planning",
-            "stepNumber": None,
-            "plan": step.plan_text or "",
-            "usage": usage,
-            "durationMs": step.duration_ms,
-            "hasDelta": step.has_delta,
-            "createdAt": step.created_at,
-        }
-
-    return {
-        "id": step.id,
-        "runId": step.run_id,
-        "sessionId": step.session_id,
-        "sequenceNo": step.sequence_no,
-        "stepId": step.step_id,
-        "stepKind": "action",
-        "stepNumber": step.step_number,
-        "codeAction": step.code_action,
-        "actionOutput": action_output,
-        "observations": observations,
-        "error": step.error_text,
-        "usage": usage,
-        "durationMs": step.duration_ms,
-        "hasDelta": step.has_delta,
-        "createdAt": step.created_at,
-    }
-
-
 def serialize_run(run) -> dict[str, Any]:
     return {
         "id": run.id,
@@ -1311,37 +1256,6 @@ def _json_dumps_or_none(value: Any) -> str | None:
         return json.dumps(value, ensure_ascii=False)
     except TypeError:
         return json.dumps(str(value), ensure_ascii=False)
-
-
-def _json_loads_dict(raw: str | None, fallback: dict[str, Any]) -> dict[str, Any]:
-    if raw is None:
-        return fallback
-    try:
-        value = json.loads(raw)
-    except json.JSONDecodeError:
-        return fallback
-    return value if isinstance(value, dict) else fallback
-
-
-def _json_loads_list(raw: str | None) -> list[str]:
-    if raw is None:
-        return []
-    try:
-        value = json.loads(raw)
-    except json.JSONDecodeError:
-        return []
-    if not isinstance(value, list):
-        return []
-    return [str(item) for item in value]
-
-
-def _json_loads_value(raw: str | None) -> Any:
-    if raw is None:
-        return None
-    try:
-        return json.loads(raw)
-    except json.JSONDecodeError:
-        return raw
 
 
 def _default_reasoning_effort(values: list[str]) -> str | None:
