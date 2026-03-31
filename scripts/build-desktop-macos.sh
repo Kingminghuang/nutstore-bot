@@ -5,6 +5,10 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TARGET_TRIPLE="aarch64-apple-darwin"
 BUILD_MODE="release"
 BUILD_DMG="false"
+TAURI_CONF="${REPO_ROOT}/src-tauri/tauri.conf.json"
+PRODUCT_NAME="$(node -p "require(process.argv[1]).productName" "${TAURI_CONF}")"
+APP_VERSION="$(node -p "require(process.argv[1]).version" "${TAURI_CONF}")"
+DMG_ARCH_SUFFIX="${TARGET_TRIPLE%%-*}"
 
 sync_debug_sidecars() {
   local debug_root="${REPO_ROOT}/src-tauri/target/${TARGET_TRIPLE}/debug"
@@ -41,6 +45,43 @@ sync_bundle_sidecars() {
   mkdir -p "${binaries_dir}"
   ln -sfn "../next-sidecar" "${binaries_dir}/next-sidecar"
   ln -sfn "../nsbot-sidecar" "${binaries_dir}/nsbot-sidecar"
+}
+
+verify_or_resign_bundle() {
+  local bundle_root="$1"
+  local signature_dir="${bundle_root}/Contents/_CodeSignature"
+
+  if codesign --verify --deep --strict --verbose=2 "${bundle_root}"; then
+    echo "[post] Bundle signature verified"
+    return 0
+  fi
+
+  echo "[post] Bundle signature invalid after packaging; re-signing ad hoc for internal distribution"
+  rm -rf "${signature_dir}"
+  codesign --force --deep --sign - "${bundle_root}"
+  codesign --verify --deep --strict --verbose=2 "${bundle_root}"
+}
+
+build_dmg_from_bundle() {
+  local bundle_root="$1"
+  local dmg_path="$2"
+  local volume_name="$3"
+  local staging_dir
+
+  staging_dir="$(mktemp -d "${TMPDIR:-/tmp}/nutstore-bot-dmg.XXXXXX")"
+  rm -f "${dmg_path}"
+
+  ditto "${bundle_root}" "${staging_dir}/$(basename "${bundle_root}")"
+  ln -s /Applications "${staging_dir}/Applications"
+
+  hdiutil create \
+    -volname "${volume_name}" \
+    -srcfolder "${staging_dir}" \
+    -ov \
+    -format UDZO \
+    "${dmg_path}"
+
+  rm -rf "${staging_dir}"
 }
 
 usage() {
@@ -88,16 +129,17 @@ if [[ "${BUILD_MODE}" == "debug" && "${BUILD_DMG}" == "true" ]]; then
 fi
 
 if [[ "${BUILD_MODE}" == "debug" ]]; then
-  APP_BUNDLE="${REPO_ROOT}/src-tauri/target/${TARGET_TRIPLE}/debug/bundle/macos/NutstoreBot.app"
+  APP_BUNDLE="${REPO_ROOT}/src-tauri/target/${TARGET_TRIPLE}/debug/bundle/macos/${PRODUCT_NAME}.app"
   APP_BIN="${APP_BUNDLE}/Contents/MacOS/nutstore-bot-desktop"
   RAW_DEBUG_BIN="${REPO_ROOT}/src-tauri/target/${TARGET_TRIPLE}/debug/nutstore-bot-desktop"
   RAW_DEBUG_BINARIES_DIR="${REPO_ROOT}/src-tauri/target/${TARGET_TRIPLE}/debug/binaries"
 else
   RAW_RELEASE_BIN="${REPO_ROOT}/src-tauri/target/${TARGET_TRIPLE}/release/nutstore-bot-desktop"
-  APP_BIN="${REPO_ROOT}/src-tauri/target/${TARGET_TRIPLE}/release/bundle/macos/NutstoreBot.app/Contents/MacOS/nutstore-bot-desktop"
-  APP_BUNDLE="${REPO_ROOT}/src-tauri/target/${TARGET_TRIPLE}/release/bundle/macos/NutstoreBot.app"
+  APP_BIN="${REPO_ROOT}/src-tauri/target/${TARGET_TRIPLE}/release/bundle/macos/${PRODUCT_NAME}.app/Contents/MacOS/nutstore-bot-desktop"
+  APP_BUNDLE="${REPO_ROOT}/src-tauri/target/${TARGET_TRIPLE}/release/bundle/macos/${PRODUCT_NAME}.app"
   if [[ "${BUILD_DMG}" == "true" ]]; then
     DMG_DIR="${REPO_ROOT}/src-tauri/target/${TARGET_TRIPLE}/release/bundle/dmg"
+    DMG_PATH="${DMG_DIR}/${PRODUCT_NAME}_${APP_VERSION}_${DMG_ARCH_SUFFIX}.dmg"
   fi
 fi
 
@@ -114,20 +156,26 @@ echo "[3/3] Build Tauri app (${TARGET_TRIPLE}, ${BUILD_MODE})"
   if [[ "${BUILD_MODE}" == "debug" ]]; then
     RUST_BACKTRACE=full cargo tauri build --debug --target "${TARGET_TRIPLE}"
   elif [[ "${BUILD_DMG}" == "true" ]]; then
-    cargo tauri build --target "${TARGET_TRIPLE}" --bundles dmg
+    cargo tauri build --target "${TARGET_TRIPLE}" --bundles app
   else
     cargo tauri build --target "${TARGET_TRIPLE}"
   fi
 )
 
-if [[ -d "${APP_BUNDLE}" ]]; then
-  echo "[post] Sync bundle sidecars into Contents/MacOS/binaries"
-  sync_bundle_sidecars "${APP_BUNDLE}"
-fi
-
 if [[ "${BUILD_MODE}" == "debug" ]]; then
+  if [[ -d "${APP_BUNDLE}" ]]; then
+    echo "[post] Sync bundle sidecars into Contents/MacOS/binaries"
+    sync_bundle_sidecars "${APP_BUNDLE}"
+  fi
   echo "[post] Sync debug sidecars into target debug/binaries"
   sync_debug_sidecars
+elif [[ -d "${APP_BUNDLE}" ]]; then
+  verify_or_resign_bundle "${APP_BUNDLE}"
+  if [[ "${BUILD_DMG}" == "true" ]]; then
+    echo "[post] Build DMG from the final signed app bundle"
+    mkdir -p "${DMG_DIR}"
+    build_dmg_from_bundle "${APP_BUNDLE}" "${DMG_PATH}" "${PRODUCT_NAME}"
+  fi
 fi
 
 echo "Desktop build finished."
@@ -139,7 +187,6 @@ if [[ -d "${APP_BUNDLE}" ]]; then
 fi
 
 if [[ "${BUILD_DMG}" == "true" ]]; then
-  DMG_PATH="$(find "${DMG_DIR}" -maxdepth 1 -type f -name '*.dmg' | head -n 1 || true)"
   if [[ -n "${DMG_PATH}" ]]; then
     echo "- dmg:     ${DMG_PATH}"
   else
@@ -167,4 +214,13 @@ else
   echo "Do not run the raw release binary directly:"
   echo "\"${RAW_RELEASE_BIN}\""
   echo "It does not include the release/binaries sidecar entrypoints used by debug raw runs."
+  if [[ "${BUILD_DMG}" == "true" ]]; then
+    echo
+    echo "Internal distribution note (without Developer ID / notarization):"
+    echo "- if another Mac reports the app is blocked after download, copy NutstoreBot.app"
+    echo "  out of the mounted DMG and clear quarantine on the target machine:"
+    echo "  xattr -dr com.apple.quarantine \"/Applications/${PRODUCT_NAME}.app\""
+    echo "- if users still launch from Downloads, they can clear quarantine in place:"
+    echo "  xattr -dr com.apple.quarantine \"/path/to/${PRODUCT_NAME}.app\""
+  fi
 fi
