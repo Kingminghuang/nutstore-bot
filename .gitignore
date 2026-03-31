@@ -1,2 +1,10 @@
 .nsbot
 node_modules
+src-tauri/runtime
+src-tauri/target
+src-tauri/gen
+sidecar/dist
+sidecar/build
+sidecar/scripts/__pycache__
+.desktop-runtime
+desktop-runtime

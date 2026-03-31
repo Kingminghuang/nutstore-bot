@@ -3,8 +3,9 @@ const lifecycleEvent = process.env.npm_lifecycle_event
 const enableDevIndicators = lifecycleEvent === "dev" || lifecycleEvent === "dev:with-sidecar"
 
 const nextConfig = {
+  output: "standalone",
   typescript: {
-    ignoreBuildErrors: true,
+    ignoreBuildErrors: false,
   },
   images: {
     unoptimized: true,

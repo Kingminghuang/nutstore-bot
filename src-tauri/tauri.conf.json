@@ -1,0 +1,45 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Nutstore Bot",
+  "version": "0.1.0",
+  "identifier": "com.nutstore.bot",
+  "build": {
+    "frontendDist": "../desktop-fallback"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Nutstore Bot",
+        "width": 1320,
+        "height": 880,
+        "resizable": true,
+        "fullscreen": false,
+        "visible": false
+      }
+    ],
+    "security": {
+      "csp": null,
+      "capabilities": [
+        "default"
+      ]
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "app",
+    "icon": [
+      "../frontend/public/icon-light-32x32.png"
+    ],
+    "externalBin": [
+      "binaries/next-sidecar",
+      "binaries/node-runtime",
+      "binaries/nsbot-sidecar"
+    ],
+    "resources": [
+      "runtime/**/*"
+    ],
+    "macOS": {
+      "minimumSystemVersion": "12.0"
+    }
+  }
+}

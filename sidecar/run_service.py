@@ -611,6 +611,20 @@ class RunService:
             )
             self._clear_cancellation_event(run_id)
             return
+        except Exception as exc:
+            LOGGER.exception("Unexpected runtime failure for run_id=%s", run_id)
+            message = str(exc).strip() or exc.__class__.__name__
+            self._record_failed_run(
+                run_id=run_id,
+                session_id=session_id,
+                connection_id=connection_id,
+                model_id=model_id,
+                error_code="runtime_error",
+                error_message=f"Unexpected runtime error: {message}",
+                started_at=started_at,
+            )
+            self._clear_cancellation_event(run_id)
+            return
 
         final_answer = str(result.get("final_answer") or "").strip() or "Completed."
         if not emitted_live_events:

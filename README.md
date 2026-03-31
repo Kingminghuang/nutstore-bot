@@ -28,6 +28,11 @@ cd sidecar
 uv sync
 ```
 
+安全说明（sidecar）：
+
+- Provider secrets 当前存储为本地明文 JSON（`NS_BOT_HOME/secrets/*.enc`，文件后缀仅历史兼容命名）。
+- 旧版本密文不会自动迁移；升级后如遇 provider 鉴权失败，请在 UI/CLI 重新填写 secret。
+
 ## 本地开发
 
 ### 一键联调（推荐）
@@ -87,6 +92,84 @@ npm run build
 npm run start
 ```
 
+## Desktop Build (Tauri, macOS arm64)
+
+当前仓库支持桌面打包（Tauri `externalBin` + Node runtime + Next standalone + Python sidecar）：
+
+```bash
+bash ./scripts/build-desktop-macos.sh
+```
+
+如需生成便于排查启动失败问题的 debug 产物：
+
+```bash
+bash ./scripts/build-desktop-macos.sh --debug
+```
+
+该命令会依次执行：
+
+1. 构建 Next standalone
+2. 复制当前 `node` 运行时并生成 Next launcher sidecar（`src-tauri/binaries/node-runtime-<target-triple>` 和 `src-tauri/binaries/next-sidecar-<target-triple>`）
+3. 将 Next standalone 目录、`.next/static` 和 `public` 打包进 `src-tauri/runtime/next-standalone`
+4. 构建 Python sidecar（PyInstaller onefile，输出 `src-tauri/binaries/nsbot-sidecar-<target-triple>`）
+5. 调用 `cargo tauri build --target aarch64-apple-darwin`
+
+当前 macOS arm64 默认 target 固定为 `node22-macos-arm64`（在 `frontend/scripts/build-next-pkg-sidecar.mjs` 中维护）。
+
+运行时资源会整理到：
+
+```text
+src-tauri/runtime
+```
+
+`--debug` 模式下，会生成 debug bundle，并同步补齐 bundle 与 raw debug binary 所需的 sidecar 路径：
+
+```text
+src-tauri/target/aarch64-apple-darwin/debug/bundle/macos/Nutstore Bot.app
+src-tauri/target/aarch64-apple-darwin/debug/bundle/macos/Nutstore Bot.app/Contents/MacOS/binaries/{next-sidecar,nsbot-sidecar}
+src-tauri/target/aarch64-apple-darwin/debug/nutstore-bot-desktop
+src-tauri/target/aarch64-apple-darwin/debug/binaries/{next-sidecar,nsbot-sidecar}
+```
+
+如果遇到 `Killed: 9`（常见于本机 shell/环境钩子导致子脚本被系统终止），请优先确认你是通过 `bash ./scripts/build-desktop-macos.sh` 执行，而不是直接双击或用其他方式启动脚本。
+
+### 启动已打包 App（macOS）
+
+建议在仓库根目录执行：
+
+```bash
+APP_PATH="$(pwd)/src-tauri/target/aarch64-apple-darwin/release/bundle/macos/Nutstore Bot.app"
+open "$APP_PATH"
+```
+
+如需在终端查看运行日志：
+
+```bash
+APP_PATH="$(pwd)/src-tauri/target/aarch64-apple-darwin/release/bundle/macos/Nutstore Bot.app"
+"$APP_PATH/Contents/MacOS/nutstore-bot-desktop"
+```
+
+如需调试启动期错误，优先运行 debug bundle 内的主程序并打开完整 Rust backtrace：
+
+```bash
+RUST_BACKTRACE=full "$(pwd)/src-tauri/target/aarch64-apple-darwin/debug/bundle/macos/Nutstore Bot.app/Contents/MacOS/nutstore-bot-desktop"
+```
+
+如需直接运行 raw debug binary，也可以：
+
+```bash
+RUST_BACKTRACE=full "$(pwd)/src-tauri/target/aarch64-apple-darwin/debug/nutstore-bot-desktop"
+```
+
+前提是先通过 `bash ./scripts/build-desktop-macos.sh --debug` 让脚本同步好 bundle 内与 `target/.../debug` 下的 `binaries` 目录。这比只在 build 过程里打开 backtrace 更有帮助，因为类似 `[desktop-runtime] initial runtime start failed` 的问题发生在应用启动阶段，而不是 Rust 编译阶段。
+
+若出现“已损坏/无法验证开发者”提示，可先清除 quarantine：
+
+```bash
+APP_PATH="$(pwd)/src-tauri/target/aarch64-apple-darwin/release/bundle/macos/Nutstore Bot.app"
+xattr -dr com.apple.quarantine "$APP_PATH"
+```
+
 ## 测试
 
 前端单元测试（Vitest）：
@@ -101,6 +184,12 @@ sidecar 单元测试（Pytest）：
 ```bash
 cd sidecar
 uv run pytest
+```
+
+桌面运行时冒烟测试（验证 Tauri 进程能拉起 Next/Python sidecar，macOS）：
+
+```bash
+bash ./scripts/smoke-test-tauri-standalone-next-macos.sh
 ```
 
 ## Dev E2E Smoke Test（本地联调冒烟）

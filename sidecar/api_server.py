@@ -19,6 +19,7 @@ from fastapi import (
     UploadFile,
 )
 from fastapi.exceptions import RequestValidationError
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from attachment_store import AttachmentStore
@@ -44,6 +45,13 @@ from timeline_service import TimelineService
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
+LOCAL_CORS_ORIGINS = (
+    "tauri://localhost",
+    "http://tauri.localhost",
+    "https://tauri.localhost",
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+)
 
 
 @dataclass(frozen=True)
@@ -112,6 +120,13 @@ def create_app(config: ApiServerConfig | None = None) -> FastAPI:
                 db.close()
 
     app = FastAPI(title="Nutstore Bot NSBot", version=cfg.version, lifespan=lifespan)
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=list(LOCAL_CORS_ORIGINS),
+        allow_credentials=False,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
     app.state.api_server_config = cfg
     app.state.local_auth = auth_config
     app.state.database = database

@@ -1,0 +1,282 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Nutstore Bot Desktop</title>
+    <style>
+      :root {
+        color-scheme: light;
+      }
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        background: linear-gradient(160deg, #f6f8fb, #eef3f8);
+        color: #1f2937;
+      }
+      .card {
+        width: min(560px, calc(100vw - 32px));
+        margin: 24px;
+        padding: 28px 24px;
+        border-radius: 18px;
+        background: #ffffff;
+        box-shadow: 0 18px 48px rgba(15, 23, 42, 0.08);
+      }
+      h1 {
+        margin: 0;
+        font-size: 28px;
+        letter-spacing: -0.03em;
+      }
+      .status {
+        margin: 16px 0 0;
+        padding: 14px 16px;
+        border-radius: 12px;
+        background: #eef2ff;
+        color: #1f2937;
+        line-height: 1.5;
+      }
+      .loading {
+        margin: 18px 0 0;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        color: #374151;
+      }
+      .loading[hidden] {
+        display: none;
+      }
+      .spinner {
+        width: 16px;
+        height: 16px;
+        border: 2px solid #cfd4e6;
+        border-top-color: #1f2937;
+        border-radius: 50%;
+        animation: spin 0.8s linear infinite;
+      }
+      .health-panel {
+        margin: 18px 0 0;
+        padding: 14px 16px;
+        border-radius: 12px;
+        background: #f8fafc;
+      }
+      .health-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin: 0;
+        padding: 8px 0;
+      }
+      .health-row + .health-row {
+        border-top: 1px solid #e5e7eb;
+      }
+      .health-label {
+        color: #374151;
+      }
+      .health-badge {
+        font-size: 12px;
+        line-height: 1;
+        padding: 6px 8px;
+        border-radius: 999px;
+        background: #e5e7eb;
+        color: #374151;
+      }
+      .health-badge.ok {
+        background: #dcfce7;
+        color: #166534;
+      }
+      .health-badge.fail {
+        background: #fee2e2;
+        color: #991b1b;
+      }
+      pre {
+        margin: 18px 0 0;
+        background: #f3f4f6;
+        border-radius: 12px;
+        padding: 12px;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+      code {
+        background: #f3f4f6;
+        padding: 2px 6px;
+        border-radius: 6px;
+      }
+      @keyframes spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <h1>Nutstore Bot Desktop</h1>
+      <div id="loadingWrap" class="loading">
+        <span class="spinner" aria-hidden="true"></span>
+        <span>Starting local services...</span>
+      </div>
+      <div id="statusText" class="status">Loading runtime status...</div>
+      <div class="health-panel">
+        <div class="health-row">
+          <span class="health-label">API service</span>
+          <span id="sidecarHealth" class="health-badge">pending</span>
+        </div>
+        <div class="health-row">
+          <span class="health-label">Web app</span>
+          <span id="frontendHealth" class="health-badge">pending</span>
+        </div>
+      </div>
+      <pre id="errorText" hidden></pre>
+    </div>
+    <script>
+      const statusText = document.getElementById("statusText");
+      const errorText = document.getElementById("errorText");
+      const loadingWrap = document.getElementById("loadingWrap");
+      const sidecarHealth = document.getElementById("sidecarHealth");
+      const frontendHealth = document.getElementById("frontendHealth");
+      const HEALTH_CHECK_DELAY_MS = 30_000;
+      const HEALTH_CHECK_INTERVAL_MS = 10_000;
+
+      const healthState = {
+        sidecar: false,
+        frontend: false,
+      };
+
+      function resolveInvoke() {
+        if (window.__TAURI__ && window.__TAURI__.core && typeof window.__TAURI__.core.invoke === "function") {
+          return window.__TAURI__.core.invoke.bind(window.__TAURI__.core);
+        }
+        if (window.__TAURI_INTERNALS__ && typeof window.__TAURI_INTERNALS__.invoke === "function") {
+          return window.__TAURI_INTERNALS__.invoke.bind(window.__TAURI_INTERNALS__);
+        }
+        return null;
+      }
+
+      const invoke = resolveInvoke();
+
+      function updateLoadingVisibility() {
+        const ready = healthState.sidecar && healthState.frontend;
+        loadingWrap.hidden = ready;
+      }
+
+      function setBadge(node, state) {
+        node.classList.remove("ok", "fail");
+        if (state === "ok") {
+          node.classList.add("ok");
+          node.textContent = "ok";
+          return;
+        }
+        if (state === "fail") {
+          node.classList.add("fail");
+          node.textContent = "fail";
+          return;
+        }
+        if (state === "pending") {
+          node.textContent = "pending";
+          return;
+        }
+        node.textContent = "checking";
+      }
+
+      async function fetchWithTimeout(url, options = {}, timeoutMs = 1800) {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), timeoutMs);
+        try {
+          return await fetch(url, { ...options, signal: controller.signal });
+        } finally {
+          clearTimeout(timer);
+        }
+      }
+
+      function renderStatus(status) {
+        if (!status || typeof status !== "object") {
+          statusText.textContent = "Runtime status unavailable.";
+          return;
+        }
+
+        if (status.running) {
+          statusText.textContent = "Runtime is running. Waiting for automatic navigation to the main UI...";
+        } else if (status.lastError) {
+          statusText.textContent = "Runtime failed to start.";
+        } else {
+          statusText.textContent = "Runtime is starting.";
+        }
+
+        if (status.lastError) {
+          errorText.hidden = false;
+          errorText.textContent = status.lastError;
+        } else {
+          errorText.hidden = true;
+          errorText.textContent = "";
+        }
+      }
+
+      async function refreshStatus() {
+        if (!invoke) {
+          statusText.textContent = "Unable to call desktop runtime commands: Tauri bridge is unavailable.";
+          errorText.hidden = false;
+          errorText.textContent = "Missing invoke bridge (__TAURI__.core.invoke / __TAURI_INTERNALS__.invoke).";
+          return;
+        }
+
+        try {
+          const status = await invoke("runtime_status");
+          renderStatus(status);
+        } catch (err) {
+          statusText.textContent = "Failed to query runtime status.";
+          errorText.hidden = false;
+          errorText.textContent = String(err);
+        }
+      }
+
+      async function refreshHealthChecks() {
+        setBadge(sidecarHealth, "checking");
+        setBadge(frontendHealth, "checking");
+
+        let sidecarOk = false;
+        let frontendOk = false;
+
+        try {
+          const response = await fetchWithTimeout("http://127.0.0.1:8765/health", {
+            method: "GET",
+            cache: "no-store",
+          });
+          if (response.ok) {
+            const payload = await response.json();
+            sidecarOk = payload && payload.ok === true;
+          }
+        } catch (_err) {
+          sidecarOk = false;
+        }
+
+        try {
+          const response = await fetchWithTimeout("http://127.0.0.1:3000", {
+            method: "HEAD",
+            cache: "no-store",
+          });
+          frontendOk = response.status >= 100 && response.status < 600;
+        } catch (_err) {
+          frontendOk = false;
+        }
+
+        healthState.sidecar = sidecarOk;
+        healthState.frontend = frontendOk;
+        setBadge(sidecarHealth, sidecarOk ? "ok" : "fail");
+        setBadge(frontendHealth, frontendOk ? "ok" : "fail");
+        updateLoadingVisibility();
+      }
+
+      refreshStatus();
+      setInterval(refreshStatus, 2000);
+      setBadge(sidecarHealth, "pending");
+      setBadge(frontendHealth, "pending");
+      setTimeout(() => {
+        refreshHealthChecks();
+        setInterval(refreshHealthChecks, HEALTH_CHECK_INTERVAL_MS);
+      }, HEALTH_CHECK_DELAY_MS);
+    </script>
+  </body>
+</html>

@@ -35,6 +35,10 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
+import {
+  canUseTauriDirectoryPicker,
+  pickDirectoryWithTauriDialog,
+} from "@/lib/tauri-directory-picker"
 import { cn } from "@/lib/utils"
 
 interface SidebarProps {
@@ -55,29 +59,6 @@ interface SidebarProps {
 type WorkspaceDraft = {
   name: string
   path: string
-}
-
-type ProductShellWorkspaceSelection = {
-  name?: string
-  realPath: string
-  pathLabel?: string
-}
-
-type DirectoryPickerSelection = {
-  name?: string
-  path?: string
-  fullPath?: string
-  realPath?: string
-  pathLabel?: string
-}
-
-type DirectoryPicker = () => Promise<DirectoryPickerSelection>
-
-type ProductShellBridge = {
-  pickWorkspaceDirectory?: () => Promise<ProductShellWorkspaceSelection>
-  window?: {
-    showDirectoryPicker?: DirectoryPicker
-  }
 }
 
 const SESSION_LIMIT = 5
@@ -102,15 +83,11 @@ export function Sidebar({
   const [forceManualWorkspaceEntry, setForceManualWorkspaceEntry] = useState(false)
   const [workspaceDraft, setWorkspaceDraft] = useState<WorkspaceDraft>({ name: "", path: "" })
 
-  const productShellBridge =
-    typeof window === "undefined"
-      ? null
-      : ((window as Window & { __NSBOT_SHELL__?: ProductShellBridge }).__NSBOT_SHELL__ ?? null)
-  const resolvedDirectoryPicker = resolveDirectoryPicker(productShellBridge)
-  const canUseDirectoryPicker = resolvedDirectoryPicker !== null && !forceManualWorkspaceEntry
+  const hasNativeDirectoryPicker = canUseTauriDirectoryPicker()
+  const canUseDirectoryPicker = hasNativeDirectoryPicker && !forceManualWorkspaceEntry
   const isManualWorkspaceEntry = !canUseDirectoryPicker
   const manualEntryHint =
-    resolvedDirectoryPicker === null
+    !hasNativeDirectoryPicker
       ? "This environment doesn't support direct folder selection. Please enter the directory name and path manually."
       : "Please enter the directory name and path manually."
 
@@ -122,27 +99,28 @@ export function Sidebar({
   }
 
   const handleDirectoryPicker = async () => {
-    const picker = resolveDirectoryPicker(productShellBridge)
-    if (!picker) {
+    if (!hasNativeDirectoryPicker) {
       setWorkspaceDialogError("Your current environment can't open a folder picker.")
       return
     }
 
-    try {
-      const selection = await picker()
+    const result = await pickDirectoryWithTauriDialog()
+    if (result.status === "selected") {
       setWorkspaceDialogError(null)
-      setWorkspaceDraft(selection)
-    } catch (error) {
-      if (isDirectoryPickerCancelled(error)) {
-        return
-      }
-      setForceManualWorkspaceEntry(true)
-      setWorkspaceDialogError(
-        error instanceof Error
-          ? error.message
-          : "Unable to automatically read the directory path; please manually enter the directory name and path."
-      )
+      setWorkspaceDraft(result.selection)
+      return
     }
+
+    if (result.status === "cancelled") {
+      return
+    }
+
+    setForceManualWorkspaceEntry(true)
+    setWorkspaceDialogError(
+      result.status === "error"
+        ? result.message
+        : "Unable to open the native folder picker; please manually enter the directory name and path."
+    )
   }
 
   const submitWorkspace = async () => {
@@ -297,9 +275,9 @@ export function Sidebar({
               </>
             ) : (
               <>
-                <Button type="button" variant="outline" onClick={() => void handleDirectoryPicker()}>
-                  Select directory
-                </Button>
+              <Button type="button" variant="outline" onClick={() => void handleDirectoryPicker()}>
+                Select directory
+              </Button>
                 {workspaceDraft.path ? (
                   <div className="rounded-lg border border-[#e8e4e0] bg-background px-3 py-2 text-sm">
                     <p className="font-medium text-foreground">{workspaceDraft.name}</p>
@@ -735,76 +713,4 @@ function formatRelativeTime(value: string): string {
     month: "short",
     day: "numeric",
   }).format(new Date(timestamp))
-}
-
-function basename(value: string): string {
-  const normalized = value.trim().replace(/[\\/]+$/, "")
-  if (normalized === "") {
-    return ""
-  }
-  const parts = normalized.split(/[\\/]/)
-  return parts[parts.length - 1] ?? ""
-}
-
-function resolveDirectoryPicker(
-  bridge: ProductShellBridge | null
-): (() => Promise<WorkspaceDraft>) | null {
-  const shellPicker = bridge?.pickWorkspaceDirectory
-  if (typeof shellPicker === "function") {
-    return async () => {
-      const selection = await shellPicker()
-      return normalizeDirectorySelection(selection)
-    }
-  }
-
-  const shellWindowPicker = bridge?.window?.showDirectoryPicker
-  if (typeof shellWindowPicker === "function") {
-    return async () => {
-      const selection = await shellWindowPicker()
-      return normalizeDirectorySelection(selection)
-    }
-  }
-
-  if (typeof window === "undefined") {
-    return null
-  }
-
-  const browserPicker = (window as Window & { showDirectoryPicker?: DirectoryPicker }).showDirectoryPicker
-  if (typeof browserPicker === "function") {
-    return async () => {
-      const selection = await browserPicker()
-      return normalizeDirectorySelection(selection)
-    }
-  }
-
-  return null
-}
-
-function normalizeDirectorySelection(selection: DirectoryPickerSelection): WorkspaceDraft {
-  const path =
-    selection.pathLabel?.trim() ||
-    selection.realPath?.trim() ||
-    selection.path?.trim() ||
-    selection.fullPath?.trim() ||
-    ""
-
-  if (!path) {
-    throw new Error("Unable to automatically read the directory path; please manually enter the directory name and path.")
-  }
-
-  const name = selection.name?.trim() || basename(path) || "Workspace"
-  return { name, path }
-}
-
-function isDirectoryPickerCancelled(error: unknown): boolean {
-  if (error instanceof DOMException && error.name === "AbortError") {
-    return true
-  }
-
-  if (error instanceof Error) {
-    const normalized = error.message.toLowerCase()
-    return normalized.includes("cancel") || normalized.includes("abort")
-  }
-
-  return false
 }

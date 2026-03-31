@@ -1,6 +1,15 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react"
 
+import {
+  canUseTauriDirectoryPicker,
+  pickDirectoryWithTauriDialog,
+} from "@/lib/tauri-directory-picker"
 import { Sidebar } from "@/components/sidebar"
+
+vi.mock("@/lib/tauri-directory-picker", () => ({
+  canUseTauriDirectoryPicker: vi.fn(() => false),
+  pickDirectoryWithTauriDialog: vi.fn(async () => ({ status: "unavailable" })),
+}))
 
 const project = {
   id: "ws_1",
@@ -30,8 +39,8 @@ const project = {
 
 describe("Sidebar workspace controls", () => {
   afterEach(() => {
-    delete (window as Window & { __NSBOT_SHELL__?: unknown }).__NSBOT_SHELL__
-    delete (window as Window & { showDirectoryPicker?: unknown }).showDirectoryPicker
+    vi.mocked(canUseTauriDirectoryPicker).mockReturnValue(false)
+    vi.mocked(pickDirectoryWithTauriDialog).mockResolvedValue({ status: "unavailable" })
   })
 
   it("opens Add directory dialog and submits manual values", async () => {
@@ -91,21 +100,14 @@ describe("Sidebar workspace controls", () => {
 
   it("uses directory picker mode when available and submits picked values", async () => {
     const onAddProject = vi.fn(async () => undefined)
-    ;(window as Window & {
-      __NSBOT_SHELL__?: {
-        pickWorkspaceDirectory: () => Promise<{
-          name: string
-          realPath: string
-          pathLabel: string
-        }>
-      }
-    }).__NSBOT_SHELL__ = {
-      pickWorkspaceDirectory: vi.fn(async () => ({
+    vi.mocked(canUseTauriDirectoryPicker).mockReturnValue(true)
+    vi.mocked(pickDirectoryWithTauriDialog).mockResolvedValue({
+      status: "selected",
+      selection: {
         name: "repo-from-shell",
-        realPath: "/Users/demo/repo-from-shell",
-        pathLabel: "/Users/demo/repo-from-shell",
-      })),
-    }
+        path: "/Users/demo/repo-from-shell",
+      },
+    })
 
     render(
       <Sidebar
@@ -138,25 +140,16 @@ describe("Sidebar workspace controls", () => {
     })
   })
 
-  it("falls back to __NSBOT_SHELL__.window.showDirectoryPicker when direct shell picker is unavailable", async () => {
+  it("uses the native Tauri picker when directory selection is available", async () => {
     const onAddProject = vi.fn(async () => undefined)
-    const shellWindowPicker = vi.fn(async () => ({
-      name: "repo-from-shell-window",
-      realPath: "/Users/demo/repo-from-shell-window",
-      pathLabel: "/Users/demo/repo-from-shell-window",
-    }))
-    const browserPicker = vi.fn(async () => ({
-      name: "repo-from-browser-window",
-      realPath: "/Users/demo/repo-from-browser-window",
-      pathLabel: "/Users/demo/repo-from-browser-window",
-    }))
-
-    ;(window as Window & { __NSBOT_SHELL__?: unknown }).__NSBOT_SHELL__ = {
-      window: {
-        showDirectoryPicker: shellWindowPicker,
+    vi.mocked(canUseTauriDirectoryPicker).mockReturnValue(true)
+    vi.mocked(pickDirectoryWithTauriDialog).mockResolvedValue({
+      status: "selected",
+      selection: {
+        name: "repo-from-shell-window",
+        path: "/Users/demo/repo-from-shell-window",
       },
-    }
-    ;(window as Window & { showDirectoryPicker?: unknown }).showDirectoryPicker = browserPicker
+    })
 
     render(
       <Sidebar
@@ -186,24 +179,12 @@ describe("Sidebar workspace controls", () => {
         "/Users/demo/repo-from-shell-window"
       )
     })
-    expect(shellWindowPicker).toHaveBeenCalledTimes(1)
-    expect(browserPicker).not.toHaveBeenCalled()
+    expect(pickDirectoryWithTauriDialog).toHaveBeenCalled()
   })
 
   it("keeps add directory disabled when picker is available but no folder is chosen", async () => {
-    ;(window as Window & {
-      __NSBOT_SHELL__?: {
-        pickWorkspaceDirectory: () => Promise<{
-          name: string
-          realPath: string
-          pathLabel: string
-        }>
-      }
-    }).__NSBOT_SHELL__ = {
-      pickWorkspaceDirectory: vi.fn(async () => {
-        throw new Error("cancelled")
-      }),
-    }
+    vi.mocked(canUseTauriDirectoryPicker).mockReturnValue(true)
+    vi.mocked(pickDirectoryWithTauriDialog).mockResolvedValue({ status: "cancelled" })
 
     render(
       <Sidebar
@@ -256,12 +237,13 @@ describe("Sidebar workspace controls", () => {
     expect(screen.queryByRole("button", { name: "Use product shell" })).not.toBeInTheDocument()
   })
 
-  it("falls back to manual inputs when browser showDirectoryPicker cannot provide a usable path", async () => {
-    ;(window as Window & { showDirectoryPicker?: unknown }).showDirectoryPicker = vi.fn(
-      async () => ({
-        name: "browser-picked-folder",
-      })
-    )
+  it("falls back to manual inputs when native picker cannot provide a usable path", async () => {
+    vi.mocked(canUseTauriDirectoryPicker).mockReturnValue(true)
+    vi.mocked(pickDirectoryWithTauriDialog).mockResolvedValue({
+      status: "error",
+      message:
+        "Unable to automatically read the directory path; please manually enter the directory name and path.",
+    })
 
     render(
       <Sidebar

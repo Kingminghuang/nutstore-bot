@@ -208,6 +208,17 @@ class ApiServerTests(unittest.TestCase):
             },
         )
 
+    def test_health_allows_tauri_origin(self) -> None:
+        response = self.client.get(
+            "/health",
+            headers={"Origin": "tauri://localhost"},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.headers.get("access-control-allow-origin"),
+            "tauri://localhost",
+        )
+
     def test_auth_check_requires_bearer_token(self) -> None:
         response = self.client.get("/auth/check")
         self.assertEqual(response.status_code, 401)
@@ -1918,6 +1929,44 @@ class ApiServerTests(unittest.TestCase):
         self.assertEqual(
             messages[-1]["contentText"],
             "Run failed: Upstream model request failed",
+        )
+
+    def test_post_run_handles_unexpected_background_exception(self) -> None:
+        workspace = self._create_workspace("workspace-run-unexpected-failure")
+        provider = self._create_provider()
+        session = self._create_session(workspace["id"], str(provider["id"]))
+        self._set_sync_run_launcher()
+
+        def fake_runtime_executor(config, run_id, user_input, auth_context, metadata):
+            raise ValueError("boom")
+
+        self.app.state.run_service = replace(
+            self.app.state.run_service,
+            runtime_executor=fake_runtime_executor,
+        )
+
+        response = self.client.post(
+            "/runs",
+            headers={"Authorization": "Bearer test-token"},
+            json={
+                "sessionId": session["id"],
+                "workspaceId": workspace["id"],
+                "connectionId": provider["id"],
+                "modelId": "gpt-5.4",
+                "input": "Trigger unexpected failure",
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["run"]["status"], "failed")
+        self.assertEqual(body["run"]["errorCode"], "runtime_error")
+        self.assertEqual(
+            body["run"]["errorMessage"],
+            "Unexpected runtime error: boom",
+        )
+        self.assertEqual(
+            body["entries"][-1]["contentText"],
+            "Run failed: Unexpected runtime error: boom",
         )
 
     def test_post_run_maps_custom_provider_runtime_config(self) -> None:

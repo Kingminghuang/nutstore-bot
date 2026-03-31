@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
 import shutil
 import tempfile
 import unittest
@@ -17,7 +19,7 @@ class LocalSecretStoreTests(unittest.TestCase):
 
     def test_bootstrap_and_round_trip_secret(self) -> None:
         master_key_path = self.store.bootstrap_master_key()
-        self.assertTrue(master_key_path.endswith("master.key"))
+        self.assertEqual(master_key_path, "plaintext-mode: no master key file")
 
         secret_path = self.store.save_provider_secret(
             "sec_provider_1",
@@ -39,6 +41,10 @@ class LocalSecretStoreTests(unittest.TestCase):
                 secret_headers={"hdr_1": "secret-value"},
             ),
         )
+        file_payload = json.loads(Path(secret_path).read_text(encoding="utf-8"))
+        self.assertEqual(file_payload["version"], 1)
+        self.assertEqual(file_payload["apiKey"], "sk-test")
+        self.assertEqual(file_payload["secretHeaders"], {"hdr_1": "secret-value"})
 
         self.store.delete_provider_secret("sec_provider_1")
         self.assertFalse(self.store.has_secret("sec_provider_1"))
