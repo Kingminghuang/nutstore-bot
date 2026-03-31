@@ -37,7 +37,7 @@ impl ManagedChild {
 #[derive(Debug)]
 struct RunningProcesses {
     next_child: Option<ManagedChild>,
-    sidecar_child: Option<CommandChild>,
+    sidecar_child: Option<ManagedChild>,
 }
 
 impl RunningProcesses {
@@ -406,14 +406,17 @@ fn start_runtime(
     ];
 
     let (sidecar_child, sidecar_logs) =
-        match spawn_sidecar_process(app, PYTHON_SIDECAR_ID, &sidecar_env, python_logger) {
+        match spawn_python_process(app, PYTHON_SIDECAR_ID, &sidecar_env, python_logger) {
             Ok(result) => result,
             Err(err) => {
                 let next_child = next_child;
                 let _ = next_child.kill();
                 return Err(format_with_logs(
                     &format!("failed to spawn sidecar {PYTHON_SIDECAR_ID}: {err}"),
-                    &[("next-runtime", &next_logs)],
+                    &[
+                        ("next-runtime", &next_logs),
+                        ("python-sidecar", &err.logs),
+                    ],
                 )
                 .into());
             }
@@ -521,20 +524,20 @@ fn spawn_sidecar_process(
     Ok((child, log_buffer))
 }
 
-struct NextSpawnError {
+struct ManagedSpawnError {
     source: Box<dyn std::error::Error>,
     logs: Arc<Mutex<Vec<String>>>,
 }
 
-impl std::fmt::Display for NextSpawnError {
+impl std::fmt::Display for ManagedSpawnError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         self.source.fmt(f)
     }
 }
 
-impl std::fmt::Debug for NextSpawnError {
+impl std::fmt::Debug for ManagedSpawnError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("NextSpawnError")
+        f.debug_struct("ManagedSpawnError")
             .field("source", &self.source.to_string())
             .finish()
     }
@@ -545,7 +548,7 @@ fn spawn_next_process(
     app: &AppHandle,
     envs: &[(&str, String)],
     file_logger: Option<Arc<SidecarFileLogger>>,
-) -> Result<(ManagedChild, Arc<Mutex<Vec<String>>>), NextSpawnError> {
+) -> Result<(ManagedChild, Arc<Mutex<Vec<String>>>), ManagedSpawnError> {
     #[cfg(target_os = "macos")]
     {
         let helper_executable = config.runtime_root.join(NEXT_HELPER_RELATIVE_EXECUTABLE);
@@ -556,7 +559,7 @@ fn spawn_next_process(
                 envs,
                 file_logger,
             )
-            .map_err(|err| NextSpawnError {
+            .map_err(|err| ManagedSpawnError {
                 source: err,
                 logs: Arc::new(Mutex::new(Vec::new())),
             });
@@ -565,10 +568,43 @@ fn spawn_next_process(
 
     spawn_sidecar_process(app, NEXT_SIDECAR_ID, envs, file_logger)
         .map(|(child, logs)| (ManagedChild::Shell(child), logs))
-        .map_err(|err| NextSpawnError {
+        .map_err(|err| ManagedSpawnError {
             source: err,
             logs: Arc::new(Mutex::new(Vec::new())),
         })
+}
+
+fn spawn_python_process(
+    app: &AppHandle,
+    sidecar_id: &str,
+    envs: &[(&str, String)],
+    file_logger: Option<Arc<SidecarFileLogger>>,
+) -> Result<(ManagedChild, Arc<Mutex<Vec<String>>>), ManagedSpawnError> {
+    #[cfg(target_os = "macos")]
+    {
+        if let Some(executable) = bundled_macos_executable("nsbot-sidecar") {
+            return spawn_helper_process(&executable, sidecar_id, envs, file_logger).map_err(
+                |err| ManagedSpawnError {
+                    source: err,
+                    logs: Arc::new(Mutex::new(Vec::new())),
+                },
+            );
+        }
+    }
+
+    spawn_sidecar_process(app, sidecar_id, envs, file_logger)
+        .map(|(child, logs)| (ManagedChild::Shell(child), logs))
+        .map_err(|err| ManagedSpawnError {
+            source: err,
+            logs: Arc::new(Mutex::new(Vec::new())),
+        })
+}
+
+#[cfg(target_os = "macos")]
+fn bundled_macos_executable(name: &str) -> Option<PathBuf> {
+    let current_executable = std::env::current_exe().ok()?;
+    let executable = current_executable.parent()?.join(name);
+    executable.exists().then_some(executable)
 }
 
 fn spawn_helper_process(

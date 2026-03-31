@@ -141,8 +141,8 @@ release 产物只保证 `.app` 与 `.dmg` 可运行；不保证 raw release bina
 `--debug` 模式下，会生成 debug bundle，并同步补齐 bundle 与 raw debug binary 所需的 sidecar 路径：
 
 ```text
-src-tauri/target/aarch64-apple-darwin/debug/bundle/macos/Nutstore Bot.app
-src-tauri/target/aarch64-apple-darwin/debug/bundle/macos/Nutstore Bot.app/Contents/MacOS/binaries/{next-sidecar,nsbot-sidecar}
+src-tauri/target/aarch64-apple-darwin/debug/bundle/macos/NutstoreBot.app
+src-tauri/target/aarch64-apple-darwin/debug/bundle/macos/NutstoreBot.app/Contents/MacOS/binaries/{next-sidecar,nsbot-sidecar}
 src-tauri/target/aarch64-apple-darwin/debug/nutstore-bot-desktop
 src-tauri/target/aarch64-apple-darwin/debug/binaries/{next-sidecar,nsbot-sidecar}
 ```
@@ -156,14 +156,14 @@ src-tauri/target/aarch64-apple-darwin/debug/binaries/{next-sidecar,nsbot-sidecar
 建议在仓库根目录执行：
 
 ```bash
-APP_PATH="$(pwd)/src-tauri/target/aarch64-apple-darwin/release/bundle/macos/Nutstore Bot.app"
+APP_PATH="$(pwd)/src-tauri/target/aarch64-apple-darwin/release/bundle/macos/NutstoreBot.app"
 open "$APP_PATH"
 ```
 
 如需在终端查看运行日志：
 
 ```bash
-APP_PATH="$(pwd)/src-tauri/target/aarch64-apple-darwin/release/bundle/macos/Nutstore Bot.app"
+APP_PATH="$(pwd)/src-tauri/target/aarch64-apple-darwin/release/bundle/macos/NutstoreBot.app"
 "$APP_PATH/Contents/MacOS/nutstore-bot-desktop"
 ```
 
@@ -184,7 +184,7 @@ APP_PATH="$(pwd)/src-tauri/target/aarch64-apple-darwin/release/bundle/macos/Nuts
 如需调试启动期错误，优先运行 debug bundle 内的主程序并打开完整 Rust backtrace：
 
 ```bash
-RUST_BACKTRACE=full "$(pwd)/src-tauri/target/aarch64-apple-darwin/debug/bundle/macos/Nutstore Bot.app/Contents/MacOS/nutstore-bot-desktop"
+RUST_BACKTRACE=full "$(pwd)/src-tauri/target/aarch64-apple-darwin/debug/bundle/macos/NutstoreBot.app/Contents/MacOS/nutstore-bot-desktop"
 ```
 
 如需直接运行 raw debug binary，也可以：
@@ -198,7 +198,7 @@ RUST_BACKTRACE=full "$(pwd)/src-tauri/target/aarch64-apple-darwin/debug/nutstore
 若出现“已损坏/无法验证开发者”提示，可先清除 quarantine：
 
 ```bash
-APP_PATH="$(pwd)/src-tauri/target/aarch64-apple-darwin/release/bundle/macos/Nutstore Bot.app"
+APP_PATH="$(pwd)/src-tauri/target/aarch64-apple-darwin/release/bundle/macos/NutstoreBot.app"
 xattr -dr com.apple.quarantine "$APP_PATH"
 ```
 

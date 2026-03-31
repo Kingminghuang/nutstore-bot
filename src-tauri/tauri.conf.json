@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Nutstore Bot",
+  "productName": "NutstoreBot",
   "version": "0.1.0",
   "identifier": "com.nutstore.bot",
   "build": {
@@ -9,7 +9,7 @@
   "app": {
     "windows": [
       {
-        "title": "Nutstore Bot",
+        "title": "NutstoreBot",
         "width": 1320,
         "height": 880,
         "resizable": true,

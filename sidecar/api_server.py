@@ -120,7 +120,7 @@ def create_app(config: ApiServerConfig | None = None) -> FastAPI:
             if hasattr(db, "close"):
                 db.close()
 
-    app = FastAPI(title="Nutstore Bot NSBot", version=cfg.version, lifespan=lifespan)
+    app = FastAPI(title="NutstoreBot NSBot", version=cfg.version, lifespan=lifespan)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=list(LOCAL_CORS_ORIGINS),

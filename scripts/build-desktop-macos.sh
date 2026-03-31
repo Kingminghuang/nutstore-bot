@@ -88,14 +88,14 @@ if [[ "${BUILD_MODE}" == "debug" && "${BUILD_DMG}" == "true" ]]; then
 fi
 
 if [[ "${BUILD_MODE}" == "debug" ]]; then
-  APP_BUNDLE="${REPO_ROOT}/src-tauri/target/${TARGET_TRIPLE}/debug/bundle/macos/Nutstore Bot.app"
+  APP_BUNDLE="${REPO_ROOT}/src-tauri/target/${TARGET_TRIPLE}/debug/bundle/macos/NutstoreBot.app"
   APP_BIN="${APP_BUNDLE}/Contents/MacOS/nutstore-bot-desktop"
   RAW_DEBUG_BIN="${REPO_ROOT}/src-tauri/target/${TARGET_TRIPLE}/debug/nutstore-bot-desktop"
   RAW_DEBUG_BINARIES_DIR="${REPO_ROOT}/src-tauri/target/${TARGET_TRIPLE}/debug/binaries"
 else
   RAW_RELEASE_BIN="${REPO_ROOT}/src-tauri/target/${TARGET_TRIPLE}/release/nutstore-bot-desktop"
-  APP_BIN="${REPO_ROOT}/src-tauri/target/${TARGET_TRIPLE}/release/bundle/macos/Nutstore Bot.app/Contents/MacOS/nutstore-bot-desktop"
-  APP_BUNDLE="${REPO_ROOT}/src-tauri/target/${TARGET_TRIPLE}/release/bundle/macos/Nutstore Bot.app"
+  APP_BIN="${REPO_ROOT}/src-tauri/target/${TARGET_TRIPLE}/release/bundle/macos/NutstoreBot.app/Contents/MacOS/nutstore-bot-desktop"
+  APP_BUNDLE="${REPO_ROOT}/src-tauri/target/${TARGET_TRIPLE}/release/bundle/macos/NutstoreBot.app"
   if [[ "${BUILD_DMG}" == "true" ]]; then
     DMG_DIR="${REPO_ROOT}/src-tauri/target/${TARGET_TRIPLE}/release/bundle/dmg"
   fi
