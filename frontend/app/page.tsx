@@ -98,10 +98,25 @@ export type WorkspaceSummary = {
   updatedAt: string
 }
 
+type WorkspaceSidecarIndexStatus = {
+  workspaceId: string
+  status: "indexed" | "not_started" | "disabled"
+  lastIndexedAt: string | null
+  stats: {
+    scanned: number
+    converted: number
+    skipped: number
+    failed: number
+  }
+  sourceCount: number
+}
+
 const SIDEBAR_MIN = 160
 const SIDEBAR_MAX = 480
 const SIDEBAR_DEFAULT = 230
 const TIMELINE_PAGE_SIZE = 50
+const WORKSPACE_INDEX_POLL_INTERVAL_MS = 2000
+const WORKSPACE_INDEX_POLL_MAX_ATTEMPTS = 30
 
 function withSessionHistoryDefaults(session: ServerSession): Session {
   return {
@@ -494,15 +509,39 @@ export default function Home() {
     [sidebarWidth]
   )
 
+  const pollWorkspaceSidecarIndexStatus = useCallback(async (workspaceId: string) => {
+    for (let attempt = 0; attempt < WORKSPACE_INDEX_POLL_MAX_ATTEMPTS; attempt += 1) {
+      try {
+        const status = await sidecarFetch<WorkspaceSidecarIndexStatus>(
+          `/workspaces/${workspaceId}/sidecar-index/status`
+        )
+        if (status.status === "indexed" || status.status === "disabled") {
+          return
+        }
+      } catch {
+        // Ignore transient polling failures and keep the UI responsive.
+      }
+
+      if (attempt < WORKSPACE_INDEX_POLL_MAX_ATTEMPTS - 1) {
+        await new Promise<void>((resolve) =>
+          window.setTimeout(resolve, WORKSPACE_INDEX_POLL_INTERVAL_MS)
+        )
+      }
+    }
+  }, [])
+
   const handleAddProject = useCallback(
     async (name: string, path: string) => {
-      await sidecarFetch("/workspaces", {
+      const createdWorkspace = await sidecarFetch<WorkspaceSummary>("/workspaces", {
         method: "POST",
         body: JSON.stringify({ name, realPath: path, pathLabel: path }),
       })
       await refreshWorkspaceState()
+      if (createdWorkspace?.id) {
+        void pollWorkspaceSidecarIndexStatus(createdWorkspace.id)
+      }
     },
-    [refreshWorkspaceState]
+    [pollWorkspaceSidecarIndexStatus, refreshWorkspaceState]
   )
 
   const handleNewSession = useCallback(

@@ -13,19 +13,21 @@ import posixpath
 import re
 import shutil
 import subprocess
+import tempfile
 import unicodedata
 import uuid
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Literal
 
-from smolagents import Tool
+from smolagents import tool
 
 
 DEFAULT_TEXT_MAX_LINES = 2000
 DEFAULT_MAX_BYTES = 50 * 1024
 GREP_MAX_LINE_CHARS = 500
 DEFAULT_TOOL_TIMEOUT_MS = 30_000
+GREP_SIDECAR_SUPPORTED_EXTENSIONS = {".pdf", ".docx", ".xlsx"}
 _SPACE_VARIANTS = ["\u00a0", "\u1680", "\u2007", "\u202f", "\u3000"]
 _DASH_VARIANTS = ["\u2010", "\u2011", "\u2012", "\u2013", "\u2014", "\u2015", "\u2212"]
 _QUOTE_VARIANTS = {
@@ -210,9 +212,7 @@ def _restore_windows_existing_case(path: str) -> str:
         resolved_parts: list[str] = []
         for part in remaining:
             try:
-                names = {
-                    entry.name.casefold(): entry.name for entry in os.scandir(probe)
-                }
+                names = {entry.name.casefold(): entry.name for entry in os.scandir(probe)}
             except OSError:
                 break
             match = names.get(part.casefold())
@@ -253,9 +253,7 @@ def _best_effort_windows_path(path: str) -> str:
         return normalized
 
     try:
-        return _strip_windows_extended_prefix(
-            str(Path(normalized).resolve(strict=True))
-        )
+        return _strip_windows_extended_prefix(str(Path(normalized).resolve(strict=True)))
     except OSError:
         return _restore_windows_existing_case(normalized)
 
@@ -263,9 +261,7 @@ def _best_effort_windows_path(path: str) -> str:
 def _validate_windows_form(raw: str) -> None:
     normalized = _normalize_windows_drive_prefix(raw)
     if re.fullmatch(r"[A-Za-z]:", normalized):
-        raise ToolLayerError(
-            "invalid_args", "drive prefix without absolute path is not allowed"
-        )
+        raise ToolLayerError("invalid_args", "drive prefix without absolute path is not allowed")
     if re.fullmatch(r"[A-Za-z]:[^\\].*", normalized):
         raise ToolLayerError("invalid_args", "drive relative path is not allowed")
     if _is_unc_path(normalized):
@@ -358,9 +354,7 @@ def _truncate_utf8(text: str, max_bytes: int) -> str:
     return text.encode("utf-8")[:max_bytes].decode("utf-8", errors="ignore")
 
 
-def _truncate_head(
-    text: str, max_lines: int, max_bytes: int
-) -> tuple[str, TruncationDetails | None]:
+def _truncate_head(text: str, max_lines: int, max_bytes: int) -> tuple[str, TruncationDetails | None]:
     lines = text.splitlines()
     total_lines = len(lines)
     total_bytes = len(text.encode("utf-8"))
@@ -440,9 +434,7 @@ class ToolLayer:
     ):
         self.os_type = _normalize_os_type(os_type)
         if self.os_type == "windows":
-            self.workdir = resolve_path_arg(
-                workspace_path, workspace_path, self.os_type
-            )
+            self.workdir = resolve_path_arg(workspace_path, workspace_path, self.os_type)
         else:
             self.workdir = str(Path(workspace_path).expanduser().resolve())
 
@@ -480,13 +472,9 @@ class ToolLayer:
         except Exception as exc:  # noqa: BLE001
             return _error_result(call, "execution_failed", str(exc))
 
-    def execute_tool_dict(
-        self, tool_name: str, args: dict[str, Any], call_id: str | None = None
-    ) -> dict[str, Any]:
+    def execute_tool_dict(self, tool_name: str, args: dict[str, Any], call_id: str | None = None) -> dict[str, Any]:
         cid = call_id or f"call-{uuid.uuid4()}"
-        result = self.execute_tool(
-            ToolCall(tool_name=tool_name, args=args, call_id=cid)
-        )
+        result = self.execute_tool(ToolCall(tool_name=tool_name, args=args, call_id=cid))
         return result.to_dict()
 
     def _require_string(
@@ -510,9 +498,7 @@ class ToolLayer:
             raise ToolLayerError("invalid_args", f"{key} must be non-empty string")
         return value
 
-    def _optional_int(
-        self, args: dict[str, Any], key: str, default: int, *, minimum: int
-    ) -> int:
+    def _optional_int(self, args: dict[str, Any], key: str, default: int, *, minimum: int) -> int:
         if key not in args or args[key] is None:
             return default
         value = args[key]
@@ -544,9 +530,7 @@ class ToolLayer:
             text = path.name or str(path)
         return _native_path(text, self.os_type)
 
-    def _tool_ls(
-        self, args: dict[str, Any]
-    ) -> tuple[list[ToolContentItem], ToolDetails | None]:
+    def _tool_ls(self, args: dict[str, Any]) -> tuple[list[ToolContentItem], ToolDetails | None]:
         path = self._require_string(args, "path", optional=True) or "."
         limit = self._optional_int(args, "limit", default=500, minimum=1)
         target = self._checked_path(path)
@@ -567,9 +551,7 @@ class ToolLayer:
             rendered.append(label)
 
         text = "\n".join(rendered) if rendered else "(empty directory)"
-        text, truncation = _truncate_head(
-            text, max_lines=10_000_000, max_bytes=DEFAULT_MAX_BYTES
-        )
+        text, truncation = _truncate_head(text, max_lines=10_000_000, max_bytes=DEFAULT_MAX_BYTES)
         details.truncation = truncation
 
         notices: list[str] = []
@@ -587,9 +569,7 @@ class ToolLayer:
             return self.fd_executable
         return shutil.which("fd") or shutil.which("fdfind") or ""
 
-    def _tool_find(
-        self, args: dict[str, Any]
-    ) -> tuple[list[ToolContentItem], ToolDetails | None]:
+    def _tool_find(self, args: dict[str, Any]) -> tuple[list[ToolContentItem], ToolDetails | None]:
         pattern = self._require_string(args, "pattern")
         path = self._require_string(args, "path", optional=True) or "."
         limit = self._optional_int(args, "limit", default=1000, minimum=1)
@@ -616,9 +596,7 @@ class ToolLayer:
             return [TextContent(type="text", text=text)], None
 
         text = "\n".join(results)
-        text, truncation = _truncate_head(
-            text, max_lines=10_000_000, max_bytes=DEFAULT_MAX_BYTES
-        )
+        text, truncation = _truncate_head(text, max_lines=10_000_000, max_bytes=DEFAULT_MAX_BYTES)
         details.truncation = truncation
         notices: list[str] = []
         if details.resultLimitReached is not None:
@@ -630,9 +608,7 @@ class ToolLayer:
             details = None
         return [TextContent(type="text", text=text)], details
 
-    def _find_with_fd(
-        self, executable: str, root: Path, pattern: str, limit: int
-    ) -> list[str]:
+    def _find_with_fd(self, executable: str, root: Path, pattern: str, limit: int) -> list[str]:
         cmd = [
             executable,
             pattern,
@@ -676,9 +652,7 @@ class ToolLayer:
             return self.rg_executable
         return shutil.which("rg") or ""
 
-    def _tool_grep(
-        self, args: dict[str, Any]
-    ) -> tuple[list[ToolContentItem], ToolDetails | None]:
+    def _tool_grep(self, args: dict[str, Any]) -> tuple[list[ToolContentItem], ToolDetails | None]:
         pattern = self._require_string(args, "pattern")
         path = self._require_string(args, "path", optional=True) or "."
         glob = self._require_string(args, "glob", optional=True)
@@ -711,14 +685,9 @@ class ToolLayer:
             return [TextContent(type="text", text="No matches found")], None
 
         if context > 0:
-            lines = self._render_grep_with_context(
-                search_path, raw_matches, context=context
-            )
+            lines = self._render_grep_with_context(search_path, raw_matches, context=context)
         else:
-            lines = [
-                f"{item['display_path']}:{item['line_number']}: {item['text']}"
-                for item in raw_matches
-            ]
+            lines = [f"{item['display_path']}:{item['line_number']}: {item['text']}" for item in raw_matches]
 
         lines_truncated = False
         clipped_lines: list[str] = []
@@ -732,9 +701,7 @@ class ToolLayer:
             details.linesTruncated = True
 
         text = "\n".join(clipped_lines)
-        text, truncation = _truncate_head(
-            text, max_lines=10_000_000, max_bytes=DEFAULT_MAX_BYTES
-        )
+        text, truncation = _truncate_head(text, max_lines=10_000_000, max_bytes=DEFAULT_MAX_BYTES)
         details.truncation = truncation
         notices: list[str] = []
         if details.matchLimitReached is not None:
@@ -757,13 +724,19 @@ class ToolLayer:
         literal: bool,
         limit: int,
     ) -> tuple[list[dict[str, Any]], bool]:
+        preprocessor_path = self._create_rg_sidecar_preprocessor()
         cmd = [
             rg_executable,
             "--json",
             "--line-number",
             "--color=never",
             "--hidden",
+            "--pre",
+            preprocessor_path,
         ]
+        cmd.extend(["--pre-glob", "*.pdf"])
+        cmd.extend(["--pre-glob", "*.docx"])
+        cmd.extend(["--pre-glob", "*.xlsx"])
         if ignore_case:
             cmd.append("--ignore-case")
         if literal:
@@ -772,66 +745,74 @@ class ToolLayer:
             cmd.extend(["--glob", glob])
         cmd.extend([pattern, str(search_path)])
 
-        proc = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
-        matches: list[dict[str, Any]] = []
-        limit_reached = False
-
-        assert proc.stdout is not None
-        for line in proc.stdout:
-            payload = line.strip()
-            if payload == "":
-                continue
-            try:
-                event = json.loads(payload)
-            except Exception:
-                continue
-            if event.get("type") != "match":
-                continue
-            data = event.get("data") or {}
-            path_data = data.get("path") or {}
-            path_text = path_data.get("text")
-            if not isinstance(path_text, str):
-                continue
-            candidate = Path(path_text)
-            if not candidate.is_absolute():
-                candidate = (
-                    search_path.parent if search_path.is_file() else search_path
-                ) / candidate
-            anchor = search_path if search_path.is_dir() else Path(self.workdir)
-            display_path = self._display_path(candidate, anchor=anchor)
-            line_number = int(data.get("line_number") or 0)
-            line_text = ((data.get("lines") or {}).get("text") or "").rstrip("\n")
-            matches.append(
-                {
-                    "path": candidate,
-                    "display_path": display_path,
-                    "line_number": line_number,
-                    "text": line_text,
-                }
-            )
-            if len(matches) >= limit:
-                limit_reached = True
-                proc.terminate()
-                break
+        env = os.environ.copy()
+        env["RG_SIDECAR_ROOT"] = str(Path(self.workdir).resolve())
 
         try:
-            _, stderr = proc.communicate(timeout=2)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            _, stderr = proc.communicate()
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=env,
+            )
+            matches: list[dict[str, Any]] = []
+            limit_reached = False
 
-        rc = proc.returncode or 0
-        if not limit_reached and rc not in {0, 1}:
-            message = (stderr or "").strip()
-            if "regex parse error" in message.lower():
-                raise ToolLayerError("invalid_args", message or "invalid regex pattern")
-            raise ToolLayerError("execution_failed", message or "rg command failed")
-        return matches, limit_reached
+            assert proc.stdout is not None
+            for line in proc.stdout:
+                payload = line.strip()
+                if payload == "":
+                    continue
+                try:
+                    event = json.loads(payload)
+                except Exception:
+                    continue
+                if event.get("type") != "match":
+                    continue
+                data = event.get("data") or {}
+                path_data = data.get("path") or {}
+                path_text = path_data.get("text")
+                if not isinstance(path_text, str):
+                    continue
+                candidate = Path(path_text)
+                if not candidate.is_absolute():
+                    candidate = (search_path.parent if search_path.is_file() else search_path) / candidate
+                anchor = search_path if search_path.is_dir() else Path(self.workdir)
+                display_path = self._display_path(candidate, anchor=anchor)
+                line_number = int(data.get("line_number") or 0)
+                line_text = ((data.get("lines") or {}).get("text") or "").rstrip("\n")
+                matches.append(
+                    {
+                        "path": candidate,
+                        "display_path": display_path,
+                        "line_number": line_number,
+                        "text": line_text,
+                    }
+                )
+                if len(matches) >= limit:
+                    limit_reached = True
+                    proc.terminate()
+                    break
+
+            try:
+                _, stderr = proc.communicate(timeout=2)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                _, stderr = proc.communicate()
+
+            rc = proc.returncode or 0
+            if not limit_reached and rc not in {0, 1}:
+                message = (stderr or "").strip()
+                if "regex parse error" in message.lower():
+                    raise ToolLayerError("invalid_args", message or "invalid regex pattern")
+                raise ToolLayerError("execution_failed", message or "rg command failed")
+            return matches, limit_reached
+        finally:
+            try:
+                Path(preprocessor_path).unlink(missing_ok=True)
+            except Exception:
+                pass
 
     def _render_grep_with_context(
         self,
@@ -845,15 +826,10 @@ class ToolLayer:
         for item in matches:
             path = item["path"]
             if path not in cache:
-                try:
-                    cache[path] = path.read_text(encoding="utf-8").splitlines()
-                except Exception:
-                    cache[path] = []
+                cache[path] = self._read_context_lines_for_grep_match(path)
             lines = cache[path]
             if not lines:
-                rendered.append(
-                    f"{item['display_path']}:{item['line_number']}: {item['text']}"
-                )
+                rendered.append(f"{item['display_path']}:{item['line_number']}: {item['text']}")
                 continue
 
             line_no = int(item["line_number"])
@@ -866,6 +842,89 @@ class ToolLayer:
                 else:
                     rendered.append(f"{item['display_path']}-{idx}- {text}")
         return rendered
+
+    def _read_context_lines_for_grep_match(self, source_path: Path) -> list[str]:
+        sidecar_path = self._sidecar_path_for_source(source_path)
+        if sidecar_path is not None:
+            try:
+                return sidecar_path.read_text(encoding="utf-8").splitlines()
+            except Exception:
+                pass
+        try:
+            return source_path.read_text(encoding="utf-8").splitlines()
+        except Exception:
+            return []
+
+    def _sidecar_path_for_source(self, source_path: Path) -> Path | None:
+        ext = source_path.suffix.lower()
+        if ext not in GREP_SIDECAR_SUPPORTED_EXTENSIONS:
+            return None
+
+        workspace_root = Path(self.workdir).resolve()
+        try:
+            source_resolved = source_path.resolve()
+            relative = source_resolved.relative_to(workspace_root)
+        except Exception:
+            return None
+
+        sidecar_base = workspace_root / ".sidecar" / relative
+        if ext in {".pdf", ".docx"}:
+            return sidecar_base.with_name(sidecar_base.name + ".md")
+        return sidecar_base.with_name(sidecar_base.name + ".csv")
+
+    def _create_rg_sidecar_preprocessor(self) -> str:
+        fd, path = tempfile.mkstemp(prefix="rg-sidecar-pre-", suffix=".py")
+        script = """#!/usr/bin/env python3
+import os
+import sys
+from pathlib import Path
+
+SUPPORTED_EXTENSIONS = {".pdf", ".docx", ".xlsx"}
+
+
+def sidecar_path_for(source: Path, root: Path) -> Path | None:
+    ext = source.suffix.lower()
+    if ext not in SUPPORTED_EXTENSIONS:
+        return None
+    try:
+        rel = source.resolve().relative_to(root.resolve())
+    except Exception:
+        return None
+    base = root / ".sidecar" / rel
+    if ext in {".pdf", ".docx"}:
+        return base.with_name(base.name + ".md")
+    return base.with_name(base.name + ".csv")
+
+
+def main() -> int:
+    if len(sys.argv) < 2:
+        return 0
+    root_value = os.environ.get("RG_SIDECAR_ROOT", "")
+    if not root_value:
+        return 0
+    source = Path(sys.argv[1])
+    sidecar = sidecar_path_for(source, Path(root_value))
+    if sidecar is None or not sidecar.is_file():
+        return 0
+    with sidecar.open("rb") as f:
+        sys.stdout.buffer.write(f.read())
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+"""
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(script)
+            os.chmod(path, 0o700)
+        except Exception:
+            try:
+                os.close(fd)
+            except Exception:
+                pass
+            raise
+        return path
 
     def _resolve_read_path(self, input_path: str) -> Path:
         canonical = resolve_path_arg(input_path, self.workdir, self.os_type)
@@ -895,14 +954,10 @@ class ToolLayer:
             expanded.add(unicodedata.normalize("NFC", value))
         return [item for item in expanded if item != filename]
 
-    def _tool_read(
-        self, args: dict[str, Any]
-    ) -> tuple[list[ToolContentItem], ToolDetails | None]:
+    def _tool_read(self, args: dict[str, Any]) -> tuple[list[ToolContentItem], ToolDetails | None]:
         path = self._require_string(args, "path")
         offset = self._optional_int(args, "offset", default=1, minimum=1)
-        limit = self._optional_int(
-            args, "limit", default=DEFAULT_TEXT_MAX_LINES, minimum=1
-        )
+        limit = self._optional_int(args, "limit", default=DEFAULT_TEXT_MAX_LINES, minimum=1)
 
         resolved = self._resolve_read_path(path)
         checked_path = self._checked_path(str(resolved))
@@ -915,27 +970,19 @@ class ToolLayer:
         if mime_type in _SUPPORTED_IMAGE_MIMES:
             data = checked_path.read_bytes()
             data, resize_note = self._maybe_resize_image(data)
-            text = (
-                f"Read image file {checked_path.name} ({mime_type}, {len(data)} bytes)."
-            )
+            text = f"Read image file {checked_path.name} ({mime_type}, {len(data)} bytes)."
             if resize_note:
                 text += f" {resize_note}"
             return [
                 TextContent(type="text", text=text),
-                ImageContent(
-                    type="image",
-                    data_base64=base64.b64encode(data).decode("ascii"),
-                    mime_type=mime_type,
-                ),
+                ImageContent(type="image", data_base64=base64.b64encode(data).decode("ascii"), mime_type=mime_type),
             ], None
 
         raw = checked_path.read_bytes()
         try:
             decoded = raw.decode("utf-8")
         except UnicodeDecodeError as exc:
-            raise ToolLayerError(
-                "execution_failed", f"file is not UTF-8 text: {checked_path}"
-            ) from exc
+            raise ToolLayerError("execution_failed", f"file is not UTF-8 text: {checked_path}") from exc
 
         lines = decoded.splitlines()
         start = offset - 1
@@ -954,9 +1001,7 @@ class ToolLayer:
         if truncation is not None:
             next_offset = start + truncation.outputLines + 1
             if truncation.firstLineExceedsLimit:
-                notices.append(
-                    "First line exceeds output limit; use sed/head to inspect a smaller range."
-                )
+                notices.append("First line exceeds output limit; use sed/head to inspect a smaller range.")
         if end < len(lines) or truncation is not None:
             notices.append(f"Use offset={max(1, next_offset)} to continue")
 
@@ -986,9 +1031,7 @@ class ToolLayer:
         except Exception:
             return data, "Image resize failed; returned original bytes."
 
-    def _tool_write(
-        self, args: dict[str, Any]
-    ) -> tuple[list[ToolContentItem], ToolDetails | None]:
+    def _tool_write(self, args: dict[str, Any]) -> tuple[list[ToolContentItem], ToolDetails | None]:
         path = self._require_string(args, "path")
         content = self._require_string(args, "content", allow_empty=True)
         target = self._checked_path(path)
@@ -998,9 +1041,7 @@ class ToolLayer:
         text = f"Successfully wrote {byte_count} bytes to {target}"
         return [TextContent(type="text", text=text)], None
 
-    def _tool_edit(
-        self, args: dict[str, Any]
-    ) -> tuple[list[ToolContentItem], ToolDetails | None]:
+    def _tool_edit(self, args: dict[str, Any]) -> tuple[list[ToolContentItem], ToolDetails | None]:
         path = self._require_string(args, "path")
         old_text = self._require_string(args, "old_text")
         new_text = self._require_string(args, "new_text", allow_empty=True)
@@ -1035,9 +1076,7 @@ class ToolLayer:
         if updated == normalized:
             raise ToolLayerError("invalid_args", "edit is no-op")
 
-        output_text = (
-            updated if newline_style == "\n" else updated.replace("\n", newline_style)
-        )
+        output_text = updated if newline_style == "\n" else updated.replace("\n", newline_style)
         payload = output_text.encode("utf-8")
         if has_bom:
             payload = codecs.BOM_UTF8 + payload
@@ -1052,9 +1091,7 @@ class ToolLayer:
                 lineterm="",
             )
         )
-        first_line = self._first_changed_line(
-            normalized.splitlines(), updated.splitlines()
-        )
+        first_line = self._first_changed_line(normalized.splitlines(), updated.splitlines())
         details = ToolDetails(diff=diff, firstChangedLine=first_line)
         text_result = f"Successfully replaced text in {target}."
         return [TextContent(type="text", text=text_result)], details
@@ -1136,188 +1173,98 @@ def build_workspace_tools(
         os_type=os_type,
     )
 
-    class WorkspaceTool(Tool):
-        output_type = "object"
+    @tool
+    def ls(path: str = ".", limit: int = 500) -> dict[str, Any]:
+        """List directory entries in lexical order.
 
-        def __init__(self, tool_layer: ToolLayer):
-            super().__init__()
-            self._tool_layer = tool_layer
+        Args:
+            path: Directory path under current workspace.
+            limit: Max entries to return.
+        """
+        return layer.execute_tool_dict("ls", {"path": path, "limit": limit})
 
-    class LsTool(WorkspaceTool):
-        name = "ls"
-        description = "List directory entries in lexical order."
-        inputs = {
-            "path": {
-                "type": "string",
-                "description": "Directory path under current workspace.",
-                "nullable": True,
-            },
-            "limit": {
-                "type": "integer",
-                "description": "Max entries to return.",
-                "nullable": True,
-            },
-        }
+    @tool
+    def find(pattern: str, path: str = ".", limit: int = 1000) -> dict[str, Any]:
+        """Find files matching a glob pattern.
 
-        def forward(self, path: str = ".", limit: int = 500) -> dict[str, Any]:
-            return self._tool_layer.execute_tool_dict(
-                "ls", {"path": path, "limit": limit}
-            )
+        Args:
+            pattern: Glob pattern, e.g. **/*.py or *.md.
+            path: Search root under workspace.
+            limit: Max matches to return.
+        """
+        return layer.execute_tool_dict("find", {"pattern": pattern, "path": path, "limit": limit})
 
-    class FindTool(WorkspaceTool):
-        name = "find"
-        description = "Find files matching a glob pattern."
-        inputs = {
-            "pattern": {
-                "type": "string",
-                "description": "Glob pattern, e.g. **/*.py or *.md.",
-            },
-            "path": {"type": "string", "description": "Search root under workspace."},
-            "path": {
-                "type": "string",
-                "description": "Search root under workspace.",
-                "nullable": True,
-            },
-            "limit": {
-                "type": "integer",
-                "description": "Max matches to return.",
-                "nullable": True,
-            },
-        }
+    @tool
+    def grep(
+        pattern: str,
+        path: str = ".",
+        glob: str | None = None,
+        ignore_case: bool = False,
+        literal: bool = False,
+        context: int = 0,
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        """Search file content and return matching lines.
 
-        def forward(
-            self, pattern: str, path: str = ".", limit: int = 1000
-        ) -> dict[str, Any]:
-            return self._tool_layer.execute_tool_dict(
-                "find",
-                {"pattern": pattern, "path": path, "limit": limit},
-            )
-
-    class GrepTool(WorkspaceTool):
-        name = "grep"
-        description = "Search file content and return matching lines."
-        inputs = {
-            "pattern": {
-                "type": "string",
-                "description": "Regex pattern or literal text.",
+        Args:
+            pattern: Regex pattern or literal text.
+            path: File or directory path under workspace.
+            glob: Optional glob filter when path is a directory.
+            ignore_case: Whether to perform case-insensitive matching.
+            literal: If true, treat pattern as plain text.
+            context: Number of context lines around each match.
+            limit: Maximum matches returned.
+        """
+        return layer.execute_tool_dict(
+            "grep",
+            {
+                "pattern": pattern,
+                "path": path,
+                "glob": glob,
+                "ignore_case": ignore_case,
+                "literal": literal,
+                "context": context,
+                "limit": limit,
             },
-            "path": {
-                "type": "string",
-                "description": "File or directory path under workspace.",
-                "nullable": True,
-            },
-            "glob": {
-                "type": "string",
-                "description": "Optional glob filter when path is a directory.",
-                "nullable": True,
-            },
-            "ignore_case": {
-                "type": "boolean",
-                "description": "Whether to perform case-insensitive matching.",
-                "nullable": True,
-            },
-            "literal": {
-                "type": "boolean",
-                "description": "If true, treat pattern as plain text.",
-                "nullable": True,
-            },
-            "context": {
-                "type": "integer",
-                "description": "Number of context lines around each match.",
-                "nullable": True,
-            },
-            "limit": {
-                "type": "integer",
-                "description": "Maximum matches returned.",
-                "nullable": True,
-            },
-        }
+        )
 
-        def forward(
-            self,
-            pattern: str,
-            path: str = ".",
-            glob: str | None = None,
-            ignore_case: bool = False,
-            literal: bool = False,
-            context: int = 0,
-            limit: int = 100,
-        ) -> dict[str, Any]:
-            return self._tool_layer.execute_tool_dict(
-                "grep",
-                {
-                    "pattern": pattern,
-                    "path": path,
-                    "glob": glob,
-                    "ignore_case": ignore_case,
-                    "literal": literal,
-                    "context": context,
-                    "limit": limit,
-                },
-            )
+    @tool
+    def read(path: str, offset: int = 1, limit: int = 2000) -> dict[str, Any]:
+        """Read file content with optional line offset and limit.
 
-    class ReadTool(WorkspaceTool):
-        name = "read"
-        description = "Read file content with optional line offset and limit."
-        inputs = {
-            "path": {"type": "string", "description": "File path under workspace."},
-            "offset": {
-                "type": "integer",
-                "description": "Start line index (1-based).",
-                "nullable": True,
+        Args:
+            path: File path under workspace.
+            offset: Start line index (1-based).
+            limit: Max lines to return.
+        """
+        return layer.execute_tool_dict("read", {"path": path, "offset": offset, "limit": limit})
+
+    @tool
+    def write(path: str, content: str) -> dict[str, Any]:
+        """Write full file content.
+
+        Args:
+            path: File path under workspace.
+            content: Full content to write.
+        """
+        return layer.execute_tool_dict("write", {"path": path, "content": content})
+
+    @tool
+    def edit(path: str, old_text: str, new_text: str) -> dict[str, Any]:
+        """Replace one text span in a file.
+
+        Args:
+            path: File path under workspace.
+            old_text: Text to replace.
+            new_text: Replacement text.
+        """
+        return layer.execute_tool_dict(
+            "edit",
+            {
+                "path": path,
+                "old_text": old_text,
+                "new_text": new_text,
             },
-            "limit": {
-                "type": "integer",
-                "description": "Max lines to return.",
-                "nullable": True,
-            },
-        }
+        )
 
-        def forward(
-            self, path: str, offset: int = 1, limit: int = 2000
-        ) -> dict[str, Any]:
-            return self._tool_layer.execute_tool_dict(
-                "read",
-                {"path": path, "offset": offset, "limit": limit},
-            )
-
-    class WriteTool(WorkspaceTool):
-        name = "write"
-        description = "Write full file content."
-        inputs = {
-            "path": {"type": "string", "description": "File path under workspace."},
-            "content": {"type": "string", "description": "Full content to write."},
-        }
-
-        def forward(self, path: str, content: str) -> dict[str, Any]:
-            return self._tool_layer.execute_tool_dict(
-                "write", {"path": path, "content": content}
-            )
-
-    class EditTool(WorkspaceTool):
-        name = "edit"
-        description = "Replace one text span in a file."
-        inputs = {
-            "path": {"type": "string", "description": "File path under workspace."},
-            "old_text": {"type": "string", "description": "Text to replace."},
-            "new_text": {"type": "string", "description": "Replacement text."},
-        }
-
-        def forward(self, path: str, old_text: str, new_text: str) -> dict[str, Any]:
-            return self._tool_layer.execute_tool_dict(
-                "edit",
-                {
-                    "path": path,
-                    "old_text": old_text,
-                    "new_text": new_text,
-                },
-            )
-
-    return [
-        LsTool(layer),
-        FindTool(layer),
-        GrepTool(layer),
-        ReadTool(layer),
-        WriteTool(layer),
-        EditTool(layer),
-    ]
+    return [ls, find, grep, read, write, edit]

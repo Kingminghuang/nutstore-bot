@@ -4,9 +4,9 @@ from dataclasses import dataclass
 import logging
 from pathlib import Path
 import re
-from typing import Any, Callable
+from typing import Any, Callable, Protocol
 
-from fastapi import HTTPException, status
+from fastapi import BackgroundTasks, HTTPException, status
 
 from attachment_store import AttachmentStore
 from redaction import redact_text
@@ -31,6 +31,21 @@ ModelTitleGenerator = Callable[[str, str], str | None]
 LOGGER = logging.getLogger(__name__)
 
 
+class WorkspaceSidecarIndexerProtocol(Protocol):
+    def enqueue(
+        self,
+        background_tasks: BackgroundTasks | None,
+        workspace_id: str,
+        workspace_real_path: str,
+    ) -> None: ...
+
+    def status(
+        self,
+        workspace_id: str,
+        workspace_real_path: str,
+    ) -> dict[str, Any]: ...
+
+
 @dataclass(frozen=True)
 class SessionService:
     workspaces: WorkspacesRepository
@@ -40,6 +55,7 @@ class SessionService:
     attachment_store: AttachmentStore
     timeline_service: TimelineService
     model_title_generator: ModelTitleGenerator | None = None
+    workspace_sidecar_indexer: WorkspaceSidecarIndexerProtocol | None = None
 
     def list_workspaces_payload(self) -> dict[str, list[dict[str, Any]]]:
         return {
@@ -48,7 +64,12 @@ class SessionService:
             ]
         }
 
-    def create_workspace(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def create_workspace(
+        self,
+        payload: dict[str, Any],
+        *,
+        background_tasks: BackgroundTasks | None = None,
+    ) -> dict[str, Any]:
         name = _normalize_required_string(
             payload.get("name"), detail="Directory name is required"
         )
@@ -80,11 +101,43 @@ class SessionService:
                 detail="Directory path is already registered",
             ) from exc
 
+        if self.workspace_sidecar_indexer is not None:
+            self.workspace_sidecar_indexer.enqueue(
+                background_tasks,
+                workspace_id=workspace.id,
+                workspace_real_path=str(resolved_path),
+            )
+
         return serialize_workspace(workspace)
 
     def delete_workspace(self, workspace_id: str) -> None:
         self._get_workspace_or_404(workspace_id)
         self.workspaces.delete_by_id(workspace_id)
+
+    def workspace_sidecar_index_status_payload(
+        self, workspace_id: str
+    ) -> dict[str, Any]:
+        workspace = self._get_workspace_or_404(workspace_id)
+        if self.workspace_sidecar_indexer is None:
+            workspace_path = Path(workspace.real_path).expanduser().resolve()
+            sidecar_root = workspace_path / ".sidecar"
+            return {
+                "workspaceId": workspace.id,
+                "workspacePath": str(workspace_path),
+                "sidecarRoot": str(sidecar_root),
+                "manifestPath": str(sidecar_root / ".index-manifest.json"),
+                "manifestExists": False,
+                "status": "disabled",
+                "lastIndexedAt": None,
+                "stats": {
+                    "scanned": 0,
+                    "converted": 0,
+                    "skipped": 0,
+                    "failed": 0,
+                },
+                "sourceCount": 0,
+            }
+        return self.workspace_sidecar_indexer.status(workspace.id, workspace.real_path)
 
     def update_workspace(
         self, workspace_id: str, payload: dict[str, Any]

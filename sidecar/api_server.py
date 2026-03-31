@@ -41,6 +41,7 @@ from session_service import SessionService
 from secret_store import LocalSecretStore
 from storage import connect_database
 from timeline_service import TimelineService
+from workspace_sidecar_indexer import WorkspaceSidecarIndexer
 
 
 DEFAULT_HOST = "127.0.0.1"
@@ -91,6 +92,7 @@ def create_app(config: ApiServerConfig | None = None) -> FastAPI:
             sessions=repositories.sessions,
             timeline_entries=repositories.timeline_entries,
         ),
+        workspace_sidecar_indexer=WorkspaceSidecarIndexer(),
     )
     run_service = RunService(
         workspaces=repositories.workspaces,
@@ -219,8 +221,12 @@ def create_app(config: ApiServerConfig | None = None) -> FastAPI:
         return session_service.list_workspaces_payload()
 
     @app.post("/workspaces")
-    def create_workspace(payload: dict[str, object]) -> dict[str, object]:
-        return session_service.create_workspace(payload)
+    def create_workspace(
+        payload: dict[str, object], background_tasks: BackgroundTasks
+    ) -> dict[str, object]:
+        return session_service.create_workspace(
+            payload, background_tasks=background_tasks
+        )
 
     @app.patch("/workspaces/{workspace_id}")
     def update_workspace(
@@ -235,6 +241,12 @@ def create_app(config: ApiServerConfig | None = None) -> FastAPI:
     @app.get("/workspaces/{workspace_id}/sessions")
     def get_workspace_sessions(workspace_id: str) -> dict[str, list[dict[str, object]]]:
         return session_service.list_sessions_payload(workspace_id)
+
+    @app.get("/workspaces/{workspace_id}/sidecar-index/status")
+    def get_workspace_sidecar_index_status(
+        workspace_id: str,
+    ) -> dict[str, object]:
+        return session_service.workspace_sidecar_index_status_payload(workspace_id)
 
     @app.post("/workspaces/{workspace_id}/sessions")
     def create_workspace_session(

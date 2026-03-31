@@ -20,65 +20,88 @@ const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => 
     typeof init?.body === "string"
       ? (JSON.parse(init.body) as Record<string, unknown>)
       : null
-  if (url.includes("path=%2Fworkspaces%2Fws_1%2Fsessions") && init?.method !== "POST") {
-    workspaceSessionsFetchCount += 1
-    const sessions = [
-      {
-        id: "sess_1",
-        workspaceId: "ws_1",
-        title: "Backend driven title",
-        titleSource: runCompleted ? "model" : useStreamingRun ? "heuristic" : "model",
-        createdAt: "2026-03-24T12:00:00Z",
-        updatedAt: runCompleted ? "2026-03-24T12:12:00Z" : "2026-03-24T12:10:00Z",
-        lastMessageAt: runCompleted ? "2026-03-24T12:12:00Z" : "2026-03-24T12:10:00Z",
-        messageCount: runCompleted ? 3 : useStreamingRun ? 1 : 2,
-        lastMessagePreview: runCompleted
-          ? "Run completed through sidecar."
-          : useStreamingRun
-            ? "Run through sidecar"
-            : "I split provider catalog from persisted connections",
-        activeConnectionId: "prov_openai",
-        activeModelId: "gpt-5.4-mini",
-      },
-    ].filter((session) => !deletedSessionIds.has(session.id))
-    if (includeEmptySession) {
-      if (!deletedSessionIds.has("sess_2")) {
-        sessions.unshift({
-        id: "sess_2",
-        workspaceId: "ws_1",
-        title: "Fresh session",
-        titleSource: "placeholder",
-        createdAt: "2026-03-24T12:30:00Z",
-        updatedAt: "2026-03-24T12:30:00Z",
-        lastMessageAt: null,
-        messageCount: 0,
-        lastMessagePreview: null,
-        activeConnectionId: "prov_openai",
-        activeModelId: "gpt-5.4-mini",
-        })
-      }
+  if (decodedPath === "/workspaces" && init?.method === "POST") {
+    const nextWorkspaceId = `ws_${workspaceSeed}`
+    workspaceSeed += 1
+    const createdWorkspace = {
+      id: nextWorkspaceId,
+      name: String(body?.name ?? "new-workspace"),
+      pathLabel: String(body?.pathLabel ?? body?.realPath ?? "/tmp/new-workspace"),
+      realPath: String(body?.realPath ?? "/tmp/new-workspace"),
+      createdAt: "2026-03-24T12:00:00Z",
+      updatedAt: "2026-03-24T12:00:00Z",
     }
+    workspacesFixture = [...workspacesFixture, createdWorkspace]
+    workspaceIndexStatusById[nextWorkspaceId] = "indexed"
+    return new Response(JSON.stringify(createdWorkspace), { status: 200 })
+  }
+
+  if (decodedPath === "/workspaces" && (init?.method == null || init?.method === "GET")) {
     return new Response(
       JSON.stringify({
-        sessions,
+        workspaces: workspacesFixture,
       }),
       { status: 200 }
     )
   }
 
-  if (url.includes("/api/sidecar/proxy?path=%2Fworkspaces") && !url.includes("%2Fsessions")) {
+  const workspaceSessionsMatch = decodedPath.match(/^\/workspaces\/([^/]+)\/sessions$/)
+  if (workspaceSessionsMatch && init?.method !== "POST") {
+    const workspaceId = workspaceSessionsMatch[1]
+    if (workspaceId === "ws_1") {
+      workspaceSessionsFetchCount += 1
+      const sessions = [
+        {
+          id: "sess_1",
+          workspaceId: "ws_1",
+          title: "Backend driven title",
+          titleSource: runCompleted ? "model" : useStreamingRun ? "heuristic" : "model",
+          createdAt: "2026-03-24T12:00:00Z",
+          updatedAt: runCompleted ? "2026-03-24T12:12:00Z" : "2026-03-24T12:10:00Z",
+          lastMessageAt: runCompleted ? "2026-03-24T12:12:00Z" : "2026-03-24T12:10:00Z",
+          messageCount: runCompleted ? 3 : useStreamingRun ? 1 : 2,
+          lastMessagePreview: runCompleted
+            ? "Run completed through sidecar."
+            : useStreamingRun
+              ? "Run through sidecar"
+              : "I split provider catalog from persisted connections",
+          activeConnectionId: "prov_openai",
+          activeModelId: "gpt-5.4-mini",
+        },
+      ].filter((session) => !deletedSessionIds.has(session.id))
+      if (includeEmptySession && !deletedSessionIds.has("sess_2")) {
+        sessions.unshift({
+          id: "sess_2",
+          workspaceId: "ws_1",
+          title: "Fresh session",
+          titleSource: "placeholder",
+          createdAt: "2026-03-24T12:30:00Z",
+          updatedAt: "2026-03-24T12:30:00Z",
+          lastMessageAt: null,
+          messageCount: 0,
+          lastMessagePreview: null,
+          activeConnectionId: "prov_openai",
+          activeModelId: "gpt-5.4-mini",
+        })
+      }
+      return new Response(JSON.stringify({ sessions }), { status: 200 })
+    }
+    return new Response(JSON.stringify({ sessions: [] }), { status: 200 })
+  }
+
+  const workspaceIndexStatusMatch = decodedPath.match(
+    /^\/workspaces\/([^/]+)\/sidecar-index\/status$/
+  )
+  if (workspaceIndexStatusMatch && (init?.method == null || init?.method === "GET")) {
+    const workspaceId = workspaceIndexStatusMatch[1]
+    const status = workspaceIndexStatusById[workspaceId] ?? "not_started"
     return new Response(
       JSON.stringify({
-        workspaces: [
-          {
-            id: "ws_1",
-            name: "nutstore-bot",
-            pathLabel: "/tmp/nutstore-bot",
-            realPath: "/tmp/nutstore-bot",
-            createdAt: "2026-03-24T12:00:00Z",
-            updatedAt: "2026-03-24T12:00:00Z",
-          },
-        ],
+        workspaceId,
+        status,
+        lastIndexedAt: status === "indexed" ? "2026-03-24T12:00:01Z" : null,
+        stats: { scanned: 0, converted: 0, skipped: 0, failed: 0 },
+        sourceCount: 0,
       }),
       { status: 200 }
     )
@@ -497,6 +520,16 @@ let includeEmptySession = false
 let emptySessionMessagesFetchCount = 0
 let failFirstEmptySessionMessagesRequest = false
 let deletedSessionIds = new Set<string>()
+let workspaceSeed = 2
+let workspacesFixture: Array<{
+  id: string
+  name: string
+  pathLabel: string
+  realPath: string
+  createdAt: string
+  updatedAt: string
+}> = []
+let workspaceIndexStatusById: Record<string, "indexed" | "not_started" | "disabled"> = {}
 
 global.fetch = fetchMock as typeof fetch
 
@@ -512,6 +545,18 @@ describe("Home page", () => {
     emptySessionMessagesFetchCount = 0
     failFirstEmptySessionMessagesRequest = false
     deletedSessionIds = new Set<string>()
+    workspaceSeed = 2
+    workspacesFixture = [
+      {
+        id: "ws_1",
+        name: "nutstore-bot",
+        pathLabel: "/tmp/nutstore-bot",
+        realPath: "/tmp/nutstore-bot",
+        createdAt: "2026-03-24T12:00:00Z",
+        updatedAt: "2026-03-24T12:00:00Z",
+      },
+    ]
+    workspaceIndexStatusById = { ws_1: "not_started" }
     MockEventSource.instances = []
     fetchMock.mockClear()
     sidecarClientMocks.getSessionTimeline.mockReset()
@@ -761,6 +806,35 @@ describe("Home page", () => {
 
     await waitFor(() => {
       expect(screen.getAllByText("Backend driven title")).toHaveLength(2)
+    })
+  })
+
+  it("polls sidecar index status after adding a workspace", async () => {
+    render(<Home />)
+
+    await waitFor(() => {
+      expect(screen.getByText("OpenAI - gpt-5.4-mini")).toBeInTheDocument()
+    })
+
+    fireEvent.click(screen.getByLabelText("Add a new directory"))
+    fireEvent.change(screen.getByLabelText("Directory name"), {
+      target: { value: "new-workspace" },
+    })
+    fireEvent.change(screen.getByLabelText("Directory path"), {
+      target: { value: "/tmp/new-workspace" },
+    })
+    fireEvent.click(screen.getByRole("button", { name: "Add directory" }))
+
+    await waitFor(() => {
+      const indexStatusCalls = fetchMock.mock.calls.filter(([input, init]) => {
+        const value = String(input)
+        return (
+          value.includes(
+            "/api/sidecar/proxy?path=%2Fworkspaces%2Fws_2%2Fsidecar-index%2Fstatus"
+          ) && (init?.method == null || init?.method === "GET")
+        )
+      })
+      expect(indexStatusCalls.length).toBeGreaterThan(0)
     })
   })
 

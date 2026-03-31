@@ -104,6 +104,97 @@ class ToolLayerTests(unittest.TestCase):
         self.assertTrue(result["details"]["linesTruncated"])
         self.assertIn("[truncated]", result["content"][0]["text"])
 
+    def test_grep_uses_sidecar_preprocessor_and_globs(self) -> None:
+        capture_file = self.temp_dir / "rg-args.txt"
+        rg_script = self._make_script(
+            "fake-rg-args.sh",
+            "#!/bin/sh\n"
+            f"printf '%s\\n' \"$@\" > '{capture_file}'\n"
+            f"printf 'RG_SIDECAR_ROOT=%s\\n' \"$RG_SIDECAR_ROOT\" >> '{capture_file}'\n"
+            "exit 0\n",
+        )
+        layer = ToolLayer(str(self.workspace), rg_executable=rg_script)
+        result = layer.execute_tool_dict("grep", {"pattern": "alpha", "path": "."})
+        self.assertFalse(result["is_error"])
+        args_text = capture_file.read_text(encoding="utf-8")
+        self.assertIn("--pre", args_text)
+        self.assertIn("--pre-glob", args_text)
+        self.assertIn("*.pdf", args_text)
+        self.assertIn("*.docx", args_text)
+        self.assertIn("*.xlsx", args_text)
+        self.assertIn("RG_SIDECAR_ROOT=", args_text)
+
+    def test_grep_preserves_original_binary_file_path_in_output(self) -> None:
+        event = {
+            "type": "match",
+            "data": {
+                "path": {"text": "nested/report.pdf"},
+                "line_number": 12,
+                "lines": {"text": "budget increased by 20%\\n"},
+            },
+        }
+        rg_script = self._make_script(
+            "fake-rg-binary-path.sh",
+            "#!/bin/sh\n"
+            f"printf '%s\\n' '{json.dumps(event)}'\n",
+        )
+        layer = ToolLayer(str(self.workspace), rg_executable=rg_script)
+        result = layer.execute_tool_dict("grep", {"pattern": "budget", "path": "."})
+        self.assertFalse(result["is_error"])
+        self.assertIn("nested/report.pdf:12:", result["content"][0]["text"])
+
+    def test_grep_context_reads_sidecar_for_binary_source(self) -> None:
+        (self.workspace / "nested" / "report.pdf").write_bytes(b"%PDF-1.7")
+        sidecar_path = self.workspace / ".sidecar" / "nested" / "report.pdf.md"
+        sidecar_path.parent.mkdir(parents=True, exist_ok=True)
+        sidecar_path.write_text("line1\nline2\nline3\n", encoding="utf-8")
+
+        event = {
+            "type": "match",
+            "data": {
+                "path": {"text": "nested/report.pdf"},
+                "line_number": 2,
+                "lines": {"text": "line2\\n"},
+            },
+        }
+        rg_script = self._make_script(
+            "fake-rg-context.sh",
+            "#!/bin/sh\n"
+            f"printf '%s\\n' '{json.dumps(event)}'\n",
+        )
+        layer = ToolLayer(str(self.workspace), rg_executable=rg_script)
+        result = layer.execute_tool_dict(
+            "grep",
+            {"pattern": "line2", "path": ".", "context": 1},
+        )
+        self.assertFalse(result["is_error"])
+        text = result["content"][0]["text"]
+        self.assertIn("nested/report.pdf-1- line1", text)
+        self.assertIn("nested/report.pdf:2: line2", text)
+        self.assertIn("nested/report.pdf-3- line3", text)
+
+    def test_grep_context_falls_back_when_binary_sidecar_missing(self) -> None:
+        event = {
+            "type": "match",
+            "data": {
+                "path": {"text": "nested/missing.pdf"},
+                "line_number": 9,
+                "lines": {"text": "fallback line\\n"},
+            },
+        }
+        rg_script = self._make_script(
+            "fake-rg-missing-sidecar.sh",
+            "#!/bin/sh\n"
+            f"printf '%s\\n' '{json.dumps(event)}'\n",
+        )
+        layer = ToolLayer(str(self.workspace), rg_executable=rg_script)
+        result = layer.execute_tool_dict(
+            "grep",
+            {"pattern": "fallback", "path": ".", "context": 1},
+        )
+        self.assertFalse(result["is_error"])
+        self.assertIn("nested/missing.pdf:9: fallback line", result["content"][0]["text"])
+
     def test_read_image_returns_text_and_image_payload(self) -> None:
         png_bytes = (
             b"\x89PNG\r\n\x1a\n"

@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import json
 import logging
 import tempfile
 import unittest
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 from fastapi.testclient import TestClient
 from fastapi import FastAPI, HTTPException
@@ -55,6 +56,25 @@ class FakeValidationFailureModel(Model):
         raise DirectModelError(self.code, self.message)
 
 
+class FakeWorkspaceSidecarIndexer:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    def enqueue(
+        self,
+        background_tasks,
+        workspace_id: str,
+        workspace_real_path: str,
+    ) -> None:
+        self.calls.append(
+            {
+                "background_tasks": background_tasks,
+                "workspace_id": workspace_id,
+                "workspace_real_path": workspace_real_path,
+            }
+        )
+
+
 from python_runtime.discovery import read_service_discovery
 from python_runtime.local_paths import nsbot_home
 from python_runtime.runtime_service import (
@@ -63,6 +83,7 @@ from python_runtime.runtime_service import (
     RuntimeWorkerConfig,
 )
 from python_runtime.session_manager import SessionManager
+from workspace_sidecar_indexer import WorkspaceSidecarIndexer
 
 
 class ApiServerTests(unittest.TestCase):
@@ -1291,6 +1312,102 @@ class ApiServerTests(unittest.TestCase):
             },
         )
         self.assertEqual(response.status_code, 400)
+
+    def test_workspace_creation_enqueues_sidecar_indexing(self) -> None:
+        workspace_dir = self.temp_dir / "workspace-sidecar-index"
+        workspace_dir.mkdir(parents=True, exist_ok=True)
+        fake_indexer = FakeWorkspaceSidecarIndexer()
+        object.__setattr__(
+            self.app.state.session_service,
+            "workspace_sidecar_indexer",
+            fake_indexer,
+        )
+
+        response = self.client.post(
+            "/workspaces",
+            headers={"Authorization": "Bearer test-token"},
+            json={
+                "name": "workspace-sidecar-index",
+                "realPath": str(workspace_dir),
+                "pathLabel": str(workspace_dir),
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+
+        self.assertEqual(len(fake_indexer.calls), 1)
+        self.assertEqual(fake_indexer.calls[0]["workspace_id"], body["id"])
+        self.assertEqual(
+            fake_indexer.calls[0]["workspace_real_path"], str(workspace_dir.resolve())
+        )
+        self.assertIsNotNone(fake_indexer.calls[0]["background_tasks"])
+
+    def test_workspace_sidecar_index_status_returns_disabled_when_indexer_not_configured(
+        self,
+    ) -> None:
+        object.__setattr__(self.app.state.session_service, "workspace_sidecar_indexer", None)
+        workspace = self._create_workspace("workspace-no-indexer")
+
+        response = self.client.get(
+            f"/workspaces/{workspace['id']}/sidecar-index/status",
+            headers={"Authorization": "Bearer test-token"},
+        )
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["workspaceId"], workspace["id"])
+        self.assertEqual(body["status"], "disabled")
+        self.assertEqual(body["manifestExists"], False)
+        self.assertEqual(body["stats"]["converted"], 0)
+
+    def test_workspace_sidecar_index_status_reads_manifest_payload(self) -> None:
+        workspace = self._create_workspace("workspace-index-status")
+        object.__setattr__(
+            self.app.state.session_service,
+            "workspace_sidecar_indexer",
+            WorkspaceSidecarIndexer(),
+        )
+
+        workspace_path = Path(cast(str, workspace["realPath"]))
+        sidecar_root = workspace_path / ".sidecar"
+        sidecar_root.mkdir(parents=True, exist_ok=True)
+        manifest_path = sidecar_root / ".index-manifest.json"
+        manifest_path.write_text(
+            json.dumps(
+                {
+                    "lastIndexedAt": "2026-03-30T12:00:00+00:00",
+                    "stats": {
+                        "scanned": 8,
+                        "converted": 3,
+                        "skipped": 5,
+                        "failed": 0,
+                    },
+                    "sources": {
+                        "a.pdf": {
+                            "signature": {"mtimeNs": 1, "size": 2},
+                            "output": "a.pdf.md",
+                            "updatedAt": "2026-03-30T12:00:00+00:00",
+                        },
+                        "nested/b.xlsx": {
+                            "signature": {"mtimeNs": 2, "size": 3},
+                            "output": "nested/b.xlsx.csv",
+                            "updatedAt": "2026-03-30T12:00:00+00:00",
+                        },
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        response = self.client.get(
+            f"/workspaces/{workspace['id']}/sidecar-index/status",
+            headers={"Authorization": "Bearer test-token"},
+        )
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["status"], "indexed")
+        self.assertEqual(body["lastIndexedAt"], "2026-03-30T12:00:00+00:00")
+        self.assertEqual(body["sourceCount"], 2)
+        self.assertEqual(body["stats"], {"scanned": 8, "converted": 3, "skipped": 5, "failed": 0})
 
     def test_workspace_paths_must_be_unique(self) -> None:
         workspace_dir = self.temp_dir / "workspace-b"
