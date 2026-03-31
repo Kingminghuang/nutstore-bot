@@ -65,59 +65,96 @@ Home (Page)
 │   ├── Header (顶部固定)
 │   │   └── Title({activeSessionLabel})
 │   ├── MainScrollArea (主内容滚动区 / flex-1, overflow-y-auto, relative 定位)
-│   │   ├── (条件渲染: 无对话记录时)
-│   │   │   └── EmptyStateHero
-│   │   │       ├── CodexLogo (SVG)
-│   │   │       ├── Heading("Let's start")
-│   │   │       └── SubHeading({activeProjectLabel})
-│   │   ├── (条件渲染: 有对话记录时)
-│   │   │   └── TimelineEntryList
-│   │   │       ├── TimelineEntryRow(entryKind="user_input", role="user")
-│   │   │       │   ├── UserMessageBubble ("User message")
-│   │   │       │   │   ├── 状态: view
-│   │   │       │   │   │   └── BubbleContent (whitespace-pre-wrap)
-│   │   │       │   │   ├── 状态: editing (条件渲染: isEditing)
-│   │   │       │   │   │   └── InlineEditPanel
-│   │   │       │   │   │       ├── EditTextarea(initial=user content)
-│   │   │       │   │   │       └── EditActions
-│   │   │       │   │   │           ├── Button("Cancel")
-│   │   │       │   │   │           └── Button("Send")
-│   │   │       │   │   └── 状态: submitting (条件渲染: isSubmittingEdit; Send disabled/loading)
-│   │   │       │   └── BubbleActions (anchor=right-bottom, hover 或 focus-within 时显示)
-│   │   │       │       ├── ActionButton("Copy", icon=Copy)
-│   │   │       │       ├── ActionButton("Edit", icon=Pencil)
-│   │   │       │       └── Tooltip("Copy" / "Edit", hover 或 focus 时显示)
-│   │   │       ├── TimelineEntryRow(entryKind="planning", role="assistant")
-│   │   │       │   └── PlanningStepCard
-│   │   │       ├── TimelineEntryRow(entryKind="action", role="assistant")
-│   │   │       │   └── ActionStepCard
-│   │   │       │       ├── ThoughtPanel (可折叠，默认折叠；仅存在可展示 Thought 文本时渲染)
-│   │   │       │       │   └── 提取策略: 结构化优先（JSON.thought）-> 文本回退（从 model_output 的 Thought: 段提取）
-│   │   │       │       ├── ToolCallsPanel (默认折叠; 仅过滤后存在可展示 toolCalls 时渲染)
-│   │   │       │       │   └── 过滤规则: name="python_interpreter" 的 tool call 不展示
-│   │   │       │       ├── CodeActionPanel (仅有内容时渲染)
-│   │   │       │       ├── ObservationsPanel (仅有内容时渲染; 保留 Show/Hide 折叠交互)
-│   │   │       │       ├── StepFootnote
-│   │   │       │       └── StepRunningIndicator (仅当前 activeRunId 下最新 Action 且会话处于 running/queued 时显示)
-│   │   │       ├── TimelineEntryRow(entryKind="final_answer", role="assistant")
-│   │   │           ├── AgentAvatar (gradient dot)
-│   │   │           └── AgentMessageBubble
-│   │   │               ├── AgentMessageContent (final_answer 已实现: fenced code block 分段 + 非代码块 Markdown 渲染)
-│   │   │               │   ├── As-Is: CodeBlock (``` fenced block -> <pre><code> 样式)
-│   │   │               │   ├── As-Is: MarkdownPart (非代码块片段 -> react-markdown + remark-gfm)
-│   │   │               │   ├── As-Is: 代码块片段继续沿用现有 <pre><code> 视觉样式
-│   │   │               │   ├── As-Is: 默认不启用 raw HTML (不接入 rehype-raw)
-│   │   │               │   └── As-Is: 外链使用 target="_blank" + rel="noreferrer noopener"
-│   │   │               └── MessageActions (anchor=left-bottom, hover 或 focus-within 时显示)
-│   │   │                   ├── ActionButton("Copy", icon=Copy)
-│   │   │                   └── Tooltip("Copy", hover 或 focus 时显示)
-│   │   │       ├── PreStepRunLoading (仅会话 running/queued 且当前 activeRunId 尚无 planning/action StepCard 时显示)
-│   │   │       │   └── 隐藏条件: 首个 StepCard 出现或 run 结束
-│   │   │       └── TimelineEntryRow(entryKind="system_notice", role="system")
-│   │   │           └── System notice bubble
-│   │   └── ScrollToBottomButton (绝对定位 absolute bottom, icon=ArrowDown, 未到底部时显示)
+│   │   └── MainScrollAreaLayout (horizontal split)
+│   │       ├── TimelinePane (左侧主区)
+│   │       │   ├── (条件渲染: 无对话记录时)
+│   │       │   │   └── EmptyStateHero
+│   │       │   │       ├── CodexLogo (SVG)
+│   │       │   │       ├── Heading("Let's start")
+│   │       │   │       └── SubHeading({activeProjectLabel})
+│   │       │   ├── (条件渲染: 有对话记录时)
+│   │       │   │   └── TimelineEntryList
+│   │       │   │       ├── TimelineEntryRow(entryKind="user_input", role="user")
+│   │       │   │       │   ├── UserMessageBubble ("User message")
+│   │       │   │       │   │   ├── 状态: view
+│   │       │   │       │   │   │   └── BubbleContent (whitespace-pre-wrap)
+│   │       │   │       │   │   ├── 状态: editing (条件渲染: isEditing)
+│   │       │   │       │   │   │   └── InlineEditPanel
+│   │       │   │       │   │   │       ├── EditTextarea(initial=user content)
+│   │       │   │       │   │   │       └── EditActions
+│   │       │   │       │   │   │           ├── Button("Cancel")
+│   │       │   │       │   │   │           └── Button("Send")
+│   │       │   │       │   │   └── 状态: submitting (条件渲染: isSubmittingEdit; Send disabled/loading)
+│   │       │   │       │   └── BubbleActions (anchor=right-bottom, hover 或 focus-within 时显示)
+│   │       │   │       │       ├── ActionButton("Copy", icon=Copy)
+│   │       │   │       │       ├── ActionButton("Edit", icon=Pencil)
+│   │       │   │       │       └── Tooltip("Copy" / "Edit", hover 或 focus 时显示)
+│   │       │   │       ├── TimelineEntryRow(entryKind="planning", role="assistant")
+│   │       │   │       │   └── PlanningStepCard
+│   │       │   │       ├── TimelineEntryRow(entryKind="action", role="assistant")
+│   │       │   │       │   └── ActionStepCard
+│   │       │   │       │       ├── ThoughtPanel (可折叠，默认折叠；仅存在可展示 Thought 文本时渲染)
+│   │       │   │       │       │   └── 提取策略: 结构化优先（JSON.thought）-> 文本回退（从 model_output 的 Thought: 段提取）
+│   │       │   │       │       ├── ToolCallsPanel (默认折叠; 仅过滤后存在可展示 toolCalls 时渲染)
+│   │       │   │       │       │   └── 过滤规则: name="python_interpreter" 的 tool call 不展示
+│   │       │   │       │       ├── CodeActionPanel (仅有内容时渲染)
+│   │       │   │       │       ├── ErrorPanel (默认折叠; 仅 `payload.error` 存在时渲染)
+│   │       │   │       │       ├── ObservationsPanel (仅有内容时渲染; 保留 Show/Hide 折叠交互)
+│   │       │   │       │       ├── StepFootnote
+│   │       │   │       │       └── StepRunningIndicator (仅当前 activeRunId 下最新 Action 且会话处于 running/queued 时显示)
+│   │       │   │       ├── TimelineEntryRow(entryKind="final_answer", role="assistant")
+│   │       │   │           ├── AgentAvatar (gradient dot)
+│   │       │   │           └── AgentMessageBubble
+│   │       │   │               ├── AgentMessageContent (final_answer 已实现: fenced code block 分段 + 非代码块 Markdown 渲染)
+│   │       │   │               │   ├── As-Is: CodeBlock (``` fenced block -> <pre><code> 样式)
+│   │       │   │               │   ├── As-Is: MarkdownPart (非代码块片段 -> react-markdown + remark-gfm)
+│   │       │   │               │   ├── As-Is: 代码块片段继续沿用现有 <pre><code> 视觉样式
+│   │       │   │               │   ├── As-Is: 默认不启用 raw HTML (不接入 rehype-raw)
+│   │       │   │               │   └── As-Is: 外链使用 target="_blank" + rel="noreferrer noopener"
+│   │       │   │               └── MessageActions (anchor=left-bottom, hover 或 focus-within 时显示)
+│   │       │   │                   ├── ActionButton("Copy", icon=Copy)
+│   │       │   │                   └── Tooltip("Copy", hover 或 focus 时显示)
+│   │       │   │       ├── PreStepRunLoading (仅会话 running/queued 且当前 activeRunId 尚无 planning/action StepCard 时显示)
+│   │       │   │       │   └── 隐藏条件: 首个 StepCard 出现或 run 结束
+│   │       │   │       └── TimelineEntryRow(entryKind="system_notice", role="system")
+│   │       │   │           └── System notice bubble
+│   │       │   └── ScrollToBottomButton (绝对定位 absolute bottom, icon=ArrowDown, 未到底部时显示)
+│   │       └── RightSidePanels (右侧容器，可整体开关)
+│   │           ├── FileTabsPanel (左栏目，可开关)
+│   │           │   ├── Tabs (normal)
+│   │           │   │   ├── Tabs.List
+│   │           │   │   │   ├── Tabs.Trigger("context")
+│   │           │   │   │   └── SortableTab* (opened file tabs)
+│   │           │   │   ├── Tabs.Content("context")
+│   │           │   │   └── FileTabContent(activeFileTab)
+│   │           │   │       └── ScrollView
+│   │           │   │           └── File viewer (Dynamic fileComponent -> UI File)
+│   │           └── FileTreePanel (右栏目，可开关, workspaceRoot = activeWorkspace.realPath)
+│   │               └── Tabs (pill, data-scope="filetree")
+│   │                   ├── Tabs.Trigger("changes")
+│   │                   ├── Tabs.Trigger("all")
+│   │                   ├── Tabs.Content("changes")
+│   │                   │   └── FileTree(path="", allowed=diffFiles@activeWorkspace)
+│   │                   └── Tabs.Content("all")
+│   │                       └── FileTree(path="", modified=diffFiles@activeWorkspace)
+│   │                           └── (recursive) Collapsible + FileTree children
 │   └── ComposerPanel (底部固定)
-│       ├── InputField(placeholder="Ask for follow-up changes")
+│       ├── ComposerInputShell (relative)
+│       │   ├── MentionAwareInputField(placeholder="Ask for follow-up changes")
+│       │   │   ├── PlainTextSegment*
+│       │   │   ├── FileMentionToken* (渲染态: [file_name](file_relative_path_to_activeWorkspacePath))
+│       │   │   └── Caret
+│       │   ├── FileMentionPopover (条件渲染: mention session open)
+│       │   │   ├── Header("Files")
+│       │   │   ├── SearchHint("Type to search for files")
+│       │   │   ├── MentionResultList
+│       │   │   │   ├── MentionResultItem(active)
+│       │   │   │   │   ├── FileName
+│       │   │   │   │   └── ParentPathLabel (仅 relativeDir 非空时显示)
+│       │   │   │   └── MentionResultItem*
+│       │   │   ├── EmptyState("No matching files")
+│       │   │   └── LoadingState("Searching files...")
+│       │   └── MentionAssistText (可选: ↑/↓, Tab, Enter, Esc)
 │       └── Toolbar
 │           ├── LeftActions
 │           │   ├── IconButton(icon=Plus, 支持从 activeProject 所在文件夹中选取文件)
@@ -184,7 +221,7 @@ Home (Page)
 4. **主内容区的滚动与状态流**: `MainContent` 内部采用纵向弹性（`flex-col`），首尾的 `Header` 和 `ComposerPanel` 空间固定，中间使用 `flex-1 overflow-y-auto` 划分出独立的一块主内容滚动区域。并利用这块滚动容器的相对定位能力，放置了一个通过滚动距离判定的绝对位置悬浮“到底部”快捷按钮。`ModelSelector` 的候选模型仅来自**已完成校验且状态为 `connected`** 的 provider；`Not validated` 或校验失败的 provider 不会进入模型列表。
 5. **Provider 管理流已闭环**: `ProvidersPage` 不再只是空状态展示，当前已支持“查看 Connected providers -> 点击进入 ProviderConfigPage 编辑 -> 断开删除”的完整管理流；`PopularProviders` 对已连接项会切换为 `Edit` 而非重复 `+ Connect`。在保存 provider 后，前端会自动对其**主模型（优先 `preferredModelId`）**发起一次真实连通性校验，校验结果会回写到 `ConnectedProviders` 的状态 badge / message，并进一步决定其模型是否可以出现在 `ModelSelector`。
 6. **时间线条目动作与编辑态**: `TimelineEntryList` 采用按 `entryKind + displayRole` 的渲染分支。`UserMessageBubble` 在右下角于 hover 或 focus-within 时显示 `Copy` 与 `Edit`，点击 `Edit` 进入行内编辑态（`EditTextarea + Cancel/Send`），提交中进入 `submitting` 子状态。`AgentMessageBubble` 在左下角于 hover 或 focus-within 时显示 `Copy`，复制源 `entry.contentText` 原始字符串（可能包含 markdown 标记与代码块），而非渲染后的 DOM 纯文本。`final_answer` 的 `AgentMessageContent` 已实现“代码块保留现有样式，非代码块交给 `react-markdown + remark-gfm` 渲染，且默认不启用 `rehype-raw`”；`planning/action/system_notice` 走专门时间线卡片样式，其中 `planning` 仍维持“纯文本 + fenced code block”渲染。
-7. **ActionStepCard 展示策略更新**: 组件展示顺序为 `Thought -> toolCalls -> Code action -> Observations -> Footnote -> StepRunningIndicator`；`Action output` 已移除。`Thought` 改为可折叠且默认折叠，仅在存在可展示文本时渲染；提取遵循“结构化优先（JSON.thought）-> 文本回退（从 model_output 的 Thought: 段提取）”，提取失败或为空则不渲染。`toolCalls` 展示区默认折叠，且会过滤 `python_interpreter`，若过滤后为空则该组件不渲染。`Code action` 无内容不渲染，`Observations` 仅在有内容时渲染并保留折叠交互。`StepRunningIndicator` 仅在“当前 `activeRunId` 下的最新 Action 且会话处于 running/queued”时显示。此处“不显示”表示组件不渲染，而不是仅折叠内容。
+7. **ActionStepCard 展示策略更新**: 组件展示顺序为 `Thought -> toolCalls -> Code action -> Error -> Observations -> Footnote -> StepRunningIndicator`；`Action output` 已移除。`Thought` 改为可折叠且默认折叠，仅在存在可展示文本时渲染；提取遵循“结构化优先（JSON.thought）-> 文本回退（从 model_output 的 Thought: 段提取）”，提取失败或为空则不渲染。`toolCalls` 展示区默认折叠，且会过滤 `python_interpreter`，若过滤后为空则该组件不渲染。`Code action` 无内容不渲染，`Error` 仅在 `payload.error` 存在时渲染且默认折叠，`Observations` 仅在有内容时渲染并保留折叠交互。`StepRunningIndicator` 仅在“当前 `activeRunId` 下的最新 Action 且会话处于 running/queued”时显示。此处“不显示”表示组件不渲染，而不是仅折叠内容。
 8. **MainScrollArea 空档期运行提示**: 当会话已进入 `running/queued`，但时间线里当前 `activeRunId` 仍未出现任何 `planning/action` StepCard 时，在 `TimelineEntryList` 底部展示 `PreStepRunLoading`（轻量 assistant loading 气泡 + `ThinkingDots`）；首个 StepCard 出现或 run 结束后自动隐藏。多轮会话中，上一轮 StepCard 不参与当前 run 的 loading/running 判定。
 
 ### TimelineEntryList 行为接口与受控状态（UI Tree 约定）
@@ -221,3 +258,131 @@ Home (Page)
    - `**加粗**` -> 强调渲染。
    - `[文档链接](https://example.com)` -> 链接渲染（附带安全属性）。
    - GFM 表格语法 -> 表格渲染。
+
+### 右侧双栏状态归属（规划约定）
+1. **页面级状态**:
+   - `activeWorkspaceId`: 当前激活 workspace 的 id。
+   - `activeWorkspace.realPath`: `FileTreePanel` 根目录来源。
+   - `isRightPanelOpen`: 右侧容器总开关。
+   - `isFileTabsPanelOpen`: `FileTabsPanel` 开关。
+   - `isFileTreePanelOpen`: `FileTreePanel` 开关。
+   - `activeFileTreeTab`: `"changes" | "all"`。
+2. **Tabs 状态线（按 session 作用域）**:
+   - `layout.tabs(sessionKey)`:
+     - `all: string[]`
+     - `active?: string`
+   - 通过 `tabs.open / setActive / move / close` 读写 `store.sessionTabs[sessionKey]`。
+3. **文件树状态线（按 workspace 作用域）**:
+   - `file.tree.byWorkspaceId[workspaceId]`:
+     - `dir[path].children / loaded / loading / expanded`
+     - `node[path]` 映射
+   - 通过按 workspace 分桶，避免切换目录时树状态串扰。
+4. **文件内容状态线（按 workspace + path 作用域）**:
+   - `file.byWorkspaceId[workspaceId][path]`:
+     - `content / loaded / loading / error`
+
+### FileTreePanel 工作目录约束（新增）
+1. **根锚点约束**:
+   - `FileTreePanel` 必须加载 `activeWorkspace` 对应目录，即：
+     - `FileTreePanel(workspaceRoot = activeWorkspace.realPath)`
+   - 不能以 `sessionKey` 或固定路径作为树根来源。
+2. **初始化约束**:
+   - `on activeWorkspace change -> reset or switch to tree cache of workspace`。
+   - `FileTree(path="")` 表示“相对 `workspaceRoot` 的根路径空串”。
+3. **过滤作用域约束**:
+   - `changes/all` 的 `diffFiles` 必须限定在当前 `activeWorkspace`，不可跨 workspace 混用。
+
+### Composer `@` 文件搜索状态归属（新增）
+1. **作用域约束**:
+   - 文件搜索根目录固定为 `activeWorkspacePath`（即当前 `activeWorkspace.realPath`）。
+   - workspace 切换后，mention 搜索结果与相对路径计算均切换到新 `activeWorkspacePath`。
+2. **状态模型**:
+   - `composer.mention.isOpen`
+   - `composer.mention.query` (`@` 后的检索词)
+   - `composer.mention.anchorRange`
+   - `composer.mention.highlightedIndex`
+   - `composer.mention.results[]`:
+     - `fileName`
+     - `absPath` (仅内部使用)
+     - `relativePath` (相对 `activeWorkspacePath`)
+     - `relativeDir` (相对目录，若父目录即根目录则为空)
+   - `composer.mention.selectedFiles[]`:
+     - `fileName`
+     - `relativePath` (用于 markdown 生成)
+     - `absPath` (可选，供运行时解析)
+3. **候选目录展示规则**:
+   - `FileName` 永远显示。
+   - 若父目录等于 `activeWorkspacePath`，不显示 `ParentPathLabel`。
+   - 其他目录显示相对 `activeWorkspacePath` 的 `relativeDir`（如 `frontend/components`）。
+4. **token 序列化规则**:
+   - 统一序列化为 `[file_name](file_relative_path_to_activeWorkspacePath)`。
+   - 示例：`[UI-tree.md](frontend/UI-tree.md)`。
+
+### 关键交互流（目标行为）
+```text
+[UI 事件]
+用户点击 FileTree 里的文件节点
+  └─ SessionSidePanel.onFileClick(node)
+     └─ openTab(file.tab(node.path))
+        └─ createOpenSessionFileTab(value)
+           ├─ tabs.open(nextTab)
+           ├─ path = file.pathFromTab(nextTab)
+           ├─ file.load(path@activeWorkspace)
+           ├─ openFileTabsPanel()
+           └─ tabs.setActive(nextTab)
+
+────────────────────────────────────────────────────────────────
+
+[activeWorkspace 切换]
+activeWorkspace 发生变化
+  ├─ FileTreePanel 切换数据源到 activeWorkspace.realPath
+  ├─ 切换到 file.tree.byWorkspaceId[activeWorkspaceId] 对应缓存
+  └─ 保持 UI 开关状态不变(isFileTabsPanelOpen / isFileTreePanelOpen)
+
+────────────────────────────────────────────────────────────────
+
+[文件树加载]
+FileTree(path="") 初次渲染
+  └─ file.tree.list("")
+     └─ listDir(path) 基于 activeWorkspace.realPath 解析相对路径
+
+目录展开
+  └─ file.tree.expand(dir)
+     ├─ dir.expanded = true
+     └─ listDir(dir) 懒加载子节点
+
+All files / Changes 差异:
+  - All files: FileTree(path="", modified=diffFiles@activeWorkspace)
+  - Changes:   FileTree(path="", allowed=diffFiles@activeWorkspace)
+```
+
+```text
+[Composer mention: 触发与搜索]
+用户在 MentionAwareInputField 输入 "@" 或 "@query"
+  ├─ composer.mention.isOpen = true
+  ├─ composer.mention.query = query
+  └─ 基于 activeWorkspacePath 执行文件名搜索 -> composer.mention.results[]
+
+[Composer mention: 候选渲染]
+渲染 MentionResultItem
+  ├─ FileName 永远显示
+  ├─ relativeDir 为空 -> 不显示 ParentPathLabel
+  └─ relativeDir 非空 -> 显示 ParentPathLabel(relativeDir)
+
+[Composer mention: 键盘选择]
+用户按 ↑/↓
+  └─ composer.mention.highlightedIndex 更新
+用户按 Tab/Enter (popover open 且存在高亮项)
+  ├─ 选中候选文件
+  ├─ 插入 FileMentionToken
+  ├─ 序列化为 [file_name](relativePath)
+  └─ 关闭 popover, 光标回到 token 后
+```
+
+### Composer `@` 文件搜索测试用例（新增）
+1. 输入 `@` 时弹出文件候选，输入 `@UI` 时按文件名过滤结果。
+2. 候选项中文件位于 workspace 根目录时，仅显示 `FileName`，不显示目录标签。
+3. 候选项中文件位于子目录时，显示相对目录 `relativeDir`，不显示绝对路径。
+4. 使用上/下键切换高亮项，按 `Tab/Enter` 选中高亮文件并渲染 token。
+5. 选中后序列化文本为 `[name](relative/path)`，不出现 `file_abs_path`。
+6. 切换 `activeWorkspacePath` 后，候选结果与相对路径计算均基于新 workspace。

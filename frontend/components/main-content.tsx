@@ -873,6 +873,7 @@ function ActionStepCard({
   const [showToolCallsPanel, setShowToolCallsPanel] = useState(false)
   const [showObservationsPanel, setShowObservationsPanel] = useState(false)
   const [showCodeActionPanel, setShowCodeActionPanel] = useState(false)
+  const [showErrorPanel, setShowErrorPanel] = useState(false)
   const thoughtText = normalizeThought(payload?.thought)
   const visibleToolCalls = (payload?.toolCalls ?? []).filter(
     (toolCall) => toolCall.name !== "python_interpreter"
@@ -880,6 +881,7 @@ function ActionStepCard({
   const hasToolCalls = visibleToolCalls.length > 0
   const hasCodeAction = Boolean(payload?.codeAction)
   const hasObservations = (payload?.observations?.length ?? 0) > 0
+  const hasError = Boolean(payload?.error)
 
   return (
     <div className="rounded-2xl border border-[#e8e4e0] bg-[#fcfaf8] px-4 py-3 space-y-3">
@@ -919,6 +921,17 @@ function ActionStepCard({
           <CodeBlock label="python" content={payload?.codeAction ?? ""} />
         </CollapsiblePanel>
       ) : null}
+      {hasError ? (
+        <CollapsiblePanel
+          label="Error"
+          open={showErrorPanel}
+          onToggle={() => setShowErrorPanel((current) => !current)}
+        >
+          <div className="rounded-xl border border-[#efc1b4] bg-[#fff1ec] px-3 py-2 text-sm text-[#9d4d38] whitespace-pre-wrap">
+            {payload?.error}
+          </div>
+        </CollapsiblePanel>
+      ) : null}
       {hasObservations ? (
         <CollapsiblePanel
           label="Observations"
@@ -927,11 +940,6 @@ function ActionStepCard({
         >
           <CodeBlock label="observations" content={payload?.observations.join("\n") ?? ""} />
         </CollapsiblePanel>
-      ) : null}
-      {payload?.error ? (
-        <div className="rounded-xl border border-[#efc1b4] bg-[#fff1ec] px-3 py-2 text-sm text-[#9d4d38] whitespace-pre-wrap">
-          {payload.error}
-        </div>
       ) : null}
       <StepFootnote
         usage={payload?.usage ?? { inputTokens: 0, outputTokens: 0, reasoningTokens: 0 }}
