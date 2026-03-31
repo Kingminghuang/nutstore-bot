@@ -8,7 +8,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use tauri::{AppHandle, Manager, Url, WindowEvent};
+use tauri::{AppHandle, Manager, RunEvent, Url, WindowEvent};
 use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
 
@@ -29,10 +29,165 @@ impl ManagedChild {
     fn kill(self) -> Result<(), Box<dyn std::error::Error>> {
         match self {
             ManagedChild::Shell(child) => child.kill().map_err(Into::into),
-            ManagedChild::Std(mut child) => child.kill().map_err(Into::into),
+            ManagedChild::Std(child) => {
+                #[cfg(unix)]
+                {
+                    let _ = terminate_pid_tree(child.id());
+                    return Ok(());
+                }
+
+                #[cfg(not(unix))]
+                {
+                    child.kill().map_err(Into::into)
+                }
+            }
         }
     }
 }
+
+#[cfg(unix)]
+fn terminate_pid_tree(root_pid: u32) -> Result<(), Box<dyn std::error::Error>> {
+    let descendants = collect_descendant_pids(root_pid);
+    let _ = send_signal_to_pids(&descendants, "-TERM");
+    let _ = send_signal_to_pid(root_pid, "-TERM");
+    thread::sleep(Duration::from_millis(220));
+    let _ = send_signal_to_pids(&descendants, "-KILL");
+    let _ = send_signal_to_pid(root_pid, "-KILL");
+    Ok(())
+}
+
+#[cfg(unix)]
+fn collect_descendant_pids(root_pid: u32) -> Vec<u32> {
+    fn walk(parent_pid: u32, accumulator: &mut Vec<u32>) {
+        let output = Command::new("pgrep")
+            .args(["-P", &parent_pid.to_string()])
+            .output();
+
+        let Ok(output) = output else {
+            return;
+        };
+        if !output.status.success() {
+            return;
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        for line in stdout.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            if let Ok(pid) = trimmed.parse::<u32>() {
+                accumulator.push(pid);
+                walk(pid, accumulator);
+            }
+        }
+    }
+
+    let mut descendants = Vec::new();
+    walk(root_pid, &mut descendants);
+    descendants
+}
+
+#[cfg(unix)]
+fn send_signal_to_pid(pid: u32, signal: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let status = Command::new("kill")
+        .args([signal, &pid.to_string()])
+        .status()?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("kill {signal} {pid} failed with status {status}").into())
+    }
+}
+
+#[cfg(unix)]
+fn send_signal_to_pids(pids: &[u32], signal: &str) -> Result<(), Box<dyn std::error::Error>> {
+    for pid in pids.iter().rev() {
+        let _ = send_signal_to_pid(*pid, signal);
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn list_tcp_listener_pids(port: u16) -> Result<Vec<u32>, Box<dyn std::error::Error>> {
+    let output = Command::new("lsof")
+        .args([
+            "-nP",
+            &format!("-iTCP:{port}"),
+            "-sTCP:LISTEN",
+            "-t",
+        ])
+        .output()?;
+
+    if !output.status.success() {
+        return Ok(Vec::new());
+    }
+
+    let mut pids = Vec::new();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for line in stdout.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if let Ok(pid) = trimmed.parse::<u32>() {
+            pids.push(pid);
+        }
+    }
+    Ok(pids)
+}
+
+#[cfg(unix)]
+fn command_line_for_pid(pid: u32) -> Result<String, Box<dyn std::error::Error>> {
+    let output = Command::new("ps")
+        .args(["-o", "command=", "-p", &pid.to_string()])
+        .output()?;
+    if !output.status.success() {
+        return Ok(String::new());
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+#[cfg(unix)]
+fn cleanup_stale_sidecars(config: &RuntimeConfig) {
+    let targets: [(u16, &[&str]); 2] = [
+        (
+            config.next_port,
+            &["next-sidecar", "node-runtime", "next-runtime-helper"],
+        ),
+        (config.sidecar_port, &["nsbot-sidecar"]),
+    ];
+
+    for (port, hints) in targets {
+        let listener_pids = match list_tcp_listener_pids(port) {
+            Ok(pids) => pids,
+            Err(err) => {
+                eprintln!("[desktop-runtime] failed to inspect listeners on {port}: {err}");
+                continue;
+            }
+        };
+
+        for pid in listener_pids {
+            let command = match command_line_for_pid(pid) {
+                Ok(text) => text,
+                Err(err) => {
+                    eprintln!("[desktop-runtime] failed to read pid {pid} command: {err}");
+                    continue;
+                }
+            };
+
+            if hints.iter().any(|hint| command.contains(hint)) {
+                eprintln!(
+                    "[desktop-runtime] terminating stale listener pid={pid} port={port} cmd={command}"
+                );
+                let _ = terminate_pid_tree(pid);
+            }
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn cleanup_stale_sidecars(_config: &RuntimeConfig) {}
 
 #[derive(Debug)]
 struct RunningProcesses {
@@ -268,7 +423,7 @@ fn runtime_retry(
 }
 
 fn main() {
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
         .setup(|app| {
@@ -342,8 +497,20 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![runtime_status, runtime_retry])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application");
+
+    app.run(|app_handle, event| {
+        if matches!(event, RunEvent::Exit | RunEvent::ExitRequested { .. }) {
+            if let Some(state) = app_handle.try_state::<Arc<Mutex<RuntimeState>>>() {
+                if let Ok(mut guard) = state.inner().lock() {
+                    if let Some(mut processes) = guard.processes.take() {
+                        processes.stop();
+                    }
+                }
+            }
+        }
+    });
 }
 
 fn navigate_to_next(app: &AppHandle, next_port: u16) -> Result<(), Box<dyn std::error::Error>> {
@@ -360,6 +527,7 @@ fn start_runtime(
     config: &RuntimeConfig,
     app: &AppHandle,
 ) -> Result<RunningProcesses, Box<dyn std::error::Error>> {
+    cleanup_stale_sidecars(config);
     let init_outputs = ensure_runtime_initialized(config, app)?;
 
     let next_env = vec![
