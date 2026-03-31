@@ -108,7 +108,7 @@ describe("dev-with-sidecar script", () => {
     expect(spawnImpl).toHaveBeenNthCalledWith(
       2,
       "npm",
-      ["run", "dev"],
+      ["run", "dev", "--", "--port", "13000"],
       expect.objectContaining({ stdio: "inherit" })
     )
     expect(prepareSearchToolsImpl).toHaveBeenCalledTimes(1)

@@ -91,7 +91,7 @@ class ApiServerTests(unittest.TestCase):
         self.temp_dir = Path(tempfile.mkdtemp(prefix="sidecar-api-"))
         self.config = ApiServerConfig(
             host="127.0.0.1",
-            port=8765,
+            port=18765,
             token="test-token",
             ns_bot_home=str(self.temp_dir),
         )
@@ -256,8 +256,8 @@ class ApiServerTests(unittest.TestCase):
         self.assertTrue(path.exists())
 
         discovery = read_service_discovery(str(self.temp_dir))
-        self.assertEqual(discovery.base_url, "http://127.0.0.1:8765")
-        self.assertEqual(discovery.port, 8765)
+        self.assertEqual(discovery.base_url, "http://127.0.0.1:18765")
+        self.assertEqual(discovery.port, 18765)
         self.assertEqual(discovery.token, "test-token")
         self.assertGreater(discovery.pid, 0)
 
@@ -1345,7 +1345,9 @@ class ApiServerTests(unittest.TestCase):
     def test_workspace_sidecar_index_status_returns_disabled_when_indexer_not_configured(
         self,
     ) -> None:
-        object.__setattr__(self.app.state.session_service, "workspace_sidecar_indexer", None)
+        object.__setattr__(
+            self.app.state.session_service, "workspace_sidecar_indexer", None
+        )
         workspace = self._create_workspace("workspace-no-indexer")
 
         response = self.client.get(
@@ -1407,7 +1409,9 @@ class ApiServerTests(unittest.TestCase):
         self.assertEqual(body["status"], "indexed")
         self.assertEqual(body["lastIndexedAt"], "2026-03-30T12:00:00+00:00")
         self.assertEqual(body["sourceCount"], 2)
-        self.assertEqual(body["stats"], {"scanned": 8, "converted": 3, "skipped": 5, "failed": 0})
+        self.assertEqual(
+            body["stats"], {"scanned": 8, "converted": 3, "skipped": 5, "failed": 0}
+        )
 
     def test_workspace_paths_must_be_unique(self) -> None:
         workspace_dir = self.temp_dir / "workspace-b"

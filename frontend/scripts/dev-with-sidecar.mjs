@@ -198,7 +198,7 @@ export function startDevWithSidecar({
           env,
           stdio: "inherit",
         })
-      : spawnImpl("npm", ["run", "dev"], {
+      : spawnImpl("npm", ["run", "dev", "--", "--port", "13000"], {
           cwd: frontendDir,
           env,
           stdio: "inherit",

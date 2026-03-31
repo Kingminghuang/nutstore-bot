@@ -44,13 +44,13 @@ from workspace_sidecar_indexer import WorkspaceSidecarIndexer
 
 
 DEFAULT_HOST = "127.0.0.1"
-DEFAULT_PORT = 8765
+DEFAULT_PORT = 18765
 LOCAL_CORS_ORIGINS = (
     "tauri://localhost",
     "http://tauri.localhost",
     "https://tauri.localhost",
-    "http://localhost:3000",
-    "http://127.0.0.1:3000",
+    "http://localhost:13000",
+    "http://127.0.0.1:13000",
 )
 
 

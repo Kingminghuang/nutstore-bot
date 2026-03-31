@@ -12,8 +12,8 @@ use tauri::{AppHandle, Manager, Url, WindowEvent};
 use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
 
-const DEFAULT_NEXT_PORT: u16 = 3000;
-const DEFAULT_SIDECAR_PORT: u16 = 8765;
+const DEFAULT_NEXT_PORT: u16 = 13000;
+const DEFAULT_SIDECAR_PORT: u16 = 18765;
 const DEFAULT_SIDECAR_HEALTH_TIMEOUT_SECS: u64 = 45;
 const NEXT_SIDECAR_ID: &str = "binaries/next-sidecar";
 const PYTHON_SIDECAR_ID: &str = "binaries/nsbot-sidecar";

@@ -16,7 +16,7 @@ describe("sidecar-server proxyNSBotRequest", () => {
     await writeFile(
       path.join(homeDir, "service.json"),
       JSON.stringify({
-        baseUrl: "http://127.0.0.1:8765",
+        baseUrl: "http://127.0.0.1:18765",
         token: "test-token",
       })
     )
