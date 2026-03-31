@@ -47,6 +47,33 @@ class ToolLayerTests(unittest.TestCase):
         self.assertFalse(result["is_error"])
         self.assertEqual(result["content"][0]["text"], "(empty directory)")
 
+    def test_ls_skips_hidden_entries(self) -> None:
+        (self.workspace / "visible.txt").write_text("visible\n", encoding="utf-8")
+        (self.workspace / ".hidden.txt").write_text("hidden\n", encoding="utf-8")
+        (self.workspace / "visible-dir").mkdir(parents=True, exist_ok=True)
+        (self.workspace / ".hidden-dir").mkdir(parents=True, exist_ok=True)
+        layer = ToolLayer(str(self.workspace))
+
+        result = layer.execute_tool_dict("ls", {"path": "."})
+
+        self.assertFalse(result["is_error"])
+        text = result["content"][0]["text"]
+        self.assertIn("visible.txt", text)
+        self.assertIn("visible-dir/", text)
+        self.assertNotIn(".hidden.txt", text)
+        self.assertNotIn(".hidden-dir/", text)
+
+    def test_ls_only_hidden_entries_reports_empty_directory(self) -> None:
+        (self.workspace / "hidden-only").mkdir(parents=True, exist_ok=True)
+        (self.workspace / "hidden-only" / ".secret").write_text("secret\n", encoding="utf-8")
+        (self.workspace / "hidden-only" / ".config").mkdir(parents=True, exist_ok=True)
+        layer = ToolLayer(str(self.workspace))
+
+        result = layer.execute_tool_dict("ls", {"path": "hidden-only"})
+
+        self.assertFalse(result["is_error"])
+        self.assertEqual(result["content"][0]["text"], "(empty directory)")
+
     def test_write_and_read_with_continue_offset(self) -> None:
         layer = ToolLayer(str(self.workspace))
         wrote = layer.execute_tool_dict("write", {"path": "log.txt", "content": "l1\nl2\nl3\nl4\n"})
@@ -65,6 +92,35 @@ class ToolLayerTests(unittest.TestCase):
         self.assertFalse(result["is_error"])
         self.assertEqual(result["details"]["resultLimitReached"], 2)
         self.assertIn("2 results limit reached.", result["content"][0]["text"])
+
+    def test_find_does_not_pass_hidden_flag_to_fd(self) -> None:
+        capture_file = self.temp_dir / "fd-args.txt"
+        fd_script = self._make_script(
+            "fake-fd-args.sh",
+            "#!/bin/sh\n"
+            f"printf '%s\\n' \"$@\" > '{capture_file}'\n"
+            "printf 'visible.txt\\n'\n",
+        )
+        layer = ToolLayer(str(self.workspace), fd_executable=fd_script)
+
+        result = layer.execute_tool_dict("find", {"pattern": "*.txt", "path": "."})
+
+        self.assertFalse(result["is_error"])
+        args_text = capture_file.read_text(encoding="utf-8")
+        self.assertNotIn("--hidden", args_text)
+
+    def test_find_result_limit_applies_after_hidden_entries_are_excluded(self) -> None:
+        fd_script = self._make_script(
+            "fake-fd-filtered.sh",
+            "#!/bin/sh\nprintf 'one.txt\\ntwo.txt\\nthree.txt\\n'\n",
+        )
+        layer = ToolLayer(str(self.workspace), fd_executable=fd_script)
+
+        result = layer.execute_tool_dict("find", {"pattern": "*.txt", "path": ".", "limit": 2})
+
+        self.assertFalse(result["is_error"])
+        self.assertEqual(result["details"]["resultLimitReached"], 2)
+        self.assertEqual(result["content"][0]["text"], "one.txt\ntwo.txt\n[2 results limit reached.]")
 
     def test_grep_line_truncation_and_match_limit(self) -> None:
         long_line = "x" * 700

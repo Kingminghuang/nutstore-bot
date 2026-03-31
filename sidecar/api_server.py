@@ -3,7 +3,6 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 import json
 import os
-import sqlite3
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -118,7 +117,7 @@ def create_app(config: ApiServerConfig | None = None) -> FastAPI:
             yield
         finally:
             db = getattr(app.state, "database", None)
-            if isinstance(db, sqlite3.Connection):
+            if hasattr(db, "close"):
                 db.close()
 
     app = FastAPI(title="Nutstore Bot NSBot", version=cfg.version, lifespan=lifespan)

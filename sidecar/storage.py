@@ -4,6 +4,7 @@ import sqlite3
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+import threading
 from typing import Iterator
 
 from local_paths import database_file_path, ensure_nsbot_root, ensure_secret_dir
@@ -14,6 +15,54 @@ class StoragePaths:
     root: Path
     database: Path
     secrets_dir: Path
+
+
+class ThreadLocalConnection:
+    def __init__(self, database_path: Path):
+        self._database_path = database_path
+        self._local = threading.local()
+        self._connections: list[sqlite3.Connection] = []
+        self._connections_guard = threading.Lock()
+
+    def _create_connection(self) -> sqlite3.Connection:
+        connection = sqlite3.connect(self._database_path, check_same_thread=False)
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA foreign_keys = ON;")
+        connection.execute("PRAGMA journal_mode = WAL;")
+        with self._connections_guard:
+            self._connections.append(connection)
+        return connection
+
+    def _get_connection(self) -> sqlite3.Connection:
+        existing = getattr(self._local, "connection", None)
+        if isinstance(existing, sqlite3.Connection):
+            return existing
+        connection = self._create_connection()
+        self._local.connection = connection
+        return connection
+
+    def execute(self, *args, **kwargs):
+        return self._get_connection().execute(*args, **kwargs)
+
+    def executescript(self, *args, **kwargs):
+        return self._get_connection().executescript(*args, **kwargs)
+
+    def commit(self) -> None:
+        self._get_connection().commit()
+
+    def rollback(self) -> None:
+        self._get_connection().rollback()
+
+    def close(self) -> None:
+        with self._connections_guard:
+            connections = self._connections[:]
+            self._connections.clear()
+        for connection in connections:
+            connection.close()
+        self._local.__dict__.pop("connection", None)
+
+    def __getattr__(self, name: str):
+        return getattr(self._get_connection(), name)
 
 
 SCHEMA_SQL = """
@@ -206,15 +255,18 @@ def prepare_storage(ns_bot_home: str | None = None) -> StoragePaths:
 
 def connect_database(
     ns_bot_home: str | None = None, db_path: str | None = None
-) -> sqlite3.Connection:
+) -> ThreadLocalConnection:
     paths = prepare_storage(ns_bot_home)
     target_path = Path(db_path).expanduser().resolve() if db_path else paths.database
-    connection = sqlite3.connect(target_path, check_same_thread=False)
-    connection.row_factory = sqlite3.Row
-    connection.execute("PRAGMA foreign_keys = ON;")
-    connection.execute("PRAGMA journal_mode = WAL;")
-    initialize_schema(connection)
-    return connection
+    bootstrap_connection = sqlite3.connect(target_path, check_same_thread=False)
+    bootstrap_connection.row_factory = sqlite3.Row
+    bootstrap_connection.execute("PRAGMA foreign_keys = ON;")
+    bootstrap_connection.execute("PRAGMA journal_mode = WAL;")
+    try:
+        initialize_schema(bootstrap_connection)
+    finally:
+        bootstrap_connection.close()
+    return ThreadLocalConnection(target_path)
 
 
 def initialize_schema(connection: sqlite3.Connection) -> None:

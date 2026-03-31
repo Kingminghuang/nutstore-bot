@@ -100,6 +100,12 @@ npm run start
 bash ./scripts/build-desktop-macos.sh
 ```
 
+如需生成可安装的 macOS DMG：
+
+```bash
+bash ./scripts/build-desktop-macos.sh --dmg
+```
+
 如需生成便于排查启动失败问题的 debug 产物：
 
 ```bash
@@ -122,6 +128,16 @@ bash ./scripts/build-desktop-macos.sh --debug
 src-tauri/runtime
 ```
 
+默认构建会生成 `.app` bundle；传入 `--dmg` 时，会改为调用 `cargo tauri build --target aarch64-apple-darwin --bundles dmg`，并在以下目录生成 DMG 安装包：
+
+```text
+src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/
+```
+
+release 产物只保证 `.app` 与 `.dmg` 可运行；不保证 raw release binary 可直接运行。
+
+当前 release bundle 会通过一个后台 Next helper 启动内置 Node 运行时，因此正常情况下 macOS Dock 不应再单独显示 `node-runtime`。
+
 `--debug` 模式下，会生成 debug bundle，并同步补齐 bundle 与 raw debug binary 所需的 sidecar 路径：
 
 ```text
@@ -130,6 +146,8 @@ src-tauri/target/aarch64-apple-darwin/debug/bundle/macos/Nutstore Bot.app/Conten
 src-tauri/target/aarch64-apple-darwin/debug/nutstore-bot-desktop
 src-tauri/target/aarch64-apple-darwin/debug/binaries/{next-sidecar,nsbot-sidecar}
 ```
+
+`--dmg` 目前只支持 release 构建，不支持与 `--debug` 同时使用。
 
 如果遇到 `Killed: 9`（常见于本机 shell/环境钩子导致子脚本被系统终止），请优先确认你是通过 `bash ./scripts/build-desktop-macos.sh` 执行，而不是直接双击或用其他方式启动脚本。
 
@@ -148,6 +166,20 @@ open "$APP_PATH"
 APP_PATH="$(pwd)/src-tauri/target/aarch64-apple-darwin/release/bundle/macos/Nutstore Bot.app"
 "$APP_PATH/Contents/MacOS/nutstore-bot-desktop"
 ```
+
+不要直接运行下面这个 raw release binary：
+
+```bash
+"$(pwd)/src-tauri/target/aarch64-apple-darwin/release/nutstore-bot-desktop"
+```
+
+它缺少 `release/binaries/{next-sidecar,nsbot-sidecar}` 这一层 sidecar 入口，因此会出现类似下面的启动错误：
+
+```text
+[desktop-runtime] initial runtime start failed: failed to spawn sidecar binaries/next-sidecar: No such file or directory (os error 2)
+```
+
+旧版 bundle 中如果看到 Dock 里有单独跳动的 `node-runtime`，原因是主应用直接执行了包内的裸 Node 可执行文件。当前实现已改为通过打包进 `runtime/next-helper/` 的后台 Next helper 承载 Node 进程，避免它以独立前台应用的形式出现在 Dock 中。
 
 如需调试启动期错误，优先运行 debug bundle 内的主程序并打开完整 Rust backtrace：
 

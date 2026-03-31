@@ -189,6 +189,10 @@ def _normalize_windows_drive_prefix(path: str) -> str:
     return normalized
 
 
+def _is_hidden_name(name: str) -> bool:
+    return name.startswith(".")
+
+
 def _strip_windows_extended_prefix(path: str) -> str:
     if path.startswith("\\\\?\\UNC\\"):
         return "\\\\" + path[8:]
@@ -539,7 +543,10 @@ class ToolLayer:
         if not target.is_dir():
             raise ToolLayerError("execution_failed", f"not a directory: {target}")
 
-        entries = sorted(target.iterdir(), key=lambda item: item.name.lower())
+        entries = sorted(
+            (entry for entry in target.iterdir() if not _is_hidden_name(entry.name)),
+            key=lambda item: item.name.lower(),
+        )
         suffix = _native_separator(self.os_type)
         rendered: list[str] = []
         details = ToolDetails()
@@ -615,7 +622,6 @@ class ToolLayer:
             ".",
             "--glob",
             "--color=never",
-            "--hidden",
             "--max-results",
             str(limit),
             "--exclude",

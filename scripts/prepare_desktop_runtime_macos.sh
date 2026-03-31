@@ -6,6 +6,8 @@ RUNTIME_ROOT="${REPO_ROOT}/src-tauri/runtime"
 BINARIES_ROOT="${REPO_ROOT}/src-tauri/binaries"
 FRONTEND_ROOT="${REPO_ROOT}/frontend"
 SIDECAR_ROOT="${REPO_ROOT}/sidecar"
+NEXT_HELPER_DIR="${RUNTIME_ROOT}/next-helper"
+NEXT_HELPER_EXECUTABLE="${NEXT_HELPER_DIR}/next-runtime-helper"
 
 TARGET_TRIPLE="aarch64-apple-darwin"
 NODE_BIN="$(command -v node)"
@@ -54,6 +56,107 @@ fi
 NODE_RUNTIME_BIN="${BINARIES_ROOT}/node-runtime-${TARGET_TRIPLE}"
 cp "${NODE_BIN}" "${NODE_RUNTIME_BIN}"
 chmod +x "${NODE_RUNTIME_BIN}"
+
+echo "[3.5/6] Prepare macOS Next helper bundle"
+rm -rf "${NEXT_HELPER_DIR}"
+mkdir -p "${NEXT_HELPER_DIR}"
+
+cp "${NODE_BIN}" "${NEXT_HELPER_DIR}/node-runtime"
+chmod +x "${NEXT_HELPER_DIR}/node-runtime"
+
+HELPER_SOURCE="$(mktemp "${TMPDIR:-/tmp}/next-runtime-helper.XXXXXX.c")"
+trap 'rm -f "${HELPER_SOURCE}"' EXIT
+cat > "${HELPER_SOURCE}" <<'EOF'
+#include <libgen.h>
+#include <limits.h>
+#include <mach-o/dyld.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
+static int ensure_regular_file(const char *path) {
+  struct stat st;
+  return stat(path, &st) == 0 && S_ISREG(st.st_mode);
+}
+
+int main(void) {
+  uint32_t raw_size = 0;
+  _NSGetExecutablePath(NULL, &raw_size);
+  char *raw_path = (char *)malloc(raw_size + 1);
+  if (raw_path == NULL) {
+    fprintf(stderr, "alloc executable path failed\n");
+    return 1;
+  }
+
+  if (_NSGetExecutablePath(raw_path, &raw_size) != 0) {
+    fprintf(stderr, "resolve executable path failed\n");
+    free(raw_path);
+    return 1;
+  }
+
+  char executable_path[PATH_MAX];
+  if (realpath(raw_path, executable_path) == NULL) {
+    perror("realpath executable");
+    free(raw_path);
+    return 1;
+  }
+  free(raw_path);
+
+  char executable_dir[PATH_MAX];
+  strncpy(executable_dir, executable_path, sizeof(executable_dir));
+  executable_dir[sizeof(executable_dir) - 1] = '\0';
+  char *executable_dirname = dirname(executable_dir);
+  if (executable_dirname == NULL) {
+    fprintf(stderr, "dirname executable failed\n");
+    return 1;
+  }
+
+  char node_path[PATH_MAX];
+  snprintf(node_path, sizeof(node_path), "%s/node-runtime", executable_dirname);
+
+  char server_path[PATH_MAX];
+  snprintf(server_path, sizeof(server_path), "%s/../next-standalone/server.js", executable_dirname);
+
+  char server_realpath[PATH_MAX];
+  if (realpath(server_path, server_realpath) == NULL) {
+    perror("realpath server");
+    return 1;
+  }
+
+  if (!ensure_regular_file(node_path)) {
+    fprintf(stderr, "missing helper node runtime: %s\n", node_path);
+    return 1;
+  }
+  if (!ensure_regular_file(server_realpath)) {
+    fprintf(stderr, "missing bundled Next standalone server: %s\n", server_realpath);
+    return 1;
+  }
+
+  char server_dir[PATH_MAX];
+  strncpy(server_dir, server_realpath, sizeof(server_dir));
+  server_dir[sizeof(server_dir) - 1] = '\0';
+  char *server_dirname = dirname(server_dir);
+  if (server_dirname == NULL) {
+    fprintf(stderr, "dirname server failed\n");
+    return 1;
+  }
+
+  if (chdir(server_dirname) != 0) {
+    perror("chdir server");
+    return 1;
+  }
+
+  char *const argv[] = { node_path, server_realpath, NULL };
+  execv(node_path, argv);
+  perror("execv node-runtime");
+  return 1;
+}
+EOF
+
+clang -O2 -Wall -Wextra "${HELPER_SOURCE}" -o "${NEXT_HELPER_EXECUTABLE}"
+chmod +x "${NEXT_HELPER_EXECUTABLE}"
 
 NEXT_SIDECAR_BIN="${BINARIES_ROOT}/next-sidecar-${TARGET_TRIPLE}"
 cat > "${NEXT_SIDECAR_BIN}" <<'EOF'

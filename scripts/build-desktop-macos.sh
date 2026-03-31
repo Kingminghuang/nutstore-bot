@@ -4,6 +4,7 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TARGET_TRIPLE="aarch64-apple-darwin"
 BUILD_MODE="release"
+BUILD_DMG="false"
 
 sync_debug_sidecars() {
   local debug_root="${REPO_ROOT}/src-tauri/target/${TARGET_TRIPLE}/debug"
@@ -44,10 +45,11 @@ sync_bundle_sidecars() {
 
 usage() {
   cat <<'EOF'
-Usage: bash ./scripts/build-desktop-macos.sh [--debug]
+Usage: bash ./scripts/build-desktop-macos.sh [--debug] [--dmg]
 
 Options:
   --debug   Build with Tauri debug profile and print a backtrace-friendly run command.
+  --dmg     Build a macOS DMG installer (release only).
   -h, --help
             Show this help message.
 EOF
@@ -57,6 +59,10 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --debug)
       BUILD_MODE="debug"
+      shift
+      ;;
+    --dmg)
+      BUILD_DMG="true"
       shift
       ;;
     -h|--help)
@@ -76,14 +82,23 @@ if [[ "$(uname -s)" != "Darwin" ]]; then
   exit 1
 fi
 
+if [[ "${BUILD_MODE}" == "debug" && "${BUILD_DMG}" == "true" ]]; then
+  echo "--dmg is only supported for release builds. Remove --debug or omit --dmg." >&2
+  exit 1
+fi
+
 if [[ "${BUILD_MODE}" == "debug" ]]; then
   APP_BUNDLE="${REPO_ROOT}/src-tauri/target/${TARGET_TRIPLE}/debug/bundle/macos/Nutstore Bot.app"
   APP_BIN="${APP_BUNDLE}/Contents/MacOS/nutstore-bot-desktop"
   RAW_DEBUG_BIN="${REPO_ROOT}/src-tauri/target/${TARGET_TRIPLE}/debug/nutstore-bot-desktop"
   RAW_DEBUG_BINARIES_DIR="${REPO_ROOT}/src-tauri/target/${TARGET_TRIPLE}/debug/binaries"
 else
-  APP_BIN="${REPO_ROOT}/src-tauri/target/${TARGET_TRIPLE}/release/nutstore-bot-desktop"
+  RAW_RELEASE_BIN="${REPO_ROOT}/src-tauri/target/${TARGET_TRIPLE}/release/nutstore-bot-desktop"
+  APP_BIN="${REPO_ROOT}/src-tauri/target/${TARGET_TRIPLE}/release/bundle/macos/Nutstore Bot.app/Contents/MacOS/nutstore-bot-desktop"
   APP_BUNDLE="${REPO_ROOT}/src-tauri/target/${TARGET_TRIPLE}/release/bundle/macos/Nutstore Bot.app"
+  if [[ "${BUILD_DMG}" == "true" ]]; then
+    DMG_DIR="${REPO_ROOT}/src-tauri/target/${TARGET_TRIPLE}/release/bundle/dmg"
+  fi
 fi
 
 echo "[1/3] Clean Python cache files"
@@ -98,6 +113,8 @@ echo "[3/3] Build Tauri app (${TARGET_TRIPLE}, ${BUILD_MODE})"
   cd "${REPO_ROOT}/src-tauri"
   if [[ "${BUILD_MODE}" == "debug" ]]; then
     RUST_BACKTRACE=full cargo tauri build --debug --target "${TARGET_TRIPLE}"
+  elif [[ "${BUILD_DMG}" == "true" ]]; then
+    cargo tauri build --target "${TARGET_TRIPLE}" --bundles dmg
   else
     cargo tauri build --target "${TARGET_TRIPLE}"
   fi
@@ -115,10 +132,19 @@ fi
 
 echo "Desktop build finished."
 echo "- profile: ${BUILD_MODE}"
-echo "- binary:  ${APP_BIN}"
 
 if [[ -d "${APP_BUNDLE}" ]]; then
   echo "- bundle:  ${APP_BUNDLE}"
+  echo "- app bin: ${APP_BIN}"
+fi
+
+if [[ "${BUILD_DMG}" == "true" ]]; then
+  DMG_PATH="$(find "${DMG_DIR}" -maxdepth 1 -type f -name '*.dmg' | head -n 1 || true)"
+  if [[ -n "${DMG_PATH}" ]]; then
+    echo "- dmg:     ${DMG_PATH}"
+  else
+    echo "- dmg dir: ${DMG_DIR}"
+  fi
 fi
 
 if [[ "${BUILD_MODE}" == "debug" ]]; then
@@ -133,4 +159,12 @@ if [[ "${BUILD_MODE}" == "debug" ]]; then
   echo
   echo "This is more useful than only enabling backtrace during build because your"
   echo "current failure happens when the packaged runtime starts, not while Rust compiles."
+else
+  echo
+  echo "Release artifacts are intended to be run from the packaged .app or .dmg."
+  echo "The packaged app now starts Next through a background helper, so Dock should"
+  echo "not show a separate node-runtime icon while the release bundle is running."
+  echo "Do not run the raw release binary directly:"
+  echo "\"${RAW_RELEASE_BIN}\""
+  echo "It does not include the release/binaries sidecar entrypoints used by debug raw runs."
 fi

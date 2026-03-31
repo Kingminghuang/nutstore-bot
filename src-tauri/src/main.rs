@@ -1,10 +1,13 @@
 use serde::Serialize;
 use std::fs;
+use std::fs::OpenOptions;
+use std::io::{BufRead, BufReader};
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Manager, Url, WindowEvent};
 use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
@@ -14,10 +17,26 @@ const DEFAULT_SIDECAR_PORT: u16 = 8765;
 const DEFAULT_SIDECAR_HEALTH_TIMEOUT_SECS: u64 = 45;
 const NEXT_SIDECAR_ID: &str = "binaries/next-sidecar";
 const PYTHON_SIDECAR_ID: &str = "binaries/nsbot-sidecar";
+const NEXT_HELPER_RELATIVE_EXECUTABLE: &str = "next-helper/next-runtime-helper";
+
+#[derive(Debug)]
+enum ManagedChild {
+    Shell(CommandChild),
+    Std(Child),
+}
+
+impl ManagedChild {
+    fn kill(self) -> Result<(), Box<dyn std::error::Error>> {
+        match self {
+            ManagedChild::Shell(child) => child.kill().map_err(Into::into),
+            ManagedChild::Std(mut child) => child.kill().map_err(Into::into),
+        }
+    }
+}
 
 #[derive(Debug)]
 struct RunningProcesses {
-    next_child: Option<CommandChild>,
+    next_child: Option<ManagedChild>,
     sidecar_child: Option<CommandChild>,
 }
 
@@ -66,6 +85,100 @@ struct InitOutputs {
     ns_bot_home: PathBuf,
     fd_executable: PathBuf,
     rg_executable: PathBuf,
+    sidecar_loggers: RuntimeSidecarLoggers,
+}
+
+#[derive(Clone, Debug, Default)]
+struct RuntimeSidecarLoggers {
+    next: Option<Arc<SidecarFileLogger>>,
+    python: Option<Arc<SidecarFileLogger>>,
+}
+
+#[derive(Debug)]
+struct SidecarFileLogger {
+    sidecar_name: &'static str,
+    file: Mutex<std::fs::File>,
+}
+
+impl SidecarFileLogger {
+    fn new(sidecar_name: &'static str, path: &Path) -> Result<Self, Box<dyn std::error::Error>> {
+        let file = OpenOptions::new().create(true).append(true).open(path)?;
+        Ok(Self {
+            sidecar_name,
+            file: Mutex::new(file),
+        })
+    }
+
+    fn write_line(&self, stream: &str, text: &str) {
+        if text.is_empty() {
+            return;
+        }
+
+        let timestamp_ms = unix_timestamp_ms();
+        let line = format!(
+            "{timestamp_ms} sidecar={} stream={} {}\n",
+            self.sidecar_name, stream, text
+        );
+        if let Ok(mut file) = self.file.lock() {
+            use std::io::Write;
+            let _ = file.write_all(line.as_bytes());
+        }
+    }
+}
+
+fn unix_timestamp_ms() -> u128 {
+    match SystemTime::now().duration_since(UNIX_EPOCH) {
+        Ok(duration) => duration.as_millis(),
+        Err(_) => 0,
+    }
+}
+
+fn release_sidecar_logs_enabled() -> bool {
+    !cfg!(debug_assertions)
+}
+
+fn create_runtime_sidecar_loggers(
+    logs_dir: &Path,
+) -> Result<RuntimeSidecarLoggers, Box<dyn std::error::Error>> {
+    fs::create_dir_all(logs_dir)
+        .map_err(|err| format_path_error("create logs directory", logs_dir, &err))?;
+
+    let next = Arc::new(
+        SidecarFileLogger::new("next-sidecar", &logs_dir.join("next-sidecar.log")).map_err(
+            |err| {
+                format!(
+                    "open next-sidecar log file under {} failed: {err}",
+                    logs_dir.display()
+                )
+            },
+        )?,
+    );
+    let python = Arc::new(
+        SidecarFileLogger::new("nsbot-sidecar", &logs_dir.join("nsbot-sidecar.log")).map_err(
+            |err| {
+                format!(
+                    "open nsbot-sidecar log file under {} failed: {err}",
+                    logs_dir.display()
+                )
+            },
+        )?,
+    );
+
+    Ok(RuntimeSidecarLoggers {
+        next: Some(next),
+        python: Some(python),
+    })
+}
+
+fn logger_for_sidecar(
+    sidecar_id: &str,
+    sidecar_loggers: &RuntimeSidecarLoggers,
+) -> Option<Arc<SidecarFileLogger>> {
+    match sidecar_id {
+        NEXT_SIDECAR_ID => sidecar_loggers.next.clone(),
+        PYTHON_SIDECAR_ID => sidecar_loggers.python.clone(),
+        _ => None,
+    }
 }
 
 fn log_runtime_error(context: &str, err: &str) {
@@ -258,21 +371,21 @@ fn start_runtime(
             init_outputs.ns_bot_home.to_string_lossy().to_string(),
         ),
     ];
+    let next_logger = logger_for_sidecar(NEXT_SIDECAR_ID, &init_outputs.sidecar_loggers);
+    let python_logger = logger_for_sidecar(PYTHON_SIDECAR_ID, &init_outputs.sidecar_loggers);
+
     let (next_child, next_logs) =
-        spawn_sidecar_process(app, NEXT_SIDECAR_ID, &next_env).map_err(|err| {
+        spawn_next_process(config, app, &next_env, next_logger).map_err(|err| {
             format_with_logs(
-                &format!("failed to spawn sidecar {NEXT_SIDECAR_ID}: {err}"),
-                &[],
+                &format!("failed to spawn Next runtime: {err}"),
+                &[("next-runtime", &err.logs)],
             )
         })?;
 
     if let Err(err) = wait_for_tcp("127.0.0.1", config.next_port, Duration::from_secs(30)) {
+        let next_child = next_child;
         let _ = next_child.kill();
-        return Err(format_with_logs(
-            &err.to_string(),
-            &[("next-sidecar", &next_logs)],
-        )
-        .into());
+        return Err(format_with_logs(&err.to_string(), &[("next-runtime", &next_logs)]).into());
     }
 
     let sidecar_env = vec![
@@ -293,13 +406,14 @@ fn start_runtime(
     ];
 
     let (sidecar_child, sidecar_logs) =
-        match spawn_sidecar_process(app, PYTHON_SIDECAR_ID, &sidecar_env) {
+        match spawn_sidecar_process(app, PYTHON_SIDECAR_ID, &sidecar_env, python_logger) {
             Ok(result) => result,
             Err(err) => {
+                let next_child = next_child;
                 let _ = next_child.kill();
                 return Err(format_with_logs(
                     &format!("failed to spawn sidecar {PYTHON_SIDECAR_ID}: {err}"),
-                    &[("next-sidecar", &next_logs)],
+                    &[("next-runtime", &next_logs)],
                 )
                 .into());
             }
@@ -318,11 +432,12 @@ fn start_runtime(
         Duration::from_secs(sidecar_health_timeout),
     ) {
         let _ = sidecar_child.kill();
+        let next_child = next_child;
         let _ = next_child.kill();
         return Err(format_with_logs(
             &err.to_string(),
             &[
-                ("next-sidecar", &next_logs),
+                ("next-runtime", &next_logs),
                 ("python-sidecar", &sidecar_logs),
             ],
         )
@@ -339,6 +454,7 @@ fn spawn_sidecar_process(
     app: &AppHandle,
     sidecar_id: &str,
     envs: &[(&str, String)],
+    file_logger: Option<Arc<SidecarFileLogger>>,
 ) -> Result<(CommandChild, Arc<Mutex<Vec<String>>>), Box<dyn std::error::Error>> {
     let mut command = app.shell().sidecar(sidecar_id)?;
     for (key, value) in envs {
@@ -360,6 +476,7 @@ fn spawn_sidecar_process(
                         &sidecar_label,
                         "stderr",
                         &payload,
+                        file_logger.as_deref(),
                     );
                 }
                 CommandEvent::Stdout(payload) => {
@@ -368,12 +485,16 @@ fn spawn_sidecar_process(
                         &sidecar_label,
                         "stdout",
                         &payload,
+                        file_logger.as_deref(),
                     );
                 }
                 CommandEvent::Error(message) => {
                     if !message.trim().is_empty() {
                         let formatted = format!("spawn error: {message}");
                         eprintln!("[{sidecar_label}] {formatted}");
+                        if let Some(logger) = file_logger.as_deref() {
+                            logger.write_line("error", &formatted);
+                        }
                         if let Ok(mut logs) = log_buffer_for_task.lock() {
                             logs.push(formatted);
                         }
@@ -385,6 +506,9 @@ fn spawn_sidecar_process(
                         payload.code, payload.signal
                     );
                     eprintln!("[{sidecar_label}] {summary}");
+                    if let Some(logger) = file_logger.as_deref() {
+                        logger.write_line("event", &summary);
+                    }
                     if let Ok(mut logs) = log_buffer_for_task.lock() {
                         logs.push(summary);
                     }
@@ -397,19 +521,156 @@ fn spawn_sidecar_process(
     Ok((child, log_buffer))
 }
 
+struct NextSpawnError {
+    source: Box<dyn std::error::Error>,
+    logs: Arc<Mutex<Vec<String>>>,
+}
+
+impl std::fmt::Display for NextSpawnError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.source.fmt(f)
+    }
+}
+
+impl std::fmt::Debug for NextSpawnError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NextSpawnError")
+            .field("source", &self.source.to_string())
+            .finish()
+    }
+}
+
+fn spawn_next_process(
+    config: &RuntimeConfig,
+    app: &AppHandle,
+    envs: &[(&str, String)],
+    file_logger: Option<Arc<SidecarFileLogger>>,
+) -> Result<(ManagedChild, Arc<Mutex<Vec<String>>>), NextSpawnError> {
+    #[cfg(target_os = "macos")]
+    {
+        let helper_executable = config.runtime_root.join(NEXT_HELPER_RELATIVE_EXECUTABLE);
+        if helper_executable.exists() {
+            return spawn_helper_process(
+                &helper_executable,
+                "next-runtime-helper",
+                envs,
+                file_logger,
+            )
+            .map_err(|err| NextSpawnError {
+                source: err,
+                logs: Arc::new(Mutex::new(Vec::new())),
+            });
+        }
+    }
+
+    spawn_sidecar_process(app, NEXT_SIDECAR_ID, envs, file_logger)
+        .map(|(child, logs)| (ManagedChild::Shell(child), logs))
+        .map_err(|err| NextSpawnError {
+            source: err,
+            logs: Arc::new(Mutex::new(Vec::new())),
+        })
+}
+
+fn spawn_helper_process(
+    executable: &Path,
+    label: &str,
+    envs: &[(&str, String)],
+    file_logger: Option<Arc<SidecarFileLogger>>,
+) -> Result<(ManagedChild, Arc<Mutex<Vec<String>>>), Box<dyn std::error::Error>> {
+    let mut command = Command::new(executable);
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    for (key, value) in envs {
+        command.env(key, value);
+    }
+
+    let mut child = command.spawn()?;
+    let log_buffer = Arc::new(Mutex::new(Vec::new()));
+
+    if let Some(stdout) = child.stdout.take() {
+        spawn_stdio_log_thread(
+            log_buffer.clone(),
+            label.to_string(),
+            "stdout",
+            stdout,
+            file_logger.clone(),
+        );
+    }
+    if let Some(stderr) = child.stderr.take() {
+        spawn_stdio_log_thread(
+            log_buffer.clone(),
+            label.to_string(),
+            "stderr",
+            stderr,
+            file_logger,
+        );
+    }
+
+    Ok((ManagedChild::Std(child), log_buffer))
+}
+
+fn spawn_stdio_log_thread<R: std::io::Read + Send + 'static>(
+    log_buffer: Arc<Mutex<Vec<String>>>,
+    sidecar_label: String,
+    stream: &'static str,
+    reader: R,
+    file_logger: Option<Arc<SidecarFileLogger>>,
+) {
+    thread::spawn(move || {
+        let mut reader = BufReader::new(reader);
+        let mut line = String::new();
+        loop {
+            line.clear();
+            match reader.read_line(&mut line) {
+                Ok(0) => break,
+                Ok(_) => push_log_line(
+                    &log_buffer,
+                    &sidecar_label,
+                    stream,
+                    line.trim_end(),
+                    file_logger.as_deref(),
+                ),
+                Err(err) => {
+                    push_log_line(
+                        &log_buffer,
+                        &sidecar_label,
+                        "error",
+                        &format!("failed to read child output: {err}"),
+                        file_logger.as_deref(),
+                    );
+                    break;
+                }
+            }
+        }
+    });
+}
+
 fn push_sidecar_log_line(
     log_buffer: &Arc<Mutex<Vec<String>>>,
     sidecar_label: &str,
     stream: &str,
     payload: &[u8],
+    file_logger: Option<&SidecarFileLogger>,
 ) {
-    let text = String::from_utf8_lossy(payload).trim().to_string();
+    let text = String::from_utf8_lossy(payload);
+    push_log_line(log_buffer, sidecar_label, stream, text.trim(), file_logger);
+}
+
+fn push_log_line(
+    log_buffer: &Arc<Mutex<Vec<String>>>,
+    sidecar_label: &str,
+    stream: &str,
+    text: &str,
+    file_logger: Option<&SidecarFileLogger>,
+) {
     if text.is_empty() {
         return;
     }
 
     let formatted = format!("{stream}: {text}");
     eprintln!("[{sidecar_label}] {formatted}");
+    if let Some(logger) = file_logger {
+        logger.write_line(stream, text);
+    }
     if let Ok(mut logs) = log_buffer.lock() {
         logs.push(formatted);
         if logs.len() > 120 {
@@ -454,6 +715,12 @@ fn ensure_runtime_initialized(
     fs::create_dir_all(&bin_dir)
         .map_err(|err| format_path_error("create bin directory", &bin_dir, &err))?;
 
+    let sidecar_loggers = if release_sidecar_logs_enabled() {
+        create_runtime_sidecar_loggers(&ns_bot_home.join("logs"))?
+    } else {
+        RuntimeSidecarLoggers::default()
+    };
+
     let templates_source = config.runtime_root.join("templates");
     let templates_target = ns_bot_home.join("templates");
     if templates_source.exists() && !templates_target.exists() {
@@ -474,12 +741,22 @@ fn ensure_runtime_initialized(
     let rg_target = bin_dir.join(rg_name);
 
     if !fd_target.exists() {
-        fs::copy(&fd_source, &fd_target)
-            .map_err(|err| format!("copy fd from {} to {} failed: {err}", fd_source.display(), fd_target.display()))?;
+        fs::copy(&fd_source, &fd_target).map_err(|err| {
+            format!(
+                "copy fd from {} to {} failed: {err}",
+                fd_source.display(),
+                fd_target.display()
+            )
+        })?;
     }
     if !rg_target.exists() {
-        fs::copy(&rg_source, &rg_target)
-            .map_err(|err| format!("copy rg from {} to {} failed: {err}", rg_source.display(), rg_target.display()))?;
+        fs::copy(&rg_source, &rg_target).map_err(|err| {
+            format!(
+                "copy rg from {} to {} failed: {err}",
+                rg_source.display(),
+                rg_target.display()
+            )
+        })?;
     }
 
     #[cfg(unix)]
@@ -495,6 +772,7 @@ fn ensure_runtime_initialized(
         ns_bot_home,
         fd_executable: fd_target,
         rg_executable: rg_target,
+        sidecar_loggers,
     })
 }
 
