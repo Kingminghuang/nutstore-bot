@@ -11,19 +11,33 @@ import time
 from urllib.parse import parse_qs, urlencode, urlparse
 import uuid
 import webbrowser
-from typing import Any
+from typing import Any, cast
 
+from fastapi import HTTPException
 import requests
 
+from attachment_store import AttachmentStore
 from local_paths import nsbot_home
 from provider_service import ProviderService
 from repositories import ProviderConnectionBundle, create_repositories
 from runtime_service import CodeAgentRuntimeService, RunMetadata, RuntimeWorkerConfig
+from session_service import SessionService
 from secret_store import LocalSecretStore
 from storage import connect_database
+from timeline_service import TimelineService
+from workspace_sidecar_indexer import WorkspaceSidecarIndexer
 
 
-COMMANDS = {"run", "providers", "models", "auth", "init", "help"}
+COMMANDS = {
+    "run",
+    "providers",
+    "models",
+    "auth",
+    "init",
+    "workspaces",
+    "sessions",
+    "help",
+}
 NUTSTORE_CUSTOM_SLUG = "nutstore"
 NUTSTORE_DISPLAY_NAME = "Nut Store"
 AUTH_PENDING_FILE = "auth-nutstore-pending.json"
@@ -355,12 +369,8 @@ def _handle_init_command(args: argparse.Namespace) -> int:
     rg_binary_name = _resolve_binary_name("rg")
     fd_target = bin_dir / fd_binary_name
     rg_target = bin_dir / rg_binary_name
-    fd_cache = (
-        runtime_paths["search_tools_cache_root"] / target / "fd" / fd_binary_name
-    )
-    rg_cache = (
-        runtime_paths["search_tools_cache_root"] / target / "rg" / rg_binary_name
-    )
+    fd_cache = runtime_paths["search_tools_cache_root"] / target / "fd" / fd_binary_name
+    rg_cache = runtime_paths["search_tools_cache_root"] / target / "rg" / rg_binary_name
 
     search_tools_downloaded = False
     search_tools_copied = False
@@ -371,7 +381,9 @@ def _handle_init_command(args: argparse.Namespace) -> int:
             _run_prepare_search_tools(
                 sidecar_root=runtime_paths["sidecar_root"],
                 target=target,
-                prepare_search_tools_script=runtime_paths["prepare_search_tools_script"],
+                prepare_search_tools_script=runtime_paths[
+                    "prepare_search_tools_script"
+                ],
             )
             search_tools_downloaded = True
 
@@ -540,6 +552,59 @@ def _build_parser() -> argparse.ArgumentParser:
 
     subparsers.add_parser("init", help="Initialize NS_BOT_HOME resources")
 
+    workspaces = subparsers.add_parser("workspaces", help="Manage workspaces")
+    workspaces_sub = workspaces.add_subparsers(dest="workspaces_command", required=True)
+    workspaces_sub.add_parser("list", help="List workspaces")
+
+    workspaces_create = workspaces_sub.add_parser("create", help="Create a workspace")
+    workspaces_create.add_argument("--name", type=str, required=True)
+    workspaces_create.add_argument("--real-path", type=str, required=True)
+    workspaces_create.add_argument(
+        "--path-label",
+        type=str,
+        default="",
+        help="Path label shown to users (default: --real-path)",
+    )
+
+    workspaces_update = workspaces_sub.add_parser("update", help="Update a workspace")
+    workspaces_update.add_argument("--workspace-id", type=str, required=True)
+    workspaces_update.add_argument("--name", type=str, default="")
+    workspaces_update.add_argument("--real-path", type=str, default="")
+    workspaces_update.add_argument("--path-label", type=str, default="")
+
+    workspaces_delete = workspaces_sub.add_parser("delete", help="Delete a workspace")
+    workspaces_delete.add_argument("--workspace-id", type=str, required=True)
+
+    workspaces_index_status = workspaces_sub.add_parser(
+        "sidecar-index-status", help="Show workspace sidecar index status"
+    )
+    workspaces_index_status.add_argument("--workspace-id", type=str, required=True)
+
+    sessions = subparsers.add_parser("sessions", help="Manage sessions")
+    sessions_sub = sessions.add_subparsers(dest="sessions_command", required=True)
+
+    sessions_list = sessions_sub.add_parser("list", help="List sessions in workspace")
+    sessions_list.add_argument("--workspace-id", type=str, required=True)
+
+    sessions_create = sessions_sub.add_parser("create", help="Create a session")
+    sessions_create.add_argument("--workspace-id", type=str, required=True)
+    sessions_create.add_argument("--connection-id", type=str, default="")
+    sessions_create.add_argument("--model-id", type=str, default="")
+
+    sessions_update = sessions_sub.add_parser("update", help="Update a session")
+    sessions_update.add_argument("--session-id", type=str, required=True)
+    sessions_update.add_argument("--title", type=str, required=True)
+
+    sessions_delete = sessions_sub.add_parser("delete", help="Delete a session")
+    sessions_delete.add_argument("--session-id", type=str, required=True)
+
+    sessions_timeline = sessions_sub.add_parser(
+        "timeline", help="Show session timeline"
+    )
+    sessions_timeline.add_argument("--session-id", type=str, required=True)
+    sessions_timeline.add_argument("--limit", type=int, default=None)
+    sessions_timeline.add_argument("--before-sequence", type=int, default=None)
+
     run = subparsers.add_parser("run", help="Execute one task")
     run.add_argument("user_input", type=str, help="Task prompt")
     run.add_argument(
@@ -633,6 +698,12 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Session key override",
     )
     run.add_argument(
+        "--session-id",
+        type=str,
+        default="",
+        help="Session id in DB (overrides workspace/session-key when set)",
+    )
+    run.add_argument(
         "--dump-result",
         action="store_true",
         help="Dump whole JSON result",
@@ -686,13 +757,37 @@ def _print_help_for_topic(parser: argparse.ArgumentParser, topic: list[str]) -> 
 
 def _build_services(ns_bot_home_value: str):
     database = connect_database(ns_bot_home_value)
-    repositories = create_repositories(database)
+    repositories = create_repositories(cast(Any, database))
     secret_store = LocalSecretStore(ns_bot_home_value)
     provider_service = ProviderService(
         repositories=repositories.providers,
         secret_store=secret_store,
     )
     return database, repositories, secret_store, provider_service
+
+
+def _build_session_service(ns_bot_home_value: str):
+    database = connect_database(ns_bot_home_value)
+    repositories = create_repositories(cast(Any, database))
+    session_service = SessionService(
+        workspaces=repositories.workspaces,
+        sessions=repositories.sessions,
+        attachments=repositories.attachments,
+        draft_attachments=repositories.draft_attachments,
+        attachment_store=AttachmentStore(ns_bot_home_value),
+        timeline_service=TimelineService(
+            sessions=repositories.sessions,
+            timeline_entries=repositories.timeline_entries,
+        ),
+        workspace_sidecar_indexer=WorkspaceSidecarIndexer(),
+    )
+    return database, repositories, session_service
+
+
+def _http_detail(exc: HTTPException) -> str:
+    if isinstance(exc.detail, dict):
+        return json.dumps(exc.detail, ensure_ascii=False)
+    return str(exc.detail)
 
 
 def _find_target_group(
@@ -1005,6 +1100,134 @@ def _handle_models_command(args: argparse.Namespace) -> int:
         database.close()
 
 
+def _handle_workspaces_command(args: argparse.Namespace) -> int:
+    database, _repositories, session_service = _build_session_service(args.ns_bot_home)
+    try:
+        if args.workspaces_command == "list":
+            _print_json(session_service.list_workspaces_payload())
+            return 0
+
+        if args.workspaces_command == "create":
+            payload = {
+                "name": str(args.name or "").strip(),
+                "realPath": str(args.real_path or "").strip(),
+                "pathLabel": str(args.path_label or "").strip()
+                or str(args.real_path or "").strip(),
+            }
+            try:
+                created = session_service.create_workspace(payload)
+            except HTTPException as exc:
+                raise ValueError(_http_detail(exc)) from exc
+            _print_json(created)
+            return 0
+
+        if args.workspaces_command == "update":
+            payload: dict[str, Any] = {}
+            name = str(args.name or "").strip()
+            real_path = str(args.real_path or "").strip()
+            path_label = str(args.path_label or "").strip()
+            if name:
+                payload["name"] = name
+            if real_path:
+                payload["realPath"] = real_path
+            if path_label:
+                payload["pathLabel"] = path_label
+            if not payload:
+                raise ValueError(
+                    "At least one field is required: --name/--real-path/--path-label"
+                )
+            try:
+                updated = session_service.update_workspace(args.workspace_id, payload)
+            except HTTPException as exc:
+                raise ValueError(_http_detail(exc)) from exc
+            _print_json(updated)
+            return 0
+
+        if args.workspaces_command == "delete":
+            try:
+                session_service.delete_workspace(args.workspace_id)
+            except HTTPException as exc:
+                raise ValueError(_http_detail(exc)) from exc
+            _print_json(
+                {"ok": True, "workspaceId": args.workspace_id, "action": "deleted"}
+            )
+            return 0
+
+        if args.workspaces_command == "sidecar-index-status":
+            try:
+                payload = session_service.workspace_sidecar_index_status_payload(
+                    args.workspace_id
+                )
+            except HTTPException as exc:
+                raise ValueError(_http_detail(exc)) from exc
+            _print_json(payload)
+            return 0
+
+        raise ValueError(f"Unknown workspaces command: {args.workspaces_command}")
+    finally:
+        database.close()
+
+
+def _handle_sessions_command(args: argparse.Namespace) -> int:
+    database, _repositories, session_service = _build_session_service(args.ns_bot_home)
+    try:
+        if args.sessions_command == "list":
+            try:
+                payload = session_service.list_sessions_payload(args.workspace_id)
+            except HTTPException as exc:
+                raise ValueError(_http_detail(exc)) from exc
+            _print_json(payload)
+            return 0
+
+        if args.sessions_command == "create":
+            payload: dict[str, Any] = {}
+            connection_id = str(args.connection_id or "").strip()
+            model_id = str(args.model_id or "").strip()
+            if connection_id:
+                payload["connectionId"] = connection_id
+            if model_id:
+                payload["modelId"] = model_id
+            try:
+                created = session_service.create_session(args.workspace_id, payload)
+            except HTTPException as exc:
+                raise ValueError(_http_detail(exc)) from exc
+            _print_json(created)
+            return 0
+
+        if args.sessions_command == "update":
+            payload = {"title": str(args.title or "").strip()}
+            try:
+                updated = session_service.update_session(args.session_id, payload)
+            except HTTPException as exc:
+                raise ValueError(_http_detail(exc)) from exc
+            _print_json(updated)
+            return 0
+
+        if args.sessions_command == "delete":
+            try:
+                session_service.delete_session(args.session_id)
+            except HTTPException as exc:
+                raise ValueError(_http_detail(exc)) from exc
+            _print_json({"ok": True, "sessionId": args.session_id, "action": "deleted"})
+            return 0
+
+        if args.sessions_command == "timeline":
+            try:
+                payload = session_service.list_timeline_payload(
+                    args.session_id,
+                    limit=args.limit,
+                    before_sequence=args.before_sequence,
+                )
+            except HTTPException as exc:
+                raise ValueError(_http_detail(exc)) from exc
+            _print_json(payload)
+            return 0
+
+        raise ValueError(f"Unknown sessions command: {args.sessions_command}")
+    finally:
+        database.close()
+
+
 def _handle_auth_login_command(args: argparse.Namespace) -> int:
     gateway_base_url = _normalize_base_url(args.gateway_base_url)
     model_id = str(args.model or "").strip() or "gpt-5.4"
@@ -1182,6 +1405,56 @@ def _handle_auth_command(args: argparse.Namespace) -> int:
     raise ValueError(f"Unknown auth command: {args.auth_command}")
 
 
+def _resolve_run_metadata(
+    args: argparse.Namespace,
+) -> tuple[RunMetadata, dict[str, Any] | None]:
+    explicit_session_id = str(args.session_id or "").strip()
+    if explicit_session_id == "":
+        return (
+            RunMetadata(
+                workspace_path=args.workspace_path,
+                session_key=args.session_key or None,
+            ),
+            None,
+        )
+
+    database, repositories, _secret_store, _provider_service = _build_services(
+        args.ns_bot_home
+    )
+    try:
+        try:
+            session = repositories.sessions.get_by_id(explicit_session_id)
+        except ValueError as exc:
+            raise ValueError(f"Session not found: {explicit_session_id}") from exc
+        try:
+            workspace = repositories.workspaces.get_by_id(session.workspace_id)
+        except ValueError as exc:
+            raise ValueError(
+                f"Workspace not found for session '{explicit_session_id}'"
+            ) from exc
+    finally:
+        database.close()
+
+    resolved_session_key = str(session.session_key or "").strip()
+    if resolved_session_key == "":
+        raise ValueError(f"Session '{explicit_session_id}' has empty session_key")
+
+    return (
+        RunMetadata(
+            workspace_path=workspace.real_path,
+            session_key=resolved_session_key,
+        ),
+        {
+            "sessionId": session.id,
+            "sessionKey": resolved_session_key,
+            "workspaceId": workspace.id,
+            "workspacePath": workspace.real_path,
+            "activeConnectionId": session.active_connection_id,
+            "activeModelId": session.active_model_id,
+        },
+    )
+
+
 def _resolve_run_target(
     args: argparse.Namespace,
 ) -> tuple[RuntimeWorkerConfig, dict[str, Any]]:
@@ -1335,10 +1608,13 @@ def _resolve_run_target(
 
 def _handle_run_command(args: argparse.Namespace) -> int:
     config, resolved = _resolve_run_target(args)
+    metadata, resolved_session = _resolve_run_metadata(args)
+    effective_workspace_path = metadata.workspace_path or args.workspace_path
     if args.diagnose:
         _print_json(
             {
                 "resolved": resolved,
+                "resolvedSession": resolved_session,
                 "runtime": {
                     "modelId": config.model_id,
                     "provider": config.provider,
@@ -1350,16 +1626,12 @@ def _handle_run_command(args: argparse.Namespace) -> int:
                     "fdExecutable": config.fd_executable,
                     "rgExecutable": config.rg_executable,
                 },
-                "workspacePath": args.workspace_path,
-                "sessionKey": args.session_key or None,
+                "workspacePath": effective_workspace_path,
+                "sessionKey": metadata.session_key,
             }
         )
         return 0
 
-    metadata = RunMetadata(
-        workspace_path=args.workspace_path,
-        session_key=args.session_key or None,
-    )
     auth_context = {
         "uid": "cli-user",
         "tid": "cli-team",
@@ -1367,7 +1639,7 @@ def _handle_run_command(args: argparse.Namespace) -> int:
     }
 
     print("[*] Initializing CodeAgentRuntimeService", file=sys.stderr)
-    print(f"[*] Workspace: {args.workspace_path}", file=sys.stderr)
+    print(f"[*] Workspace: {effective_workspace_path}", file=sys.stderr)
     model_disp = config.model or config.model_id
     print(f"[*] Model: {model_disp} (Provider: {config.provider})", file=sys.stderr)
     print(f"[*] Base URL: {config.base_url}", file=sys.stderr)
@@ -1411,6 +1683,10 @@ def main(argv: list[str] | None = None) -> int:
             return _handle_auth_command(args)
         if args.command == "init":
             return _handle_init_command(args)
+        if args.command == "workspaces":
+            return _handle_workspaces_command(args)
+        if args.command == "sessions":
+            return _handle_sessions_command(args)
         if args.command == "run":
             return _handle_run_command(args)
         if args.command == "help":

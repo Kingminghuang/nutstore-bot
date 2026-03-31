@@ -78,6 +78,25 @@ cd frontend
 npm run dev
 ```
 
+### CLI 管理 workspace/session
+
+在 `sidecar` 目录可直接通过 CLI 管理工作区和会话：
+
+```bash
+uv run python cli.py workspaces list
+uv run python cli.py workspaces create --name demo --real-path /path/to/project
+uv run python cli.py sessions list --workspace-id <workspace_id>
+uv run python cli.py sessions create --workspace-id <workspace_id>
+uv run python cli.py sessions update --session-id <session_id> --title "重命名会话"
+uv run python cli.py sessions delete --session-id <session_id>
+```
+
+运行任务时，可直接绑定数据库里的 session：
+
+```bash
+uv run python cli.py run "帮我总结这个仓库" --session-id <session_id> --diagnose
+```
+
 ## Build
 
 在 `frontend` 目录执行：
