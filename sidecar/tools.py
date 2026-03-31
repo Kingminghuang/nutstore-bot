@@ -20,7 +20,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Literal
 
-from smolagents import tool
+from smolagents import Tool
 
 
 DEFAULT_TEXT_MAX_LINES = 2000
@@ -1173,98 +1173,188 @@ def build_workspace_tools(
         os_type=os_type,
     )
 
-    @tool
-    def ls(path: str = ".", limit: int = 500) -> dict[str, Any]:
-        """List directory entries in lexical order.
+    class WorkspaceTool(Tool):
+        output_type = "object"
 
-        Args:
-            path: Directory path under current workspace.
-            limit: Max entries to return.
-        """
-        return layer.execute_tool_dict("ls", {"path": path, "limit": limit})
+        def __init__(self, tool_layer: ToolLayer):
+            super().__init__()
+            self._tool_layer = tool_layer
 
-    @tool
-    def find(pattern: str, path: str = ".", limit: int = 1000) -> dict[str, Any]:
-        """Find files matching a glob pattern.
-
-        Args:
-            pattern: Glob pattern, e.g. **/*.py or *.md.
-            path: Search root under workspace.
-            limit: Max matches to return.
-        """
-        return layer.execute_tool_dict("find", {"pattern": pattern, "path": path, "limit": limit})
-
-    @tool
-    def grep(
-        pattern: str,
-        path: str = ".",
-        glob: str | None = None,
-        ignore_case: bool = False,
-        literal: bool = False,
-        context: int = 0,
-        limit: int = 100,
-    ) -> dict[str, Any]:
-        """Search file content and return matching lines.
-
-        Args:
-            pattern: Regex pattern or literal text.
-            path: File or directory path under workspace.
-            glob: Optional glob filter when path is a directory.
-            ignore_case: Whether to perform case-insensitive matching.
-            literal: If true, treat pattern as plain text.
-            context: Number of context lines around each match.
-            limit: Maximum matches returned.
-        """
-        return layer.execute_tool_dict(
-            "grep",
-            {
-                "pattern": pattern,
-                "path": path,
-                "glob": glob,
-                "ignore_case": ignore_case,
-                "literal": literal,
-                "context": context,
-                "limit": limit,
+    class LsTool(WorkspaceTool):
+        name = "ls"
+        description = "List directory entries in lexical order."
+        inputs = {
+            "path": {
+                "type": "string",
+                "description": "Directory path under current workspace.",
+                "nullable": True,
             },
-        )
-
-    @tool
-    def read(path: str, offset: int = 1, limit: int = 2000) -> dict[str, Any]:
-        """Read file content with optional line offset and limit.
-
-        Args:
-            path: File path under workspace.
-            offset: Start line index (1-based).
-            limit: Max lines to return.
-        """
-        return layer.execute_tool_dict("read", {"path": path, "offset": offset, "limit": limit})
-
-    @tool
-    def write(path: str, content: str) -> dict[str, Any]:
-        """Write full file content.
-
-        Args:
-            path: File path under workspace.
-            content: Full content to write.
-        """
-        return layer.execute_tool_dict("write", {"path": path, "content": content})
-
-    @tool
-    def edit(path: str, old_text: str, new_text: str) -> dict[str, Any]:
-        """Replace one text span in a file.
-
-        Args:
-            path: File path under workspace.
-            old_text: Text to replace.
-            new_text: Replacement text.
-        """
-        return layer.execute_tool_dict(
-            "edit",
-            {
-                "path": path,
-                "old_text": old_text,
-                "new_text": new_text,
+            "limit": {
+                "type": "integer",
+                "description": "Max entries to return.",
+                "nullable": True,
             },
-        )
+        }
 
-    return [ls, find, grep, read, write, edit]
+        def forward(self, path: str = ".", limit: int = 500) -> dict[str, Any]:
+            return self._tool_layer.execute_tool_dict(
+                "ls", {"path": path, "limit": limit}
+            )
+
+    class FindTool(WorkspaceTool):
+        name = "find"
+        description = "Find files matching a glob pattern."
+        inputs = {
+            "pattern": {
+                "type": "string",
+                "description": "Glob pattern, e.g. **/*.py or *.md.",
+            },
+            "path": {"type": "string", "description": "Search root under workspace."},
+            "path": {
+                "type": "string",
+                "description": "Search root under workspace.",
+                "nullable": True,
+            },
+            "limit": {
+                "type": "integer",
+                "description": "Max matches to return.",
+                "nullable": True,
+            },
+        }
+
+        def forward(
+            self, pattern: str, path: str = ".", limit: int = 1000
+        ) -> dict[str, Any]:
+            return self._tool_layer.execute_tool_dict(
+                "find",
+                {"pattern": pattern, "path": path, "limit": limit},
+            )
+
+    class GrepTool(WorkspaceTool):
+        name = "grep"
+        description = "Search file content and return matching lines."
+        inputs = {
+            "pattern": {
+                "type": "string",
+                "description": "Regex pattern or literal text.",
+            },
+            "path": {
+                "type": "string",
+                "description": "File or directory path under workspace.",
+                "nullable": True,
+            },
+            "glob": {
+                "type": "string",
+                "description": "Optional glob filter when path is a directory.",
+                "nullable": True,
+            },
+            "ignore_case": {
+                "type": "boolean",
+                "description": "Whether to perform case-insensitive matching.",
+                "nullable": True,
+            },
+            "literal": {
+                "type": "boolean",
+                "description": "If true, treat pattern as plain text.",
+                "nullable": True,
+            },
+            "context": {
+                "type": "integer",
+                "description": "Number of context lines around each match.",
+                "nullable": True,
+            },
+            "limit": {
+                "type": "integer",
+                "description": "Maximum matches returned.",
+                "nullable": True,
+            },
+        }
+
+        def forward(
+            self,
+            pattern: str,
+            path: str = ".",
+            glob: str | None = None,
+            ignore_case: bool = False,
+            literal: bool = False,
+            context: int = 0,
+            limit: int = 100,
+        ) -> dict[str, Any]:
+            return self._tool_layer.execute_tool_dict(
+                "grep",
+                {
+                    "pattern": pattern,
+                    "path": path,
+                    "glob": glob,
+                    "ignore_case": ignore_case,
+                    "literal": literal,
+                    "context": context,
+                    "limit": limit,
+                },
+            )
+
+    class ReadTool(WorkspaceTool):
+        name = "read"
+        description = "Read file content with optional line offset and limit."
+        inputs = {
+            "path": {"type": "string", "description": "File path under workspace."},
+            "offset": {
+                "type": "integer",
+                "description": "Start line index (1-based).",
+                "nullable": True,
+            },
+            "limit": {
+                "type": "integer",
+                "description": "Max lines to return.",
+                "nullable": True,
+            },
+        }
+
+        def forward(
+            self, path: str, offset: int = 1, limit: int = 2000
+        ) -> dict[str, Any]:
+            return self._tool_layer.execute_tool_dict(
+                "read",
+                {"path": path, "offset": offset, "limit": limit},
+            )
+
+    class WriteTool(WorkspaceTool):
+        name = "write"
+        description = "Write full file content."
+        inputs = {
+            "path": {"type": "string", "description": "File path under workspace."},
+            "content": {"type": "string", "description": "Full content to write."},
+        }
+
+        def forward(self, path: str, content: str) -> dict[str, Any]:
+            return self._tool_layer.execute_tool_dict(
+                "write", {"path": path, "content": content}
+            )
+
+    class EditTool(WorkspaceTool):
+        name = "edit"
+        description = "Replace one text span in a file."
+        inputs = {
+            "path": {"type": "string", "description": "File path under workspace."},
+            "old_text": {"type": "string", "description": "Text to replace."},
+            "new_text": {"type": "string", "description": "Replacement text."},
+        }
+
+        def forward(self, path: str, old_text: str, new_text: str) -> dict[str, Any]:
+            return self._tool_layer.execute_tool_dict(
+                "edit",
+                {
+                    "path": path,
+                    "old_text": old_text,
+                    "new_text": new_text,
+                },
+            )
+
+    return [
+        LsTool(layer),
+        FindTool(layer),
+        GrepTool(layer),
+        ReadTool(layer),
+        WriteTool(layer),
+        EditTool(layer),
+    ]
