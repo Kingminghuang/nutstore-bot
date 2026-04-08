@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from python_runtime.tools import ToolCall, ToolLayer, path_identity, resolve_path_arg, under_root
+from tools import ToolCall, ToolLayer, path_identity, resolve_path_arg, under_root
 
 
 class ToolLayerTests(unittest.TestCase):

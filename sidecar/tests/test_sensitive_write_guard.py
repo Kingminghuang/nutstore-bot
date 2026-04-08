@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from python_runtime.sensitive_write_guard import detect_sensitive_write_issues
+from sensitive_write_guard import detect_sensitive_write_issues
 
 
 class SensitiveWriteGuardTests(unittest.TestCase):

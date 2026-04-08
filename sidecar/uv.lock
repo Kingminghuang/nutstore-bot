@@ -1135,6 +1135,45 @@ wheels = [
 ]
 
 [[package]]
+name = "nsbot-sidecar"
+version = "0.1.0"
+source = { virtual = "." }
+dependencies = [
+    { name = "fastapi" },
+    { name = "litellm" },
+    { name = "mammoth" },
+    { name = "markdownify" },
+    { name = "openpyxl" },
+    { name = "pypdf" },
+    { name = "python-multipart" },
+    { name = "requests" },
+    { name = "smolagents", extra = ["litellm", "openai", "toolkit"] },
+    { name = "uvicorn" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "pytest" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "fastapi", specifier = ">=0.115.0" },
+    { name = "litellm", specifier = ">=1.51.0" },
+    { name = "mammoth", specifier = ">=1.8.0" },
+    { name = "markdownify", specifier = ">=0.14.1" },
+    { name = "openpyxl", specifier = ">=3.1.5" },
+    { name = "pypdf", specifier = ">=5.4.0" },
+    { name = "python-multipart", specifier = ">=0.0.9" },
+    { name = "requests" },
+    { name = "smolagents", extras = ["litellm", "openai", "toolkit"] },
+    { name = "uvicorn", specifier = ">=0.32.0" },
+]
+
+[package.metadata.requires-dev]
+dev = [{ name = "pytest", specifier = ">=8.3.0" }]
+
+[[package]]
 name = "openai"
 version = "2.29.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1570,45 +1609,6 @@ sdist = { url = "https://files.pythonhosted.org/packages/94/01/979e98d542a70714b
 wheels = [
     { url = "https://files.pythonhosted.org/packages/1b/d0/397f9626e711ff749a95d96b7af99b9c566a9bb5129b8e4c10fc4d100304/python_multipart-0.0.22-py3-none-any.whl", hash = "sha256:2b2cd894c83d21bf49d702499531c7bafd057d730c201782048f7945d82de155", size = 24579, upload-time = "2026-01-25T10:15:54.811Z" },
 ]
-
-[[package]]
-name = "python-runtime"
-version = "0.1.0"
-source = { virtual = "." }
-dependencies = [
-    { name = "fastapi" },
-    { name = "litellm" },
-    { name = "mammoth" },
-    { name = "markdownify" },
-    { name = "openpyxl" },
-    { name = "pypdf" },
-    { name = "python-multipart" },
-    { name = "requests" },
-    { name = "smolagents", extra = ["litellm", "openai", "toolkit"] },
-    { name = "uvicorn" },
-]
-
-[package.dev-dependencies]
-dev = [
-    { name = "pytest" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "fastapi", specifier = ">=0.115.0" },
-    { name = "litellm", specifier = ">=1.51.0" },
-    { name = "mammoth", specifier = ">=1.8.0" },
-    { name = "markdownify", specifier = ">=0.14.1" },
-    { name = "openpyxl", specifier = ">=3.1.5" },
-    { name = "pypdf", specifier = ">=5.4.0" },
-    { name = "python-multipart", specifier = ">=0.0.9" },
-    { name = "requests" },
-    { name = "smolagents", extras = ["litellm", "openai", "toolkit"] },
-    { name = "uvicorn", specifier = ">=0.32.0" },
-]
-
-[package.metadata.requires-dev]
-dev = [{ name = "pytest", specifier = ">=8.3.0" }]
 
 [[package]]
 name = "pyyaml"

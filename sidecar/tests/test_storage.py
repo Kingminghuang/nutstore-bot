@@ -6,7 +6,7 @@ import tempfile
 import threading
 import unittest
 
-from python_runtime.storage import (
+from storage import (
     connect_database,
     list_tables,
     prepare_storage,

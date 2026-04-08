@@ -45,7 +45,7 @@ npm run dev:with-sidecar
 
 该命令会同时启动：
 
-- sidecar：`uv run python api_server.py`（默认 `127.0.0.1:8765`）
+- sidecar：`uv run python src/api_server.py`（默认 `127.0.0.1:8765`）
 - frontend：`next dev`（默认 `localhost:3000`）
 
 Windows 说明：
@@ -60,7 +60,7 @@ Windows 说明：
 
 ```bash
 cd sidecar
-uv run python api_server.py
+uv run python src/api_server.py
 ```
 
 Windows 补充：
@@ -69,7 +69,7 @@ Windows 补充：
 - `sidecar/run_cli.sh` 是 Bash 辅助脚本，更适合类 Unix 环境
 - Windows 下如需读取 `sidecar/.env` 并一键调用 CLI，可运行 `powershell -ExecutionPolicy Bypass -File .\run_cli.ps1`
 - 如需指定其他 env 文件，可运行 `powershell -ExecutionPolicy Bypass -File .\run_cli.ps1 -EnvFile .\dev.env`
-- 也可以直接运行 `uv run python cli.py ...`
+- 也可以直接运行 `uv run python src/cli.py ...`
 
 再启动 frontend：
 
@@ -83,18 +83,18 @@ npm run dev
 在 `sidecar` 目录可直接通过 CLI 管理工作区和会话：
 
 ```bash
-uv run python cli.py workspaces list
-uv run python cli.py workspaces create --name demo --real-path /path/to/project
-uv run python cli.py sessions list --workspace-id <workspace_id>
-uv run python cli.py sessions create --workspace-id <workspace_id>
-uv run python cli.py sessions update --session-id <session_id> --title "重命名会话"
-uv run python cli.py sessions delete --session-id <session_id>
+uv run python src/cli.py workspaces list
+uv run python src/cli.py workspaces create --name demo --real-path /path/to/project
+uv run python src/cli.py sessions list --workspace-id <workspace_id>
+uv run python src/cli.py sessions create --workspace-id <workspace_id>
+uv run python src/cli.py sessions update --session-id <session_id> --title "重命名会话"
+uv run python src/cli.py sessions delete --session-id <session_id>
 ```
 
 运行任务时，可直接绑定数据库里的 session：
 
 ```bash
-uv run python cli.py run "帮我总结这个仓库" --session-id <session_id> --diagnose
+uv run python src/cli.py run "帮我总结这个仓库" --session-id <session_id> --diagnose
 ```
 
 ## Build

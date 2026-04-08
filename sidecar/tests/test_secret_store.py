@@ -6,7 +6,7 @@ import shutil
 import tempfile
 import unittest
 
-from python_runtime.secret_store import LocalSecretStore, ProviderSecretPayload
+from secret_store import LocalSecretStore, ProviderSecretPayload
 
 
 class LocalSecretStoreTests(unittest.TestCase):

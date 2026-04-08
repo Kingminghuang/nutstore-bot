@@ -1,7 +1,7 @@
 [project]
-name = "python-runtime"
+name = "nsbot-sidecar"
 version = "0.1.0"
-description = "Python runtime for the native code agent"
+description = "NSBot sidecar service"
 requires-python = ">=3.11"
 dependencies = [
   "fastapi>=0.115.0",

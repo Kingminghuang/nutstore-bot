@@ -4,8 +4,8 @@ import shutil
 import tempfile
 import unittest
 
-from python_runtime.repositories import create_repositories
-from python_runtime.storage import connect_database
+from repositories import create_repositories
+from storage import connect_database
 
 
 class RepositoriesTests(unittest.TestCase):

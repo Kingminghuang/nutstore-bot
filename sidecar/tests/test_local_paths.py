@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from python_runtime.local_paths import (
+from local_paths import (
     database_file_path,
     discovery_file_path,
     master_key_path,

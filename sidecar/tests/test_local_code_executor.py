@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from python_runtime.local_code_executor import LocalCodeExecutor
+from local_code_executor import LocalCodeExecutor
 
 
 class LocalCodeExecutorTests(unittest.TestCase):

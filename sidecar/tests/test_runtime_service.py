@@ -16,11 +16,11 @@ from smolagents.models import (
 )
 from smolagents.monitoring import TokenUsage
 
-from python_runtime.memory import MemoryConsolidator
-from python_runtime.direct_model import DirectModelConfig
-from python_runtime.native_code_agent import NativeCodeAgent
-from python_runtime.direct_model import DirectModelError
-from python_runtime.runtime_service import (
+from memory import MemoryConsolidator
+from direct_model import DirectModelConfig
+from native_code_agent import NativeCodeAgent
+from direct_model import DirectModelError
+from runtime_service import (
     CodeAgentRuntimeService,
     RunMetadata,
     RuntimeProcessError,

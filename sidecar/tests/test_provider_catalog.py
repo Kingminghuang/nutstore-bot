@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from python_runtime.provider_catalog import catalog_version, list_providers
+from provider_catalog import catalog_version, list_providers
 
 
 class ProviderCatalogTests(unittest.TestCase):

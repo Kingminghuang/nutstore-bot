@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from python_runtime.worker import parse_request
+from worker import parse_request
 
 
 class WorkerRequestParsingTests(unittest.TestCase):

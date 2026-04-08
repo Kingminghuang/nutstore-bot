@@ -113,6 +113,6 @@ def final_answer(answer: Any) -> Any:
     """Return the final answer to the user.
 
     This is an agent built-in tool provided by CodeAgent/smolagents. It is not
-    implemented in python_runtime/tools.py, but it is always available to the agent.
+    implemented in src/tools.py, but it is always available to the agent.
     """
 ```

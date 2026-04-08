@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from python_runtime.run_events import (
+from run_events import (
     completed_event,
     delta_event,
     failed_event,

@@ -7,13 +7,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from python_runtime.memory import (
+from memory import (
     MemoryConsolidator,
     MemoryStore,
     ensure_text,
     normalize_save_memory_args,
 )
-from python_runtime.session_manager import Session
+from session_manager import Session
 
 
 @dataclass

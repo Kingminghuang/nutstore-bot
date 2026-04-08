@@ -5,8 +5,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from python_runtime.context_builder import ContextBuilder, ContextBuilderConfig, ContextBuildError, RuntimeInfo
-from python_runtime.memory import MemoryStore
+from context_builder import ContextBuilder, ContextBuilderConfig, ContextBuildError, RuntimeInfo
+from memory import MemoryStore
 
 
 class ContextBuilderTests(unittest.TestCase):

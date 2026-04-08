@@ -25,7 +25,7 @@ while IFS='=' read -r key value || [ -n "$key" ]; do
     fi
 done < .env
 
-echo "[*] 执行命令: python cli.py \"$USER_INPUT\" ${ARGS[*]}"
+echo "[*] 执行命令: python src/cli.py \"$USER_INPUT\" ${ARGS[*]}"
 echo "------------------------------------------------------------"
 
-python cli.py "$USER_INPUT" "${ARGS[@]}"
+python src/cli.py "$USER_INPUT" "${ARGS[@]}"

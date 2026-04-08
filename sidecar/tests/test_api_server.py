@@ -13,12 +13,12 @@ from fastapi import FastAPI, HTTPException
 from smolagents.models import ChatMessageStreamDelta, Model
 from smolagents.monitoring import TokenUsage
 
-from python_runtime.api_server import (
+from api_server import (
     ApiServerConfig,
     create_app,
     publish_service_discovery,
 )
-from python_runtime.direct_model import DirectModelError
+from direct_model import DirectModelError
 
 
 class FakeValidationSuccessModel(Model):
@@ -75,14 +75,14 @@ class FakeWorkspaceSidecarIndexer:
         )
 
 
-from python_runtime.discovery import read_service_discovery
-from python_runtime.local_paths import nsbot_home
-from python_runtime.runtime_service import (
+from discovery import read_service_discovery
+from local_paths import nsbot_home
+from runtime_service import (
     RunMetadata,
     RuntimeProcessError,
     RuntimeWorkerConfig,
 )
-from python_runtime.session_manager import SessionManager
+from session_manager import SessionManager
 from workspace_sidecar_indexer import WorkspaceSidecarIndexer
 
 
@@ -1782,6 +1782,19 @@ class ApiServerTests(unittest.TestCase):
         )
         self.assertEqual(listing.status_code, 200)
         self.assertEqual(listing.json()["connections"], [])
+
+    def test_delete_provider_returns_conflict_when_referenced(self) -> None:
+        workspace = self._create_workspace("workspace-provider-delete-conflict")
+        provider = self._create_provider()
+        self._create_session(workspace["id"], str(provider["id"]))
+
+        deleted = self.client.delete(
+            f"/providers/{provider['id']}",
+            headers={"Authorization": "Bearer test-token"},
+        )
+        self.assertEqual(deleted.status_code, 409)
+        detail = deleted.json().get("detail", "")
+        self.assertIn("still referenced", detail)
 
     def test_update_provider_preserves_health_status_fields(self) -> None:
         self._set_validation_model_factory(lambda config: FakeValidationSuccessModel())
