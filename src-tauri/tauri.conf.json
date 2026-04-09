@@ -4,7 +4,10 @@
   "version": "0.1.0",
   "identifier": "com.nutstore.bot",
   "build": {
-    "frontendDist": "../desktop-fallback"
+    "devUrl": "http://localhost:13000",
+    "beforeDevCommand": "cd ../frontend && npm run dev -- --port 13000",
+    "beforeBuildCommand": "cd ../frontend && npm run build",
+    "frontendDist": "../frontend/dist"
   },
   "app": {
     "windows": [
@@ -31,8 +34,6 @@
       "../frontend/public/icon-light-32x32.png"
     ],
     "externalBin": [
-      "binaries/next-sidecar",
-      "binaries/node-runtime",
       "binaries/nsbot-sidecar"
     ],
     "resources": [

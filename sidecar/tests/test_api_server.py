@@ -92,7 +92,7 @@ class ApiServerTests(unittest.TestCase):
         self.config = ApiServerConfig(
             host="127.0.0.1",
             port=18765,
-            token="test-token",
+            auth_header_value="Bearer test-token",
             ns_bot_home=str(self.temp_dir),
         )
         self.client = TestClient(create_app(self.config))
@@ -252,7 +252,7 @@ class ApiServerTests(unittest.TestCase):
         self.assertEqual(response.json(), {"ok": True})
 
     def test_publish_service_discovery(self) -> None:
-        path = publish_service_discovery(self.config, self.config.token)
+        path = publish_service_discovery(self.config)
         self.assertTrue(path.exists())
 
         discovery = read_service_discovery(str(self.temp_dir))
@@ -263,7 +263,12 @@ class ApiServerTests(unittest.TestCase):
 
     def test_invalid_host_is_rejected(self) -> None:
         with self.assertRaises(ValueError):
-            create_app(ApiServerConfig(host="0.0.0.0", token="bad-token"))
+            create_app(
+                ApiServerConfig(
+                    host="0.0.0.0",
+                    auth_header_value="Bearer bad-token",
+                )
+            )
 
     def test_provider_catalog_requires_auth_and_returns_custom_template(self) -> None:
         unauthorized = self.client.get("/provider-catalog")

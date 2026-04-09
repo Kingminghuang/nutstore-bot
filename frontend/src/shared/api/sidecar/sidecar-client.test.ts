@@ -1,12 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
 
-describe("sidecar-client proxy requests", () => {
+describe("sidecar-client direct requests", () => {
   afterEach(() => {
     vi.restoreAllMocks()
     vi.resetModules()
   })
 
-  it("requests provider catalog through Next sidecar proxy", async () => {
+  it("requests provider catalog through sidecar transport", async () => {
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(
@@ -23,12 +23,16 @@ describe("sidecar-client proxy requests", () => {
 
     expect(response).toEqual({ providers: [] })
     expect(fetchMock).toHaveBeenCalledWith(
-      "/api/sidecar/proxy?path=%2Fprovider-catalog",
+      "http://127.0.0.1:18765/provider-catalog",
       expect.objectContaining({
-        headers: expect.objectContaining({ "Content-Type": "application/json" }),
+        headers: expect.any(Headers),
         cache: "no-store",
       })
     )
+    const [, options] = fetchMock.mock.calls[0] as [string, RequestInit]
+    const headers = options.headers as Headers
+    expect(headers.get("Content-Type")).toBe("application/json")
+    expect(headers.get("Authorization")).toBe("Bearer dev-token")
   })
 
   it("throws NSBotClientError for non-ok responses", async () => {
@@ -119,7 +123,7 @@ describe("sidecar-client proxy requests", () => {
     })
   })
 
-  it("posts provider validation through Next sidecar proxy", async () => {
+  it("posts provider validation through sidecar transport", async () => {
     const fetchMock = vi.fn().mockResolvedValueOnce(
       new Response(
         JSON.stringify({
@@ -149,11 +153,11 @@ describe("sidecar-client proxy requests", () => {
       healthStatus: "connected",
     })
     expect(fetchMock).toHaveBeenCalledWith(
-      "/api/sidecar/proxy?path=%2Fproviders%2Fprov_openai%2Fvalidate",
+      "http://127.0.0.1:18765/providers/prov_openai/validate",
       expect.objectContaining({
         method: "POST",
         body: JSON.stringify({ modelId: "gpt-5.4" }),
-        headers: expect.objectContaining({ "Content-Type": "application/json" }),
+        headers: expect.any(Headers),
         cache: "no-store",
       })
     )

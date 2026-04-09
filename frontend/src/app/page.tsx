@@ -16,6 +16,7 @@ import {
   validateProvider,
   type TimelineEntry,
 } from "@/shared/api/sidecar"
+import { sidecarRequest, subscribeSidecarStream, type SidecarStreamSubscription } from "@/shared/api/sidecar/sidecar-transport"
 import {
   normalizeSelectedReasoningEffort,
   type ModelOptionGroup,
@@ -136,7 +137,7 @@ export default function Home() {
   const [attachmentsBySession, setAttachmentsBySession] = useState<Record<string, ComposerAttachment[]>>({})
   const [draftAttachmentsByWorkspace, setDraftAttachmentsByWorkspace] = useState<Record<string, DraftAttachment[]>>({})
   const [uploadingAttachmentTargetId, setUploadingAttachmentTargetId] = useState<string | null>(null)
-  const eventSourceRef = useRef<EventSource | null>(null)
+  const streamSubscriptionRef = useRef<SidecarStreamSubscription | null>(null)
   const sessionActiveRunIdByIdRef = useRef<Record<string, string | null>>({})
   const lastHydrationAttemptSessionIdRef = useRef<string | null>(null)
   const isDragging = useRef(false)
@@ -240,8 +241,8 @@ export default function Home() {
 
   useEffect(() => {
     return () => {
-      eventSourceRef.current?.close()
-      eventSourceRef.current = null
+      streamSubscriptionRef.current?.close()
+      streamSubscriptionRef.current = null
     }
   }, [])
 
@@ -501,9 +502,7 @@ export default function Home() {
   )
 
   const startRunEventStream = useCallback((runId: string, workspaceId: string, sessionId: string) => {
-    eventSourceRef.current?.close()
-    const source = new EventSource(`/api/sidecar/proxy?path=${encodeURIComponent(`/runs/${runId}/events`)}`)
-    eventSourceRef.current = source
+    streamSubscriptionRef.current?.close()
 
     const markRunInactiveIfCurrent = (targetRunId: string) => {
       if (sessionActiveRunIdByIdRef.current[sessionId] !== targetRunId) {
@@ -520,10 +519,8 @@ export default function Home() {
     }
 
     const closeSource = () => {
-      source.close()
-      if (eventSourceRef.current === source) {
-        eventSourceRef.current = null
-      }
+      streamSubscriptionRef.current?.close()
+      streamSubscriptionRef.current = null
       markRunInactiveIfCurrent(runId)
     }
 
@@ -597,13 +594,13 @@ export default function Home() {
       }
     }
 
-    const handleMessageEvent = (messageEvent: MessageEvent<string>) => {
+    const handleMessageEvent = (messageEvent: { lastEventId: string; type: string; data: unknown }) => {
       try {
         const envelope = parseRunEventEnvelope(
           JSON.stringify({
             id: messageEvent.lastEventId,
             event: messageEvent.type,
-            data: JSON.parse(messageEvent.data),
+            data: messageEvent.data,
           })
         )
         applyEvent(envelope.data)
@@ -612,13 +609,23 @@ export default function Home() {
       }
     }
 
-    ;["run.status", "run.timeline-entry", "run.completed", "run.failed", "run.replay-ready"].forEach((eventName) => {
-      source.addEventListener(eventName, handleMessageEvent as EventListener)
-    })
-
-    source.onerror = () => {
+    void subscribeSidecarStream(`/runs/${runId}/events`, {
+      onEvent: (eventName, payload, eventId) => {
+        handleMessageEvent({ lastEventId: eventId, type: eventName, data: payload })
+      },
+      onError: () => {
+        closeSource()
+      },
+      onClose: () => {
+        if (streamSubscriptionRef.current != null) {
+          streamSubscriptionRef.current = null
+        }
+      },
+    }).then((subscription) => {
+      streamSubscriptionRef.current = subscription
+    }).catch(() => {
       closeSource()
-    }
+    })
   }, [])
 
   const handleSendMessage = useCallback(
@@ -970,8 +977,8 @@ export default function Home() {
       })
 
       if (activeWorkspaceId === workspaceId && activeSessionId === sessionId) {
-        eventSourceRef.current?.close()
-        eventSourceRef.current = null
+        streamSubscriptionRef.current?.close()
+        streamSubscriptionRef.current = null
         setActiveSessionId(nextActiveSessionId)
         setActiveDraftWorkspaceId(nextActiveSessionId == null ? workspaceId : null)
       }
@@ -1133,13 +1140,14 @@ export default function Home() {
 }
 
 async function sidecarFetch<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`/api/sidecar/proxy?path=${encodeURIComponent(path)}`, {
+  const headers = new Headers(init?.headers)
+  if (!(init?.body instanceof FormData) && !headers.has("Content-Type")) {
+    headers.set("Content-Type", "application/json")
+  }
+
+  const response = await sidecarRequest(path, {
     ...init,
-    headers: {
-      ...(!(init?.body instanceof FormData) ? { "Content-Type": "application/json" } : {}),
-      ...(init?.headers ?? {}),
-    },
-    cache: "no-store",
+    headers,
   })
 
   if (!response.ok) {

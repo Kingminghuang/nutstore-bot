@@ -2,12 +2,12 @@
 
 本项目由两个子系统组成：
 
-- `frontend`：Next.js 前端应用（含本地代理 API 路由）
+- `frontend`：Vite + React 前端应用（直连本地 sidecar）
 - `sidecar`：Python FastAPI 本地服务（提供会话、运行、Provider 等能力）
 
 ## 环境要求
 
-- Node.js `>= 20.9`（Next.js 16 运行要求）
+- Node.js `>= 20.9`
 - npm
 - Python `>= 3.11`
 - `uv`（用于 sidecar 依赖管理与运行）
@@ -45,8 +45,8 @@ npm run dev:with-sidecar
 
 该命令会同时启动：
 
-- sidecar：`uv run python src/api_server.py`（默认 `127.0.0.1:8765`）
-- frontend：`next dev`（默认 `localhost:3000`）
+- sidecar：`uv run python src/api_server.py`（默认 `127.0.0.1:18765`）
+- frontend：`vite`（默认 `localhost:13000`）
 
 Windows 说明：
 
@@ -133,13 +133,10 @@ bash ./scripts/build-desktop-macos.sh --debug
 
 该命令会依次执行：
 
-1. 构建 Next standalone
-2. 复制当前 `node` 运行时并生成 Next launcher sidecar（`src-tauri/binaries/node-runtime-<target-triple>` 和 `src-tauri/binaries/next-sidecar-<target-triple>`）
-3. 将 Next standalone 目录、`.next/static` 和 `public` 打包进 `src-tauri/runtime/next-standalone`
-4. 构建 Python sidecar（PyInstaller onefile，输出 `src-tauri/binaries/nsbot-sidecar-<target-triple>`）
-5. 调用 `cargo tauri build --target aarch64-apple-darwin`
-
-当前 macOS arm64 默认 target 固定为 `node22-macos-arm64`（在 `frontend/scripts/build-next-pkg-sidecar.mjs` 中维护）。
+1. 构建前端静态资源（`frontend/dist`）
+2. 构建 Python sidecar（PyInstaller onefile，输出 `src-tauri/binaries/nsbot-sidecar-<target-triple>`）
+3. 准备 `fd/rg` 与模板资源到 `src-tauri/runtime`
+4. 调用 `cargo tauri build --target aarch64-apple-darwin`
 
 运行时资源会整理到：
 
@@ -154,17 +151,6 @@ src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/
 ```
 
 release 产物只保证 `.app` 与 `.dmg` 可运行；不保证 raw release binary 可直接运行。
-
-当前 release bundle 会通过一个后台 Next helper 启动内置 Node 运行时，因此正常情况下 macOS Dock 不应再单独显示 `node-runtime`。
-
-`--debug` 模式下，会生成 debug bundle，并同步补齐 bundle 与 raw debug binary 所需的 sidecar 路径：
-
-```text
-src-tauri/target/aarch64-apple-darwin/debug/bundle/macos/NutstoreBot.app
-src-tauri/target/aarch64-apple-darwin/debug/bundle/macos/NutstoreBot.app/Contents/MacOS/binaries/{next-sidecar,nsbot-sidecar}
-src-tauri/target/aarch64-apple-darwin/debug/nutstore-bot-desktop
-src-tauri/target/aarch64-apple-darwin/debug/binaries/{next-sidecar,nsbot-sidecar}
-```
 
 `--dmg` 目前只支持 release 构建，不支持与 `--debug` 同时使用。
 

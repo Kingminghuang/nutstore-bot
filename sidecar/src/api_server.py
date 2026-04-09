@@ -25,10 +25,10 @@ from attachment_store import AttachmentStore
 from auth import (
     LocalAuthConfig,
     auth_header_dependency,
-    generate_local_auth_token,
     is_exempt_path,
-    validate_bearer_token,
+    validate_authorization_header,
 )
+from client_config import load_or_create_client_config
 from discovery import ServiceDiscovery, nsbot_home, write_service_discovery
 from provider_service import ProviderService
 from redaction import install_log_redaction_filter, redact_sensitive
@@ -58,7 +58,7 @@ LOCAL_CORS_ORIGINS = (
 class ApiServerConfig:
     host: str = DEFAULT_HOST
     port: int = DEFAULT_PORT
-    token: str | None = None
+    auth_header_value: str | None = None
     ns_bot_home: str | None = None
     fd_executable: str | None = None
     rg_executable: str | None = None
@@ -73,8 +73,10 @@ def ensure_local_host(host: str) -> None:
 def create_app(config: ApiServerConfig | None = None) -> FastAPI:
     cfg = config or ApiServerConfig()
     ensure_local_host(cfg.host)
-    token = cfg.token or generate_local_auth_token()
-    auth_config = LocalAuthConfig(token=token)
+    auth_header_value = cfg.auth_header_value or ""
+    if auth_header_value.strip() == "":
+        raise ValueError("auth_header_value must not be empty")
+    auth_config = LocalAuthConfig(auth_header_value=auth_header_value)
     database = connect_database(cfg.ns_bot_home)
     repositories = create_repositories(database)
     provider_service = ProviderService(
@@ -179,10 +181,14 @@ def create_app(config: ApiServerConfig | None = None) -> FastAPI:
 
     @app.middleware("http")
     async def localhost_auth_middleware(request: Request, call_next):  # type: ignore[override]
+        # CORS preflight requests do not carry Authorization headers.
+        if request.method.upper() == "OPTIONS":
+            return await call_next(request)
+
         if not is_exempt_path(request.url.path, auth_config.exempt_paths):
             try:
-                validate_bearer_token(
-                    request.headers.get("Authorization"), auth_config.token
+                validate_authorization_header(
+                    request.headers.get("Authorization"), auth_config.auth_header_value
                 )
             except HTTPException as exc:
                 return JSONResponse(
@@ -446,14 +452,18 @@ def create_app(config: ApiServerConfig | None = None) -> FastAPI:
 
 
 def publish_service_discovery(
-    config: ApiServerConfig, token: str | None = None
+    config: ApiServerConfig,
 ) -> Path:
     ensure_local_host(config.host)
-    effective_token = token or config.token or generate_local_auth_token()
+    auth_header_value = (config.auth_header_value or "").strip()
+    if auth_header_value.lower().startswith("bearer "):
+        token = auth_header_value[7:].strip()
+    else:
+        token = auth_header_value
     discovery = ServiceDiscovery(
         base_url=f"http://{config.host}:{config.port}",
         port=config.port,
-        token=effective_token,
+        token=token,
         pid=os.getpid(),
     )
     return write_service_discovery(discovery, str(nsbot_home(config.ns_bot_home)))
@@ -462,16 +472,25 @@ def publish_service_discovery(
 def main() -> int:
     import uvicorn
 
+    host = os.environ.get("NS_BOT_HOST", DEFAULT_HOST)
+    port = int(os.environ.get("NS_BOT_PORT", str(DEFAULT_PORT)))
+    ns_bot_home_value = os.environ.get("NS_BOT_HOME")
+    client_config = load_or_create_client_config(
+        ns_bot_home_value,
+        host=host,
+        port=port,
+    )
+
     config = ApiServerConfig(
-        host=os.environ.get("NS_BOT_HOST", DEFAULT_HOST),
-        port=int(os.environ.get("NS_BOT_PORT", str(DEFAULT_PORT))),
-        token=os.environ.get("NS_BOT_TOKEN") or generate_local_auth_token(),
-        ns_bot_home=os.environ.get("NS_BOT_HOME"),
+        host=host,
+        port=port,
+        auth_header_value=client_config.auth_header_value,
+        ns_bot_home=ns_bot_home_value,
         fd_executable=os.environ.get("NSBOT_FD_EXECUTABLE") or None,
         rg_executable=os.environ.get("NSBOT_RG_EXECUTABLE") or None,
     )
 
-    publish_service_discovery(config, config.token)
+    publish_service_discovery(config)
     uvicorn.run(create_app(config), host=config.host, port=config.port)
     return 0
 

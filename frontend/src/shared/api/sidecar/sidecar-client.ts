@@ -6,6 +6,7 @@ import {
   type SaveProviderPayload,
 } from "@/features/providers"
 import { redactSensitive, redactText } from "@/shared/lib"
+import { sidecarRequest } from "./sidecar-transport"
 
 export type TimelineEntryUsage = {
   inputTokens: number
@@ -165,13 +166,14 @@ export async function getSessionTimeline(
 }
 
 async function sidecarFetch<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`/api/sidecar/proxy?path=${encodeURIComponent(path)}`, {
+  const headers = new Headers(init?.headers)
+  if (!headers.has("Content-Type")) {
+    headers.set("Content-Type", "application/json")
+  }
+
+  const response = await sidecarRequest(path, {
     ...init,
-    headers: {
-      "Content-Type": "application/json",
-      ...(init?.headers ?? {}),
-    },
-    cache: "no-store",
+    headers,
   })
 
   if (!response.ok) {

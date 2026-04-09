@@ -12,7 +12,7 @@ AUTH_EXEMPT_PATHS = frozenset({"/health"})
 
 @dataclass(frozen=True)
 class LocalAuthConfig:
-    token: str
+    auth_header_value: str
     exempt_paths: frozenset[str] = AUTH_EXEMPT_PATHS
 
 
@@ -39,6 +39,23 @@ def validate_bearer_token(authorization: str | None, expected_token: str) -> Non
         )
 
     if not secrets.compare_digest(token.strip(), expected_token):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid auth token",
+        )
+
+
+def validate_authorization_header(
+    authorization: str | None,
+    expected_auth_header_value: str,
+) -> None:
+    if authorization is None or authorization.strip() == "":
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing Authorization header",
+        )
+
+    if not secrets.compare_digest(authorization.strip(), expected_auth_header_value.strip()):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid auth token",

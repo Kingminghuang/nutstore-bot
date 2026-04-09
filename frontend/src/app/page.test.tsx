@@ -15,7 +15,14 @@ const sidecarClientMocks = vi.hoisted(() => ({
 const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
   const url = String(input)
   const decodedPathMatch = url.match(/[?&]path=([^&]+)/)
-  const decodedPath = decodedPathMatch ? decodeURIComponent(decodedPathMatch[1]) : ""
+  let decodedPath = decodedPathMatch ? decodeURIComponent(decodedPathMatch[1]) : ""
+  if (decodedPath === "") {
+    try {
+      decodedPath = new URL(url).pathname
+    } catch {
+      decodedPath = ""
+    }
+  }
   const body =
     typeof init?.body === "string"
       ? (JSON.parse(init.body) as Record<string, unknown>)
@@ -218,7 +225,7 @@ const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => 
     )
   }
 
-  if (url.includes("/api/sidecar/proxy?path=%2Fruns") && init?.method === "POST") {
+  if (decodedPath === "/runs" && init?.method === "POST") {
     const requestSessionId = typeof body?.sessionId === "string" ? String(body.sessionId) : null
     const responseSessionId = requestSessionId ?? "sess_2"
     if (requestSessionId == null) {
@@ -358,7 +365,7 @@ const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => 
     return new Response(null, { status: 204 })
   }
 
-  if (url.includes("path=%2Fworkspaces%2Fws_1") && init?.method === "PATCH") {
+  if (decodedPath === "/workspaces/ws_1" && init?.method === "PATCH") {
     return new Response(
       JSON.stringify({
         id: "ws_1",
@@ -372,7 +379,7 @@ const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => 
     )
   }
 
-  if (url.includes("path=%2Fworkspaces%2Fws_1") && init?.method === "DELETE") {
+  if (decodedPath === "/workspaces/ws_1" && init?.method === "DELETE") {
     return new Response(null, { status: 204 })
   }
 
@@ -829,9 +836,8 @@ describe("Home page", () => {
       const indexStatusCalls = fetchMock.mock.calls.filter(([input, init]) => {
         const value = String(input)
         return (
-          value.includes(
-            "/api/sidecar/proxy?path=%2Fworkspaces%2Fws_2%2Fsidecar-index%2Fstatus"
-          ) && (init?.method == null || init?.method === "GET")
+          value.includes("/workspaces/ws_2/sidecar-index/status") &&
+          (init?.method == null || init?.method === "GET")
         )
       })
       expect(indexStatusCalls.length).toBeGreaterThan(0)
@@ -853,7 +859,7 @@ describe("Home page", () => {
 
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith(
-        expect.stringContaining("path=%2Fsessions%2Fsess_1%2Ftimeline%2Fmsg_1%2Fedit-and-run"),
+        expect.stringContaining("/sessions/sess_1/timeline/msg_1/edit-and-run"),
         expect.objectContaining({
           method: "POST",
         })
@@ -1666,7 +1672,7 @@ describe("Home page", () => {
     await waitFor(() => {
       const runCalls = fetchMock.mock.calls.filter(
         ([input, init]) =>
-          String(input).includes("/api/sidecar/proxy?path=%2Fruns") &&
+          String(input).includes("/runs") &&
           init?.method === "POST"
       )
       expect(runCalls).toHaveLength(1)
@@ -1688,7 +1694,7 @@ describe("Home page", () => {
     await waitFor(() => {
       const createSessionCalls = fetchMock.mock.calls.filter(
         ([input, init]) =>
-          String(input).includes("path=%2Fworkspaces%2Fws_1%2Fsessions") &&
+          String(input).includes("/workspaces/ws_1/sessions") &&
           init?.method === "POST"
       )
       expect(createSessionCalls).toHaveLength(0)
@@ -1707,7 +1713,7 @@ describe("Home page", () => {
     await waitFor(() => {
       const draftAttachmentCalls = fetchMock.mock.calls.filter(
         ([input, init]) =>
-          String(input).includes("path=%2Fworkspaces%2Fws_1%2Fdraft-attachments") &&
+          String(input).includes("/workspaces/ws_1/draft-attachments") &&
           (init?.method == null || init?.method === "GET")
       )
       expect(draftAttachmentCalls.length).toBeGreaterThan(0)

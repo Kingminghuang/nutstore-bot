@@ -16,11 +16,6 @@
       "identifier": "shell:allow-spawn",
       "allow": [
         {
-          "name": "binaries/next-sidecar",
-          "sidecar": true,
-          "args": false
-        },
-        {
           "name": "binaries/nsbot-sidecar",
           "sidecar": true,
           "args": false
