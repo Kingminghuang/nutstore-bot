@@ -1,5 +1,5 @@
-import argparse
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from __future__ import annotations
+
 import json
 import os
 from pathlib import Path
@@ -7,42 +7,28 @@ import platform
 import shutil
 import subprocess
 import sys
-import time
-from urllib.parse import parse_qs, urlencode, urlparse
-import uuid
-import webbrowser
+from types import SimpleNamespace
 from typing import Any, cast
+import uuid
 
+import click
 from fastapi import HTTPException
-import requests
+import typer
 
 from nsbot_sidecar.infrastructure.attachment_store import AttachmentStore
 from nsbot_sidecar.infrastructure.local_paths import nsbot_home
 from nsbot_sidecar.application.provider_service import ProviderService
-from nsbot_sidecar.infrastructure.repositories import ProviderConnectionBundle, create_repositories
-from nsbot_sidecar.runtime.runtime_service import CodeAgentRuntimeService, RunMetadata, RuntimeWorkerConfig
+from nsbot_sidecar.infrastructure.repositories import create_repositories
+from nsbot_sidecar.runtime.runtime_service import (
+    CodeAgentRuntimeService,
+    RunMetadata,
+    RuntimeWorkerConfig,
+)
 from nsbot_sidecar.application.session_service import SessionService
 from nsbot_sidecar.infrastructure.secret_store import LocalSecretStore
 from nsbot_sidecar.infrastructure.storage import connect_database
 from nsbot_sidecar.application.timeline_service import TimelineService
 from nsbot_sidecar.runtime.workspace_sidecar_indexer import WorkspaceSidecarIndexer
-
-
-COMMANDS = {
-    "run",
-    "providers",
-    "models",
-    "auth",
-    "init",
-    "workspaces",
-    "sessions",
-    "help",
-}
-NUTSTORE_CUSTOM_SLUG = "nutstore"
-NUTSTORE_DISPLAY_NAME = "Nut Store"
-AUTH_PENDING_FILE = "auth-nutstore-pending.json"
-AUTH_PENDING_TTL_SECONDS = 15 * 60
-AUTH_REQUEST_TIMEOUT_SECONDS = 30
 
 
 def _normalize_provider_ref(bundle: dict[str, Any]) -> str:
@@ -56,235 +42,6 @@ def _normalize_provider_ref(bundle: dict[str, Any]) -> str:
 
 def _print_json(payload: dict[str, Any]) -> None:
     print(json.dumps(payload, ensure_ascii=False, indent=2))
-
-
-def _normalize_base_url(value: str) -> str:
-    normalized = str(value or "").strip().rstrip("/")
-    if normalized == "":
-        raise ValueError("gateway-base-url is required")
-    parsed = urlparse(normalized)
-    if parsed.scheme not in {"http", "https"} or parsed.netloc == "":
-        raise ValueError("gateway-base-url must be an absolute http(s) URL")
-    return normalized
-
-
-def _pending_auth_file(ns_bot_home_value: str) -> Path:
-    return Path(ns_bot_home_value).expanduser().resolve() / AUTH_PENDING_FILE
-
-
-def _save_pending_auth(ns_bot_home_value: str, payload: dict[str, Any]) -> None:
-    path = _pending_auth_file(ns_bot_home_value)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8") as handle:
-        json.dump(payload, handle, ensure_ascii=False, indent=2)
-
-
-def _load_pending_auth(ns_bot_home_value: str) -> dict[str, Any]:
-    path = _pending_auth_file(ns_bot_home_value)
-    if not path.exists():
-        raise ValueError("No pending auth login found. Run `auth login` first.")
-    with path.open("r", encoding="utf-8") as handle:
-        payload = json.load(handle)
-    created_epoch = float(payload.get("createdEpoch") or 0)
-    if created_epoch <= 0:
-        _clear_pending_auth(ns_bot_home_value)
-        raise ValueError(
-            "Pending auth login metadata is invalid. Run `auth login` again."
-        )
-    if (time.time() - created_epoch) > AUTH_PENDING_TTL_SECONDS:
-        _clear_pending_auth(ns_bot_home_value)
-        raise ValueError("Pending auth login expired. Run `auth login` again.")
-    return payload
-
-
-def _clear_pending_auth(ns_bot_home_value: str) -> None:
-    path = _pending_auth_file(ns_bot_home_value)
-    if path.exists():
-        path.unlink()
-
-
-def _build_authorize_url(
-    *, gateway_base_url: str, redirect_uri: str, state: str, nonce: str
-) -> str:
-    query = urlencode(
-        {
-            "redirect_uri": redirect_uri,
-            "state": state,
-            "nonce": nonce,
-        }
-    )
-    return f"{gateway_base_url}/d/openid/auth?{query}"
-
-
-def _extract_code_and_state(raw_input: str) -> tuple[str, str | None]:
-    value = str(raw_input or "").strip()
-    if value == "":
-        raise ValueError("OAuth input is required")
-    if "://" not in value:
-        return value, None
-    parsed = urlparse(value)
-    params = parse_qs(parsed.query)
-    code = str((params.get("code") or [""])[0]).strip()
-    state = str((params.get("state") or [""])[0]).strip() or None
-    if code == "":
-        raise ValueError("OAuth callback URL is missing code")
-    return code, state
-
-
-def _wait_for_local_callback(
-    *, redirect_uri: str, timeout_seconds: int
-) -> tuple[str, str | None] | None:
-    parsed = urlparse(redirect_uri)
-    host = parsed.hostname or ""
-    if parsed.scheme != "http" or host not in {"localhost", "127.0.0.1"}:
-        return None
-    if parsed.port is None:
-        raise ValueError(
-            "redirect URI must include an explicit port for local callback"
-        )
-
-    expected_path = parsed.path or "/"
-    callback_payload: dict[str, str | None] = {"code": None, "state": None}
-
-    class CallbackHandler(BaseHTTPRequestHandler):
-        def do_GET(self) -> None:  # noqa: N802
-            request_url = urlparse(self.path)
-            if request_url.path != expected_path:
-                self.send_response(404)
-                self.end_headers()
-                return
-
-            params = parse_qs(request_url.query)
-            code = str((params.get("code") or [""])[0]).strip()
-            state = str((params.get("state") or [""])[0]).strip() or None
-            if code == "":
-                self.send_response(400)
-                self.end_headers()
-                self.wfile.write(b"Missing code")
-                return
-
-            callback_payload["code"] = code
-            callback_payload["state"] = state
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.end_headers()
-            self.wfile.write(
-                b"<html><body><h2>Nut Store login complete</h2><p>You can close this tab.</p></body></html>"
-            )
-
-        def log_message(self, format: str, *args: Any) -> None:  # noqa: A003
-            return
-
-    bind_host = "127.0.0.1"
-    try:
-        server = HTTPServer((bind_host, parsed.port), CallbackHandler)
-    except OSError as exc:
-        raise ValueError(
-            f"Failed to bind callback listener at {bind_host}:{parsed.port}: {exc}"
-        ) from exc
-
-    deadline = time.monotonic() + max(timeout_seconds, 1)
-    try:
-        while callback_payload.get("code") is None:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                break
-            server.timeout = min(1.0, remaining)
-            server.handle_request()
-    finally:
-        server.server_close()
-
-    code = callback_payload.get("code")
-    if code is None:
-        return None
-    return code, callback_payload.get("state")
-
-
-def _exchange_oidc_code(
-    *,
-    gateway_base_url: str,
-    code: str,
-    redirect_uri: str,
-    nonce: str,
-) -> dict[str, Any]:
-    response = requests.post(
-        f"{gateway_base_url}/v1/auth/oidc/exchange",
-        json={
-            "code": code,
-            "redirect_uri": redirect_uri,
-            "nonce": nonce,
-        },
-        timeout=AUTH_REQUEST_TIMEOUT_SECONDS,
-    )
-    response.raise_for_status()
-    payload = response.json()
-    access_token = str(payload.get("access_token") or "").strip()
-    if access_token == "":
-        raise ValueError("Gateway exchange response missing access_token")
-    return payload
-
-
-def _find_nutstore_bundle(
-    bundles: list[ProviderConnectionBundle],
-) -> ProviderConnectionBundle | None:
-    for bundle in bundles:
-        if bundle.connection.kind != "custom":
-            continue
-        if (bundle.connection.custom_slug or "") != NUTSTORE_CUSTOM_SLUG:
-            continue
-        return bundle
-    return None
-
-
-def _upsert_nutstore_provider(
-    *,
-    repositories: Any,
-    provider_service: ProviderService,
-    gateway_base_url: str,
-    access_token: str,
-    model_id: str,
-) -> dict[str, Any]:
-    existing = _find_nutstore_bundle(repositories.providers.list_bundles())
-    base_url = f"{gateway_base_url}/v1"
-
-    custom_models: list[dict[str, Any]] = []
-    if existing is not None:
-        custom_models = [
-            {
-                "id": model.id,
-                "modelId": model.model_id,
-                "displayName": model.display_name,
-                "enabled": model.enabled,
-            }
-            for model in existing.models
-            if model.source == "custom"
-        ]
-
-    model_ids = {str(model.get("modelId") or "") for model in custom_models}
-    if model_id not in model_ids:
-        custom_models.append(
-            {
-                "modelId": model_id,
-                "displayName": model_id,
-                "enabled": True,
-            }
-        )
-
-    payload = {
-        "kind": "custom",
-        "customSlug": NUTSTORE_CUSTOM_SLUG,
-        "displayName": NUTSTORE_DISPLAY_NAME,
-        "baseUrl": base_url,
-        "apiKey": access_token,
-        "preferredModelId": model_id,
-        "customModels": custom_models,
-        "healthStatus": "connected",
-        "healthMessage": "Authenticated via OIDC",
-    }
-
-    if existing is None:
-        return provider_service.create_provider(payload)
-    return provider_service.update_provider(existing.connection.id, payload)
 
 
 def _runtime_paths() -> dict[str, Path]:
@@ -349,7 +106,7 @@ def _run_prepare_search_tools(
     raise RuntimeError(detail)
 
 
-def _handle_init_command(args: argparse.Namespace) -> int:
+def _handle_init_command(args: SimpleNamespace) -> int:
     ns_bot_home = Path(args.ns_bot_home).expanduser().resolve()
     ns_bot_home_existed = ns_bot_home.exists()
     ns_bot_home.mkdir(parents=True, exist_ok=True)
@@ -420,341 +177,6 @@ def _handle_init_command(args: argparse.Namespace) -> int:
     return 0
 
 
-def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        description="NSBot CLI for provider/model management and runtime execution"
-    )
-    parser.add_argument(
-        "--ns-bot-home",
-        type=str,
-        default=str(nsbot_home()),
-        help="Path to NSBot data directory.",
-    )
-
-    subparsers = parser.add_subparsers(dest="command", required=True)
-
-    providers = subparsers.add_parser("providers", help="Manage provider connections")
-    providers_sub = providers.add_subparsers(dest="providers_command", required=True)
-    providers_sub.add_parser("list", help="List catalog providers and connections")
-
-    providers_use = providers_sub.add_parser(
-        "use", help="Set preferred model for provider/connection"
-    )
-    providers_use.add_argument(
-        "provider", type=str, help="Provider id or connection id"
-    )
-    providers_use.add_argument(
-        "--model",
-        type=str,
-        default="",
-        help="Preferred model id. If omitted, use first available model.",
-    )
-
-    providers_delete = providers_sub.add_parser(
-        "delete", help="Delete a provider connection"
-    )
-    providers_delete.add_argument(
-        "--connection-id", type=str, required=True, help="Provider connection id"
-    )
-
-    models = subparsers.add_parser("models", help="Manage model options")
-    models_sub = models.add_subparsers(dest="models_command", required=True)
-
-    models_list = models_sub.add_parser("list", help="List model options")
-    models_list.add_argument(
-        "--provider", type=str, default="", help="Filter by provider id"
-    )
-    models_list.add_argument(
-        "--connection-id", type=str, default="", help="Filter by connection id"
-    )
-    models_sub.add_parser("status", help="Show current default selection")
-
-    models_enable = models_sub.add_parser("enable", help="Enable a model")
-    models_enable.add_argument("--connection-id", type=str, required=True)
-    models_enable.add_argument("--model", type=str, required=True)
-
-    models_disable = models_sub.add_parser("disable", help="Disable a model")
-    models_disable.add_argument("--connection-id", type=str, required=True)
-    models_disable.add_argument("--model", type=str, required=True)
-
-    models_remove = models_sub.add_parser(
-        "remove", help="Remove a custom model from a custom provider"
-    )
-    models_remove.add_argument("--connection-id", type=str, required=True)
-    models_remove.add_argument("--model", type=str, required=True)
-
-    auth = subparsers.add_parser("auth", help="Authenticate Nut Store gateway")
-    auth_sub = auth.add_subparsers(dest="auth_command", required=True)
-
-    auth_login = auth_sub.add_parser("login", help="Start Nut Store OAuth login")
-    auth_login.add_argument(
-        "--gateway-base-url",
-        type=str,
-        default=os.getenv("NS_GATEWAY_BASE_URL", "").strip(),
-        help="Gateway base URL used for authorize/exchange endpoints",
-    )
-    auth_login.add_argument(
-        "--model",
-        type=str,
-        default="gpt-5.4",
-        help="Preferred model id for Nut Store connection",
-    )
-    auth_login.add_argument(
-        "--redirect-uri",
-        type=str,
-        default="",
-        help="OAuth redirect URI. Defaults to local callback URL",
-    )
-    auth_login.add_argument(
-        "--callback-port",
-        type=int,
-        default=1457,
-        help="Port used for local callback listener",
-    )
-    auth_login.add_argument(
-        "--callback-timeout-sec",
-        type=int,
-        default=120,
-        help="Seconds to wait for browser callback before timeout",
-    )
-    auth_login.add_argument(
-        "--no-open",
-        action="store_true",
-        help="Do not auto-open browser, print authorize URL only",
-    )
-    auth_login.add_argument(
-        "--no-listen",
-        action="store_true",
-        help="Skip local callback listener and complete via paste-redirect",
-    )
-
-    auth_paste = auth_sub.add_parser(
-        "paste-redirect", help="Complete OAuth with pasted callback URL or code"
-    )
-    auth_paste.add_argument(
-        "--input",
-        type=str,
-        required=True,
-        help="Full callback URL or raw OAuth code",
-    )
-    auth_paste.add_argument(
-        "--gateway-base-url",
-        type=str,
-        default="",
-        help="Optional override for gateway base URL",
-    )
-    auth_paste.add_argument(
-        "--model",
-        type=str,
-        default="",
-        help="Optional override for preferred model id",
-    )
-
-    subparsers.add_parser("init", help="Initialize NS_BOT_HOME resources")
-
-    workspaces = subparsers.add_parser("workspaces", help="Manage workspaces")
-    workspaces_sub = workspaces.add_subparsers(dest="workspaces_command", required=True)
-    workspaces_sub.add_parser("list", help="List workspaces")
-
-    workspaces_create = workspaces_sub.add_parser("create", help="Create a workspace")
-    workspaces_create.add_argument("--name", type=str, required=True)
-    workspaces_create.add_argument("--real-path", type=str, required=True)
-    workspaces_create.add_argument(
-        "--path-label",
-        type=str,
-        default="",
-        help="Path label shown to users (default: --real-path)",
-    )
-
-    workspaces_update = workspaces_sub.add_parser("update", help="Update a workspace")
-    workspaces_update.add_argument("--workspace-id", type=str, required=True)
-    workspaces_update.add_argument("--name", type=str, default="")
-    workspaces_update.add_argument("--real-path", type=str, default="")
-    workspaces_update.add_argument("--path-label", type=str, default="")
-
-    workspaces_delete = workspaces_sub.add_parser("delete", help="Delete a workspace")
-    workspaces_delete.add_argument("--workspace-id", type=str, required=True)
-
-    workspaces_index_status = workspaces_sub.add_parser(
-        "sidecar-index-status", help="Show workspace sidecar index status"
-    )
-    workspaces_index_status.add_argument("--workspace-id", type=str, required=True)
-
-    sessions = subparsers.add_parser("sessions", help="Manage sessions")
-    sessions_sub = sessions.add_subparsers(dest="sessions_command", required=True)
-
-    sessions_list = sessions_sub.add_parser("list", help="List sessions in workspace")
-    sessions_list.add_argument("--workspace-id", type=str, required=True)
-
-    sessions_create = sessions_sub.add_parser("create", help="Create a session")
-    sessions_create.add_argument("--workspace-id", type=str, required=True)
-    sessions_create.add_argument("--connection-id", type=str, default="")
-    sessions_create.add_argument("--model-id", type=str, default="")
-
-    sessions_update = sessions_sub.add_parser("update", help="Update a session")
-    sessions_update.add_argument("--session-id", type=str, required=True)
-    sessions_update.add_argument("--title", type=str, required=True)
-
-    sessions_delete = sessions_sub.add_parser("delete", help="Delete a session")
-    sessions_delete.add_argument("--session-id", type=str, required=True)
-
-    sessions_timeline = sessions_sub.add_parser(
-        "timeline", help="Show session timeline"
-    )
-    sessions_timeline.add_argument("--session-id", type=str, required=True)
-    sessions_timeline.add_argument("--limit", type=int, default=None)
-    sessions_timeline.add_argument("--before-sequence", type=int, default=None)
-
-    run = subparsers.add_parser("run", help="Execute one task")
-    run.add_argument("user_input", type=str, help="Task prompt")
-    run.add_argument(
-        "--run-id",
-        type=str,
-        default=str(uuid.uuid4()),
-        help="Run ID (defaults to a new UUID)",
-    )
-    run.add_argument(
-        "--workspace-path",
-        type=str,
-        default=os.getcwd(),
-        help="Workspace directory path (default: current directory)",
-    )
-    run.add_argument(
-        "--model-id",
-        type=str,
-        default="gpt-5.4",
-        help="Primary model id for memory/title fallback",
-    )
-    run.add_argument(
-        "--connection-id",
-        type=str,
-        default="",
-        help="Use this provider connection id from database",
-    )
-    run.add_argument(
-        "--selected-model-id",
-        type=str,
-        default="",
-        help="Model id to pair with --connection-id",
-    )
-    run.add_argument(
-        "--provider",
-        type=str,
-        default=os.getenv("PROVIDER", "").strip(),
-        help="Runtime provider override",
-    )
-    run.add_argument(
-        "--base-url",
-        type=str,
-        default=os.getenv("BASE_URL", "").strip(),
-        help="Runtime base URL override",
-    )
-    run.add_argument(
-        "--api-key",
-        type=str,
-        default=os.getenv("API_KEY", "").strip(),
-        help="Runtime API key override",
-    )
-    run.add_argument(
-        "--model",
-        type=str,
-        default=os.getenv("MODEL", "").strip(),
-        help="Runtime model id override",
-    )
-    run.add_argument(
-        "--request-timeout-ms",
-        type=int,
-        default=60000,
-        help="Request timeout in milliseconds",
-    )
-    run.add_argument(
-        "--max-steps",
-        type=int,
-        default=20,
-        help="Maximum number of turns/steps",
-    )
-    run.add_argument(
-        "--fd-executable",
-        type=str,
-        default=os.getenv("NSBOT_FD_EXECUTABLE", "").strip(),
-        help="Path to fd executable",
-    )
-    run.add_argument(
-        "--rg-executable",
-        type=str,
-        default=os.getenv("NSBOT_RG_EXECUTABLE", "").strip(),
-        help="Path to rg executable",
-    )
-    run.add_argument(
-        "--tool-os-type",
-        type=str,
-        default="",
-        help="Target OS type for tooling",
-    )
-    run.add_argument(
-        "--session-key",
-        type=str,
-        default="",
-        help="Session key override",
-    )
-    run.add_argument(
-        "--session-id",
-        type=str,
-        default="",
-        help="Session id in DB (overrides workspace/session-key when set)",
-    )
-    run.add_argument(
-        "--dump-result",
-        action="store_true",
-        help="Dump whole JSON result",
-    )
-    run.add_argument(
-        "--diagnose",
-        action="store_true",
-        help="Resolve provider/model and print config only",
-    )
-
-    help_cmd = subparsers.add_parser("help", help="Show help for command/subcommand")
-    help_cmd.add_argument(
-        "topic",
-        nargs="*",
-        help="Command path, e.g. run or providers use",
-    )
-    return parser
-
-
-def _ensure_run_compat(argv: list[str]) -> list[str]:
-    if not argv:
-        return argv
-    if argv[0] == "help":
-        return argv
-    if any(token in {"-h", "--help"} for token in argv):
-        return argv
-    if any(token in COMMANDS for token in argv):
-        return argv
-    return ["run", *argv]
-
-
-def _print_help_for_topic(parser: argparse.ArgumentParser, topic: list[str]) -> int:
-    current = parser
-    for token in topic:
-        subparsers_action = None
-        for action in current._actions:
-            if isinstance(action, argparse._SubParsersAction):
-                subparsers_action = action
-                break
-        if subparsers_action is None:
-            print(f"Unknown help topic: {' '.join(topic)}", file=sys.stderr)
-            return 1
-        next_parser = subparsers_action.choices.get(token)
-        if next_parser is None:
-            print(f"Unknown help topic: {' '.join(topic)}", file=sys.stderr)
-            return 1
-        current = next_parser
-    current.print_help()
-    return 0
-
-
 def _build_services(ns_bot_home_value: str):
     database = connect_database(ns_bot_home_value)
     repositories = create_repositories(cast(Any, database))
@@ -804,15 +226,6 @@ def _find_target_group(
     return None
 
 
-def _require_connection(
-    bundles: list[dict[str, Any]], connection_id: str
-) -> dict[str, Any] | None:
-    for connection in bundles:
-        if str(connection.get("id") or "") == connection_id:
-            return connection
-    return None
-
-
 def _first_model_id(group: dict[str, Any]) -> str | None:
     models = group.get("models")
     if not isinstance(models, list) or not models:
@@ -821,7 +234,7 @@ def _first_model_id(group: dict[str, Any]) -> str | None:
     return model_id or None
 
 
-def _resolve_catalog_model_ids(bundle: ProviderConnectionBundle) -> list[str]:
+def _resolve_catalog_model_ids(bundle) -> list[str]:
     from nsbot_sidecar.providers.provider_catalog import list_providers
 
     provider_id = bundle.connection.catalog_provider_id or ""
@@ -835,7 +248,7 @@ def _resolve_catalog_model_ids(bundle: ProviderConnectionBundle) -> list[str]:
     return []
 
 
-def _handle_providers_command(args: argparse.Namespace) -> int:
+def _handle_providers_command(args: SimpleNamespace) -> int:
     database, repositories, _secret_store, provider_service = _build_services(
         args.ns_bot_home
     )
@@ -902,7 +315,7 @@ def _handle_providers_command(args: argparse.Namespace) -> int:
         database.close()
 
 
-def _handle_models_command(args: argparse.Namespace) -> int:
+def _handle_models_command(args: SimpleNamespace) -> int:
     database, repositories, _secret_store, provider_service = _build_services(
         args.ns_bot_home
     )
@@ -1100,7 +513,7 @@ def _handle_models_command(args: argparse.Namespace) -> int:
         database.close()
 
 
-def _handle_workspaces_command(args: argparse.Namespace) -> int:
+def _handle_workspaces_command(args: SimpleNamespace) -> int:
     database, _repositories, session_service = _build_session_service(args.ns_bot_home)
     try:
         if args.workspaces_command == "list":
@@ -1168,7 +581,7 @@ def _handle_workspaces_command(args: argparse.Namespace) -> int:
         database.close()
 
 
-def _handle_sessions_command(args: argparse.Namespace) -> int:
+def _handle_sessions_command(args: SimpleNamespace) -> int:
     database, _repositories, session_service = _build_session_service(args.ns_bot_home)
     try:
         if args.sessions_command == "list":
@@ -1228,185 +641,8 @@ def _handle_sessions_command(args: argparse.Namespace) -> int:
         database.close()
 
 
-def _handle_auth_login_command(args: argparse.Namespace) -> int:
-    gateway_base_url = _normalize_base_url(args.gateway_base_url)
-    model_id = str(args.model or "").strip() or "gpt-5.4"
-    redirect_uri = str(args.redirect_uri or "").strip() or (
-        f"http://localhost:{int(args.callback_port)}/auth/callback"
-    )
-    timeout_seconds = int(args.callback_timeout_sec)
-    if timeout_seconds <= 0:
-        raise ValueError("callback-timeout-sec must be greater than 0")
-
-    state = uuid.uuid4().hex
-    nonce = uuid.uuid4().hex
-    authorize_url = _build_authorize_url(
-        gateway_base_url=gateway_base_url,
-        redirect_uri=redirect_uri,
-        state=state,
-        nonce=nonce,
-    )
-    _save_pending_auth(
-        args.ns_bot_home,
-        {
-            "provider": NUTSTORE_CUSTOM_SLUG,
-            "gatewayBaseUrl": gateway_base_url,
-            "redirectUri": redirect_uri,
-            "state": state,
-            "nonce": nonce,
-            "model": model_id,
-            "createdAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-            "createdEpoch": time.time(),
-        },
-    )
-
-    print("Open this URL in your browser and authorize access:", file=sys.stderr)
-    print(authorize_url, file=sys.stderr)
-
-    if not args.no_open:
-        try:
-            webbrowser.open(authorize_url)
-        except Exception as exc:  # noqa: BLE001
-            print(f"[!] Failed to open browser automatically: {exc}", file=sys.stderr)
-
-    if args.no_listen:
-        _print_json(
-            {
-                "ok": True,
-                "status": "pending",
-                "authorizeUrl": authorize_url,
-                "redirectUri": redirect_uri,
-                "next": 'Run `auth paste-redirect --input "<callback-url-or-code>"`',
-            }
-        )
-        return 0
-
-    print(f"Waiting for callback at {redirect_uri} ...", file=sys.stderr)
-    callback = _wait_for_local_callback(
-        redirect_uri=redirect_uri,
-        timeout_seconds=timeout_seconds,
-    )
-    if callback is None:
-        print("Callback capture timed out.", file=sys.stderr)
-        print(
-            'Run `auth paste-redirect --input "<callback-url-or-code>"`',
-            file=sys.stderr,
-        )
-        return 1
-
-    code, callback_state = callback
-    if callback_state is not None and callback_state != state:
-        raise ValueError("OAuth state mismatch")
-
-    exchange_payload = _exchange_oidc_code(
-        gateway_base_url=gateway_base_url,
-        code=code,
-        redirect_uri=redirect_uri,
-        nonce=nonce,
-    )
-
-    database, repositories, _secret_store, provider_service = _build_services(
-        args.ns_bot_home
-    )
-    try:
-        bundle = _upsert_nutstore_provider(
-            repositories=repositories,
-            provider_service=provider_service,
-            gateway_base_url=gateway_base_url,
-            access_token=str(exchange_payload["access_token"]),
-            model_id=model_id,
-        )
-    finally:
-        database.close()
-
-    _clear_pending_auth(args.ns_bot_home)
-    _print_json(
-        {
-            "ok": True,
-            "connectionId": str(bundle.get("id") or ""),
-            "providerId": _normalize_provider_ref(bundle),
-            "modelId": model_id,
-            "tokenType": exchange_payload.get("token_type"),
-            "expiresIn": exchange_payload.get("expires_in"),
-        }
-    )
-    return 0
-
-
-def _handle_auth_paste_redirect_command(args: argparse.Namespace) -> int:
-    pending = _load_pending_auth(args.ns_bot_home)
-    gateway_base_url = _normalize_base_url(
-        str(args.gateway_base_url or "").strip()
-        or str(pending.get("gatewayBaseUrl") or "")
-    )
-    redirect_uri = str(pending.get("redirectUri") or "").strip()
-    if redirect_uri == "":
-        raise ValueError(
-            "Pending auth login metadata is invalid. Missing redirect URI."
-        )
-    expected_state = str(pending.get("state") or "").strip()
-    nonce = str(pending.get("nonce") or "").strip()
-    if expected_state == "" or nonce == "":
-        raise ValueError(
-            "Pending auth login metadata is invalid. Run `auth login` again."
-        )
-    model_id = (
-        str(args.model or "").strip()
-        or str(pending.get("model") or "").strip()
-        or "gpt-5.4"
-    )
-
-    code, callback_state = _extract_code_and_state(args.input)
-    if callback_state is not None and callback_state != expected_state:
-        raise ValueError(
-            f"OAuth state mismatch: expected {expected_state}, got {callback_state}"
-        )
-
-    exchange_payload = _exchange_oidc_code(
-        gateway_base_url=gateway_base_url,
-        code=code,
-        redirect_uri=redirect_uri,
-        nonce=nonce,
-    )
-
-    database, repositories, _secret_store, provider_service = _build_services(
-        args.ns_bot_home
-    )
-    try:
-        bundle = _upsert_nutstore_provider(
-            repositories=repositories,
-            provider_service=provider_service,
-            gateway_base_url=gateway_base_url,
-            access_token=str(exchange_payload["access_token"]),
-            model_id=model_id,
-        )
-    finally:
-        database.close()
-
-    _clear_pending_auth(args.ns_bot_home)
-    _print_json(
-        {
-            "ok": True,
-            "connectionId": str(bundle.get("id") or ""),
-            "providerId": _normalize_provider_ref(bundle),
-            "modelId": model_id,
-            "tokenType": exchange_payload.get("token_type"),
-            "expiresIn": exchange_payload.get("expires_in"),
-        }
-    )
-    return 0
-
-
-def _handle_auth_command(args: argparse.Namespace) -> int:
-    if args.auth_command == "login":
-        return _handle_auth_login_command(args)
-    if args.auth_command == "paste-redirect":
-        return _handle_auth_paste_redirect_command(args)
-    raise ValueError(f"Unknown auth command: {args.auth_command}")
-
-
 def _resolve_run_metadata(
-    args: argparse.Namespace,
+    args: SimpleNamespace,
 ) -> tuple[RunMetadata, dict[str, Any] | None]:
     explicit_session_id = str(args.session_id or "").strip()
     if explicit_session_id == "":
@@ -1456,7 +692,7 @@ def _resolve_run_metadata(
 
 
 def _resolve_run_target(
-    args: argparse.Namespace,
+    args: SimpleNamespace,
 ) -> tuple[RuntimeWorkerConfig, dict[str, Any]]:
     database, repositories, secret_store, provider_service = _build_services(
         args.ns_bot_home
@@ -1606,7 +842,7 @@ def _resolve_run_target(
         database.close()
 
 
-def _handle_run_command(args: argparse.Namespace) -> int:
+def _handle_run_command(args: SimpleNamespace) -> int:
     config, resolved = _resolve_run_target(args)
     metadata, resolved_session = _resolve_run_metadata(args)
     effective_workspace_path = metadata.workspace_path or args.workspace_path
@@ -1667,35 +903,415 @@ def _handle_run_command(args: argparse.Namespace) -> int:
     return 0
 
 
-def main(argv: list[str] | None = None) -> int:
-    parser = _build_parser()
-    effective_argv = _ensure_run_compat(
-        list(argv) if argv is not None else sys.argv[1:]
-    )
-    args = parser.parse_args(effective_argv)
+def _ns_bot_home_from_ctx(ctx: typer.Context) -> str:
+    return str(ctx.obj.get("ns_bot_home") if isinstance(ctx.obj, dict) else nsbot_home())
 
+
+def _run_with_error_handling(fn) -> int:
     try:
-        if args.command == "providers":
-            return _handle_providers_command(args)
-        if args.command == "models":
-            return _handle_models_command(args)
-        if args.command == "auth":
-            return _handle_auth_command(args)
-        if args.command == "init":
-            return _handle_init_command(args)
-        if args.command == "workspaces":
-            return _handle_workspaces_command(args)
-        if args.command == "sessions":
-            return _handle_sessions_command(args)
-        if args.command == "run":
-            return _handle_run_command(args)
-        if args.command == "help":
-            return _print_help_for_topic(parser, list(args.topic or []))
-        raise ValueError(f"Unknown command: {args.command}")
+        code = int(fn())
+        if code != 0:
+            raise RuntimeError(f"Command failed with exit code {code}")
+        return code
+    except Exception:
+        raise
+
+
+app = typer.Typer(help="NSBot CLI for provider/model management and runtime execution")
+providers_app = typer.Typer(help="Manage provider connections")
+models_app = typer.Typer(help="Manage model options")
+workspaces_app = typer.Typer(help="Manage workspaces")
+sessions_app = typer.Typer(help="Manage sessions")
+
+
+@app.callback()
+def root(
+    ctx: typer.Context,
+    ns_bot_home_value: str = typer.Option(
+        str(nsbot_home()),
+        "--ns-bot-home",
+        help="Path to NSBot data directory.",
+    ),
+) -> None:
+    ctx.obj = {"ns_bot_home": ns_bot_home_value}
+
+
+@providers_app.command("list")
+def providers_list(ctx: typer.Context) -> None:
+    _run_with_error_handling(
+        lambda: _handle_providers_command(
+            SimpleNamespace(ns_bot_home=_ns_bot_home_from_ctx(ctx), providers_command="list")
+        )
+    )
+
+
+@providers_app.command("use")
+def providers_use(
+    ctx: typer.Context,
+    provider: str = typer.Argument(..., help="Provider id or connection id"),
+    model: str = typer.Option("", "--model", help="Preferred model id"),
+) -> None:
+    _run_with_error_handling(
+        lambda: _handle_providers_command(
+            SimpleNamespace(
+                ns_bot_home=_ns_bot_home_from_ctx(ctx),
+                providers_command="use",
+                provider=provider,
+                model=model,
+            )
+        )
+    )
+
+
+@providers_app.command("delete")
+def providers_delete(
+    ctx: typer.Context,
+    connection_id: str = typer.Option(..., "--connection-id", help="Provider connection id"),
+) -> None:
+    _run_with_error_handling(
+        lambda: _handle_providers_command(
+            SimpleNamespace(
+                ns_bot_home=_ns_bot_home_from_ctx(ctx),
+                providers_command="delete",
+                connection_id=connection_id,
+            )
+        )
+    )
+
+
+@models_app.command("list")
+def models_list(
+    ctx: typer.Context,
+    provider: str = typer.Option("", "--provider", help="Filter by provider id"),
+    connection_id: str = typer.Option("", "--connection-id", help="Filter by connection id"),
+) -> None:
+    _run_with_error_handling(
+        lambda: _handle_models_command(
+            SimpleNamespace(
+                ns_bot_home=_ns_bot_home_from_ctx(ctx),
+                models_command="list",
+                provider=provider,
+                connection_id=connection_id,
+            )
+        )
+    )
+
+
+@models_app.command("status")
+def models_status(ctx: typer.Context) -> None:
+    _run_with_error_handling(
+        lambda: _handle_models_command(
+            SimpleNamespace(ns_bot_home=_ns_bot_home_from_ctx(ctx), models_command="status")
+        )
+    )
+
+
+@models_app.command("enable")
+def models_enable(
+    ctx: typer.Context,
+    connection_id: str = typer.Option(..., "--connection-id"),
+    model: str = typer.Option(..., "--model"),
+) -> None:
+    _run_with_error_handling(
+        lambda: _handle_models_command(
+            SimpleNamespace(
+                ns_bot_home=_ns_bot_home_from_ctx(ctx),
+                models_command="enable",
+                connection_id=connection_id,
+                model=model,
+            )
+        )
+    )
+
+
+@models_app.command("disable")
+def models_disable(
+    ctx: typer.Context,
+    connection_id: str = typer.Option(..., "--connection-id"),
+    model: str = typer.Option(..., "--model"),
+) -> None:
+    _run_with_error_handling(
+        lambda: _handle_models_command(
+            SimpleNamespace(
+                ns_bot_home=_ns_bot_home_from_ctx(ctx),
+                models_command="disable",
+                connection_id=connection_id,
+                model=model,
+            )
+        )
+    )
+
+
+@models_app.command("remove")
+def models_remove(
+    ctx: typer.Context,
+    connection_id: str = typer.Option(..., "--connection-id"),
+    model: str = typer.Option(..., "--model"),
+) -> None:
+    _run_with_error_handling(
+        lambda: _handle_models_command(
+            SimpleNamespace(
+                ns_bot_home=_ns_bot_home_from_ctx(ctx),
+                models_command="remove",
+                connection_id=connection_id,
+                model=model,
+            )
+        )
+    )
+
+
+@workspaces_app.command("list")
+def workspaces_list(ctx: typer.Context) -> None:
+    _run_with_error_handling(
+        lambda: _handle_workspaces_command(
+            SimpleNamespace(ns_bot_home=_ns_bot_home_from_ctx(ctx), workspaces_command="list")
+        )
+    )
+
+
+@workspaces_app.command("create")
+def workspaces_create(
+    ctx: typer.Context,
+    name: str = typer.Option(..., "--name"),
+    real_path: str = typer.Option(..., "--real-path"),
+    path_label: str = typer.Option("", "--path-label"),
+) -> None:
+    _run_with_error_handling(
+        lambda: _handle_workspaces_command(
+            SimpleNamespace(
+                ns_bot_home=_ns_bot_home_from_ctx(ctx),
+                workspaces_command="create",
+                name=name,
+                real_path=real_path,
+                path_label=path_label,
+            )
+        )
+    )
+
+
+@workspaces_app.command("update")
+def workspaces_update(
+    ctx: typer.Context,
+    workspace_id: str = typer.Option(..., "--workspace-id"),
+    name: str = typer.Option("", "--name"),
+    real_path: str = typer.Option("", "--real-path"),
+    path_label: str = typer.Option("", "--path-label"),
+) -> None:
+    _run_with_error_handling(
+        lambda: _handle_workspaces_command(
+            SimpleNamespace(
+                ns_bot_home=_ns_bot_home_from_ctx(ctx),
+                workspaces_command="update",
+                workspace_id=workspace_id,
+                name=name,
+                real_path=real_path,
+                path_label=path_label,
+            )
+        )
+    )
+
+
+@workspaces_app.command("delete")
+def workspaces_delete(
+    ctx: typer.Context,
+    workspace_id: str = typer.Option(..., "--workspace-id"),
+) -> None:
+    _run_with_error_handling(
+        lambda: _handle_workspaces_command(
+            SimpleNamespace(
+                ns_bot_home=_ns_bot_home_from_ctx(ctx),
+                workspaces_command="delete",
+                workspace_id=workspace_id,
+            )
+        )
+    )
+
+
+@workspaces_app.command("sidecar-index-status")
+def workspaces_sidecar_index_status(
+    ctx: typer.Context,
+    workspace_id: str = typer.Option(..., "--workspace-id"),
+) -> None:
+    _run_with_error_handling(
+        lambda: _handle_workspaces_command(
+            SimpleNamespace(
+                ns_bot_home=_ns_bot_home_from_ctx(ctx),
+                workspaces_command="sidecar-index-status",
+                workspace_id=workspace_id,
+            )
+        )
+    )
+
+
+@sessions_app.command("list")
+def sessions_list(
+    ctx: typer.Context,
+    workspace_id: str = typer.Option(..., "--workspace-id"),
+) -> None:
+    _run_with_error_handling(
+        lambda: _handle_sessions_command(
+            SimpleNamespace(
+                ns_bot_home=_ns_bot_home_from_ctx(ctx),
+                sessions_command="list",
+                workspace_id=workspace_id,
+            )
+        )
+    )
+
+
+@sessions_app.command("create")
+def sessions_create(
+    ctx: typer.Context,
+    workspace_id: str = typer.Option(..., "--workspace-id"),
+    connection_id: str = typer.Option("", "--connection-id"),
+    model_id: str = typer.Option("", "--model-id"),
+) -> None:
+    _run_with_error_handling(
+        lambda: _handle_sessions_command(
+            SimpleNamespace(
+                ns_bot_home=_ns_bot_home_from_ctx(ctx),
+                sessions_command="create",
+                workspace_id=workspace_id,
+                connection_id=connection_id,
+                model_id=model_id,
+            )
+        )
+    )
+
+
+@sessions_app.command("update")
+def sessions_update(
+    ctx: typer.Context,
+    session_id: str = typer.Option(..., "--session-id"),
+    title: str = typer.Option(..., "--title"),
+) -> None:
+    _run_with_error_handling(
+        lambda: _handle_sessions_command(
+            SimpleNamespace(
+                ns_bot_home=_ns_bot_home_from_ctx(ctx),
+                sessions_command="update",
+                session_id=session_id,
+                title=title,
+            )
+        )
+    )
+
+
+@sessions_app.command("delete")
+def sessions_delete(
+    ctx: typer.Context,
+    session_id: str = typer.Option(..., "--session-id"),
+) -> None:
+    _run_with_error_handling(
+        lambda: _handle_sessions_command(
+            SimpleNamespace(
+                ns_bot_home=_ns_bot_home_from_ctx(ctx),
+                sessions_command="delete",
+                session_id=session_id,
+            )
+        )
+    )
+
+
+@sessions_app.command("timeline")
+def sessions_timeline(
+    ctx: typer.Context,
+    session_id: str = typer.Option(..., "--session-id"),
+    limit: int | None = typer.Option(None, "--limit"),
+    before_sequence: int | None = typer.Option(None, "--before-sequence"),
+) -> None:
+    _run_with_error_handling(
+        lambda: _handle_sessions_command(
+            SimpleNamespace(
+                ns_bot_home=_ns_bot_home_from_ctx(ctx),
+                sessions_command="timeline",
+                session_id=session_id,
+                limit=limit,
+                before_sequence=before_sequence,
+            )
+        )
+    )
+
+
+@app.command("init")
+def init_command(ctx: typer.Context) -> None:
+    _run_with_error_handling(
+        lambda: _handle_init_command(SimpleNamespace(ns_bot_home=_ns_bot_home_from_ctx(ctx)))
+    )
+
+
+@app.command("run")
+def run_command(
+    ctx: typer.Context,
+    user_input: str = typer.Argument(..., help="Task prompt"),
+    run_id: str = typer.Option(str(uuid.uuid4()), "--run-id"),
+    workspace_path: str = typer.Option(os.getcwd(), "--workspace-path"),
+    model_id: str = typer.Option("gpt-5.4", "--model-id"),
+    connection_id: str = typer.Option("", "--connection-id"),
+    selected_model_id: str = typer.Option("", "--selected-model-id"),
+    provider: str = typer.Option("", "--provider"),
+    base_url: str = typer.Option("", "--base-url"),
+    api_key: str = typer.Option("", "--api-key"),
+    model: str = typer.Option("", "--model"),
+    request_timeout_ms: int = typer.Option(60000, "--request-timeout-ms"),
+    max_steps: int = typer.Option(20, "--max-steps"),
+    fd_executable: str = typer.Option("", "--fd-executable"),
+    rg_executable: str = typer.Option("", "--rg-executable"),
+    tool_os_type: str = typer.Option("", "--tool-os-type"),
+    session_key: str = typer.Option("", "--session-key"),
+    session_id: str = typer.Option("", "--session-id"),
+    dump_result: bool = typer.Option(False, "--dump-result"),
+    diagnose: bool = typer.Option(False, "--diagnose"),
+) -> None:
+    _run_with_error_handling(
+        lambda: _handle_run_command(
+            SimpleNamespace(
+                ns_bot_home=_ns_bot_home_from_ctx(ctx),
+                user_input=user_input,
+                run_id=run_id,
+                workspace_path=workspace_path,
+                model_id=model_id,
+                connection_id=connection_id,
+                selected_model_id=selected_model_id,
+                provider=provider or os.getenv("PROVIDER", "").strip(),
+                base_url=base_url or os.getenv("BASE_URL", "").strip(),
+                api_key=api_key or os.getenv("API_KEY", "").strip(),
+                model=model or os.getenv("MODEL", "").strip(),
+                request_timeout_ms=request_timeout_ms,
+                max_steps=max_steps,
+                fd_executable=fd_executable or os.getenv("NSBOT_FD_EXECUTABLE", "").strip(),
+                rg_executable=rg_executable or os.getenv("NSBOT_RG_EXECUTABLE", "").strip(),
+                tool_os_type=tool_os_type,
+                session_key=session_key,
+                session_id=session_id,
+                dump_result=dump_result,
+                diagnose=diagnose,
+            )
+        )
+    )
+
+
+app.add_typer(providers_app, name="providers")
+app.add_typer(models_app, name="models")
+app.add_typer(workspaces_app, name="workspaces")
+app.add_typer(sessions_app, name="sessions")
+
+
+def main(argv: list[str] | None = None) -> int:
+    command = typer.main.get_command(app)
+    effective_argv = list(argv) if argv is not None else sys.argv[1:]
+    try:
+        command.main(args=effective_argv, prog_name="nsbot-sidecar", standalone_mode=False)
+        return 0
+    except click.ClickException as exc:
+        exc.show(file=sys.stderr)
+        return int(exc.exit_code)
+    except SystemExit as exc:
+        return int(exc.code or 0)
     except Exception as exc:  # noqa: BLE001
         print(f"\n[!] Error during execution: {exc}", file=sys.stderr)
         return 1
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    raise SystemExit(main())

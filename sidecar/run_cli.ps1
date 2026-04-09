@@ -49,8 +49,8 @@ foreach ($line in Get-Content -Path $envFile) {
     $argsList.Add($value)
 }
 
-$commandArgs = @("run", "python", "-m", "nsbot_sidecar.cli", $userInput) + $argsList.ToArray()
-$displayArgs = @('run', 'python', '-m', 'nsbot_sidecar.cli', ('"' + $userInput + '"')) + $argsList.ToArray()
+$commandArgs = @("run", "python", "-m", "nsbot_sidecar.cli", "run", $userInput) + $argsList.ToArray()
+$displayArgs = @('run', 'python', '-m', 'nsbot_sidecar.cli', 'run', ('"' + $userInput + '"')) + $argsList.ToArray()
 
 Write-Host "[*] Executing command: uv $($displayArgs -join ' ')"
 Write-Host "[*] Env file: $envFile"

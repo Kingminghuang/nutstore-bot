@@ -240,16 +240,9 @@ class ApiServerTests(unittest.TestCase):
             "tauri://localhost",
         )
 
-    def test_auth_check_requires_bearer_token(self) -> None:
+    def test_auth_check_endpoint_removed(self) -> None:
         response = self.client.get("/auth/check")
-        self.assertEqual(response.status_code, 401)
-
-        response = self.client.get(
-            "/auth/check",
-            headers={"Authorization": "Bearer test-token"},
-        )
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json(), {"ok": True})
+        self.assertEqual(response.status_code, 404)
 
     def test_publish_service_discovery(self) -> None:
         path = publish_service_discovery(self.config)
@@ -270,14 +263,8 @@ class ApiServerTests(unittest.TestCase):
                 )
             )
 
-    def test_provider_catalog_requires_auth_and_returns_custom_template(self) -> None:
-        unauthorized = self.client.get("/provider-catalog")
-        self.assertEqual(unauthorized.status_code, 401)
-
-        response = self.client.get(
-            "/provider-catalog",
-            headers={"Authorization": "Bearer test-token"},
-        )
+    def test_provider_catalog_returns_custom_template_without_auth(self) -> None:
+        response = self.client.get("/provider-catalog")
         self.assertEqual(response.status_code, 200)
         body = response.json()
         self.assertIn("version", body)
@@ -622,9 +609,9 @@ class ApiServerTests(unittest.TestCase):
             listing.json()["connections"][0]["healthStatus"], "invalid_key"
         )
 
-    def test_model_options_requires_auth(self) -> None:
+    def test_model_options_no_auth_required(self) -> None:
         response = self.client.get("/model-options")
-        self.assertEqual(response.status_code, 401)
+        self.assertEqual(response.status_code, 200)
 
     def test_model_options_returns_built_in_catalog_group_and_default(self) -> None:
         self._set_validation_model_factory(lambda config: FakeValidationSuccessModel())

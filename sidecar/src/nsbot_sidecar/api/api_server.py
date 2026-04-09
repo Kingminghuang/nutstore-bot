@@ -9,7 +9,6 @@ from pathlib import Path
 
 from fastapi import (
     BackgroundTasks,
-    Depends,
     FastAPI,
     File,
     HTTPException,
@@ -22,12 +21,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from nsbot_sidecar.infrastructure.attachment_store import AttachmentStore
-from nsbot_sidecar.api.auth import (
-    LocalAuthConfig,
-    auth_header_dependency,
-    is_exempt_path,
-    validate_authorization_header,
-)
 from nsbot_sidecar.infrastructure.client_config import load_or_create_client_config
 from nsbot_sidecar.api.discovery import ServiceDiscovery, nsbot_home, write_service_discovery
 from nsbot_sidecar.application.provider_service import ProviderService
@@ -73,10 +66,6 @@ def ensure_local_host(host: str) -> None:
 def create_app(config: ApiServerConfig | None = None) -> FastAPI:
     cfg = config or ApiServerConfig()
     ensure_local_host(cfg.host)
-    auth_header_value = cfg.auth_header_value or ""
-    if auth_header_value.strip() == "":
-        raise ValueError("auth_header_value must not be empty")
-    auth_config = LocalAuthConfig(auth_header_value=auth_header_value)
     database = connect_database(cfg.ns_bot_home)
     repositories = create_repositories(database)
     provider_service = ProviderService(
@@ -131,7 +120,6 @@ def create_app(config: ApiServerConfig | None = None) -> FastAPI:
         allow_headers=["*"],
     )
     app.state.api_server_config = cfg
-    app.state.local_auth = auth_config
     app.state.database = database
     app.state.repositories = repositories
     app.state.provider_service = provider_service
@@ -179,24 +167,6 @@ def create_app(config: ApiServerConfig | None = None) -> FastAPI:
             content=redact_sensitive({"detail": str(exc)}),
         )
 
-    @app.middleware("http")
-    async def localhost_auth_middleware(request: Request, call_next):  # type: ignore[override]
-        # CORS preflight requests do not carry Authorization headers.
-        if request.method.upper() == "OPTIONS":
-            return await call_next(request)
-
-        if not is_exempt_path(request.url.path, auth_config.exempt_paths):
-            try:
-                validate_authorization_header(
-                    request.headers.get("Authorization"), auth_config.auth_header_value
-                )
-            except HTTPException as exc:
-                return JSONResponse(
-                    status_code=exc.status_code, content={"detail": exc.detail}
-                )
-
-        return await call_next(request)
-
     @app.get("/health")
     def health() -> dict[str, object]:
         return {
@@ -204,10 +174,6 @@ def create_app(config: ApiServerConfig | None = None) -> FastAPI:
             "service": "sidecar",
             "version": cfg.version,
         }
-
-    @app.get("/auth/check")
-    def auth_check(_: str | None = Depends(auth_header_dependency)) -> dict[str, bool]:
-        return {"ok": True}
 
     @app.get("/provider-catalog")
     def get_provider_catalog(request: Request) -> dict[str, object]:
