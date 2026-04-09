@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from local_code_executor import LocalCodeExecutor
+from nsbot_sidecar.runtime.local_code_executor import LocalCodeExecutor
 
 
 class LocalCodeExecutorTests(unittest.TestCase):

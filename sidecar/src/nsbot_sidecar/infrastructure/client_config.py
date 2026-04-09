@@ -6,7 +6,7 @@ import secrets
 from dataclasses import dataclass
 from pathlib import Path
 
-from local_paths import ensure_nsbot_root, nsbot_home
+from nsbot_sidecar.infrastructure.local_paths import ensure_nsbot_root, nsbot_home
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 18765

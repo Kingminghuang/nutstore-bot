@@ -7,7 +7,7 @@ from pathlib import Path
 import threading
 from typing import Iterator
 
-from local_paths import database_file_path, ensure_nsbot_root, ensure_secret_dir
+from nsbot_sidecar.infrastructure.local_paths import database_file_path, ensure_nsbot_root, ensure_secret_dir
 
 
 @dataclass(frozen=True)

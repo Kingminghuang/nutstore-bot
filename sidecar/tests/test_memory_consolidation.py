@@ -7,13 +7,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from memory import (
+from nsbot_sidecar.runtime.memory import (
     MemoryConsolidator,
     MemoryStore,
     ensure_text,
     normalize_save_memory_args,
 )
-from session_manager import Session
+from nsbot_sidecar.runtime.session_manager import Session
 
 
 @dataclass

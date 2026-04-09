@@ -25,7 +25,7 @@ while IFS='=' read -r key value || [ -n "$key" ]; do
     fi
 done < .env
 
-echo "[*] 执行命令: python src/cli.py \"$USER_INPUT\" ${ARGS[*]}"
+echo "[*] 执行命令: uv run python -m nsbot_sidecar.cli \"$USER_INPUT\" ${ARGS[*]}"
 echo "------------------------------------------------------------"
 
-python src/cli.py "$USER_INPUT" "${ARGS[@]}"
+uv run python -m nsbot_sidecar.cli "$USER_INPUT" "${ARGS[@]}"

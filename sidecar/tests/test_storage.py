@@ -6,7 +6,7 @@ import tempfile
 import threading
 import unittest
 
-from storage import (
+from nsbot_sidecar.infrastructure.storage import (
     connect_database,
     list_tables,
     prepare_storage,

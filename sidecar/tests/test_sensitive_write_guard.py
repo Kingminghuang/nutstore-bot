@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from sensitive_write_guard import detect_sensitive_write_issues
+from nsbot_sidecar.domain.sensitive_write_guard import detect_sensitive_write_issues
 
 
 class SensitiveWriteGuardTests(unittest.TestCase):

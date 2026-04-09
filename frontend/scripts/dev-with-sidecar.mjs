@@ -184,7 +184,7 @@ export function startDevWithSidecar({
   const children = []
   let shuttingDown = false
 
-  const sidecar = spawnImpl("uv", ["run", "python", "src/api_server.py"], {
+  const sidecar = spawnImpl("uv", ["run", "python", "-m", "nsbot_sidecar.api.api_server"], {
     cwd: sidecarDir,
     env: sidecarEnv,
     stdio: "inherit",

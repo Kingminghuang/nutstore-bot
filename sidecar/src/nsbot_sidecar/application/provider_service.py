@@ -7,11 +7,11 @@ from typing import Any, Callable
 
 from fastapi import HTTPException, status
 
-from direct_model import DirectModel, DirectModelConfig, DirectModelError
-from provider_catalog import BUILTIN_PROVIDERS, catalog_version, list_providers
-from redaction import redact_sensitive
-from sensitive_write_guard import detect_sensitive_write_issues
-from repositories import (
+from nsbot_sidecar.providers.direct_model import DirectModel, DirectModelConfig, DirectModelError
+from nsbot_sidecar.providers.provider_catalog import BUILTIN_PROVIDERS, catalog_version, list_providers
+from nsbot_sidecar.api.redaction import redact_sensitive
+from nsbot_sidecar.domain.sensitive_write_guard import detect_sensitive_write_issues
+from nsbot_sidecar.infrastructure.repositories import (
     ProviderConnectionBundle,
     ProviderConnectionsRepository,
     ProviderHeaderRecord,
@@ -19,7 +19,7 @@ from repositories import (
     create_id,
     now_iso_timestamp,
 )
-from secret_store import LocalSecretStore, ProviderSecretPayload
+from nsbot_sidecar.infrastructure.secret_store import LocalSecretStore, ProviderSecretPayload
 
 
 LOGGER = logging.getLogger(__name__)

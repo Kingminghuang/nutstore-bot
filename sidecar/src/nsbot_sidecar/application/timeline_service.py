@@ -6,8 +6,8 @@ from typing import Any
 
 from fastapi import HTTPException, status
 
-from repositories import SessionsRepository, TimelineEntriesRepository
-from session_titles import (
+from nsbot_sidecar.infrastructure.repositories import SessionsRepository, TimelineEntriesRepository
+from nsbot_sidecar.domain.session_titles import (
     build_first_user_message_fallback_title,
     build_heuristic_title,
 )

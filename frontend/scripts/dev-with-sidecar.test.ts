@@ -96,7 +96,7 @@ describe("dev-with-sidecar script", () => {
     expect(spawnImpl).toHaveBeenNthCalledWith(
       1,
       "uv",
-      ["run", "python", "src/api_server.py"],
+      ["run", "python", "-m", "nsbot_sidecar.api.api_server"],
       expect.objectContaining({
         stdio: "inherit",
         env: expect.objectContaining({
@@ -140,7 +140,7 @@ describe("dev-with-sidecar script", () => {
     expect(spawnImpl).toHaveBeenNthCalledWith(
       1,
       "uv",
-      ["run", "python", "src/api_server.py"],
+      ["run", "python", "-m", "nsbot_sidecar.api.api_server"],
       expect.objectContaining({
         stdio: "inherit",
         env: expect.objectContaining({

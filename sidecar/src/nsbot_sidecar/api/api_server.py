@@ -21,26 +21,26 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from attachment_store import AttachmentStore
-from auth import (
+from nsbot_sidecar.infrastructure.attachment_store import AttachmentStore
+from nsbot_sidecar.api.auth import (
     LocalAuthConfig,
     auth_header_dependency,
     is_exempt_path,
     validate_authorization_header,
 )
-from client_config import load_or_create_client_config
-from discovery import ServiceDiscovery, nsbot_home, write_service_discovery
-from provider_service import ProviderService
-from redaction import install_log_redaction_filter, redact_sensitive
-from run_cancellation import RunCancellationRegistry
-from run_event_store import RunEventStore
-from run_service import RunRequestFailed, RunService
-from repositories import create_repositories
-from session_service import SessionService
-from secret_store import LocalSecretStore
-from storage import connect_database
-from timeline_service import TimelineService
-from workspace_sidecar_indexer import WorkspaceSidecarIndexer
+from nsbot_sidecar.infrastructure.client_config import load_or_create_client_config
+from nsbot_sidecar.api.discovery import ServiceDiscovery, nsbot_home, write_service_discovery
+from nsbot_sidecar.application.provider_service import ProviderService
+from nsbot_sidecar.api.redaction import install_log_redaction_filter, redact_sensitive
+from nsbot_sidecar.domain.run_cancellation import RunCancellationRegistry
+from nsbot_sidecar.domain.run_event_store import RunEventStore
+from nsbot_sidecar.application.run_service import RunRequestFailed, RunService
+from nsbot_sidecar.infrastructure.repositories import create_repositories
+from nsbot_sidecar.application.session_service import SessionService
+from nsbot_sidecar.infrastructure.secret_store import LocalSecretStore
+from nsbot_sidecar.infrastructure.storage import connect_database
+from nsbot_sidecar.application.timeline_service import TimelineService
+from nsbot_sidecar.runtime.workspace_sidecar_indexer import WorkspaceSidecarIndexer
 
 
 DEFAULT_HOST = "127.0.0.1"

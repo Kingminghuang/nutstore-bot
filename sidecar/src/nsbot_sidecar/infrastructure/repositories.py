@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
-from storage import transaction
+from nsbot_sidecar.infrastructure.storage import transaction
 
 
 def now_iso_timestamp() -> str:

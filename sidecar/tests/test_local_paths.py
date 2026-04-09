@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from local_paths import (
+from nsbot_sidecar.infrastructure.local_paths import (
     database_file_path,
     discovery_file_path,
     master_key_path,
@@ -29,7 +29,7 @@ class LocalPathsTests(unittest.TestCase):
         self.assertEqual(master_key_path(custom), Path(custom).resolve() / "master.key")
 
     def test_windows_prefers_appdata(self) -> None:
-        with patch("local_paths.sys.platform", "win32"):
+        with patch("nsbot_sidecar.infrastructure.local_paths.sys.platform", "win32"):
             with patch.dict(
                 os.environ,
                 {"APPDATA": r"C:\\Users\\test\\AppData\\Roaming"},
@@ -41,7 +41,7 @@ class LocalPathsTests(unittest.TestCase):
                 )
 
     def test_linux_prefers_xdg_state_home(self) -> None:
-        with patch("local_paths.sys.platform", "linux"):
+        with patch("nsbot_sidecar.infrastructure.local_paths.sys.platform", "linux"):
             with patch.dict(
                 os.environ, {"XDG_STATE_HOME": "/tmp/xdg-state"}, clear=True
             ):

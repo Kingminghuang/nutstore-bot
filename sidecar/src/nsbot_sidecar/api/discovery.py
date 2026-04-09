@@ -5,8 +5,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from local_paths import discovery_file_path as resolved_discovery_file_path
-from local_paths import ensure_nsbot_root, nsbot_home
+from nsbot_sidecar.infrastructure.local_paths import discovery_file_path as resolved_discovery_file_path
+from nsbot_sidecar.infrastructure.local_paths import ensure_nsbot_root, nsbot_home
 
 
 @dataclass(frozen=True)

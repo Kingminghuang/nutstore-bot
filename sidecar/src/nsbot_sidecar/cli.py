@@ -16,16 +16,16 @@ from typing import Any, cast
 from fastapi import HTTPException
 import requests
 
-from attachment_store import AttachmentStore
-from local_paths import nsbot_home
-from provider_service import ProviderService
-from repositories import ProviderConnectionBundle, create_repositories
-from runtime_service import CodeAgentRuntimeService, RunMetadata, RuntimeWorkerConfig
-from session_service import SessionService
-from secret_store import LocalSecretStore
-from storage import connect_database
-from timeline_service import TimelineService
-from workspace_sidecar_indexer import WorkspaceSidecarIndexer
+from nsbot_sidecar.infrastructure.attachment_store import AttachmentStore
+from nsbot_sidecar.infrastructure.local_paths import nsbot_home
+from nsbot_sidecar.application.provider_service import ProviderService
+from nsbot_sidecar.infrastructure.repositories import ProviderConnectionBundle, create_repositories
+from nsbot_sidecar.runtime.runtime_service import CodeAgentRuntimeService, RunMetadata, RuntimeWorkerConfig
+from nsbot_sidecar.application.session_service import SessionService
+from nsbot_sidecar.infrastructure.secret_store import LocalSecretStore
+from nsbot_sidecar.infrastructure.storage import connect_database
+from nsbot_sidecar.application.timeline_service import TimelineService
+from nsbot_sidecar.runtime.workspace_sidecar_indexer import WorkspaceSidecarIndexer
 
 
 COMMANDS = {
@@ -822,7 +822,7 @@ def _first_model_id(group: dict[str, Any]) -> str | None:
 
 
 def _resolve_catalog_model_ids(bundle: ProviderConnectionBundle) -> list[str]:
-    from provider_catalog import list_providers
+    from nsbot_sidecar.providers.provider_catalog import list_providers
 
     provider_id = bundle.connection.catalog_provider_id or ""
     for provider in list_providers():

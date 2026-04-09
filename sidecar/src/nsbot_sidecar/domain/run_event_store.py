@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import threading
 
-from run_events import RunEventEnvelope
+from nsbot_sidecar.domain.run_events import RunEventEnvelope
 
 
 @dataclass

@@ -11,25 +11,25 @@ from typing import Any, Callable, cast
 from smolagents.memory import ActionStep, FinalAnswerStep, PlanningStep
 from smolagents.models import ChatMessageStreamDelta
 
-from context_builder import (
+from nsbot_sidecar.runtime.context_builder import (
     ContextBuildError,
     ContextBuilder,
     ContextBuilderConfig,
     RuntimeInfo,
 )
-from direct_model import DirectModel, DirectModelConfig, DirectModelError
-from local_code_executor import LocalCodeExecutor
-from memory import MemoryConsolidator, MemoryStore
-from native_code_agent import NativeCodeAgent
-from agent_memory_projection import (
+from nsbot_sidecar.providers.direct_model import DirectModel, DirectModelConfig, DirectModelError
+from nsbot_sidecar.runtime.local_code_executor import LocalCodeExecutor
+from nsbot_sidecar.runtime.memory import MemoryConsolidator, MemoryStore
+from nsbot_sidecar.runtime.native_code_agent import NativeCodeAgent
+from nsbot_sidecar.domain.agent_memory_projection import (
     extract_action_thought,
     project_agent_memory_to_session_messages,
     project_agent_memory_to_timeline_entries,
     project_final_answer_to_session_message,
 )
-from provider_catalog import BUILTIN_PROVIDERS
-from session_manager import SessionManager
-from tools import build_workspace_tools, path_identity, resolve_path_arg
+from nsbot_sidecar.providers.provider_catalog import BUILTIN_PROVIDERS
+from nsbot_sidecar.runtime.session_manager import SessionManager
+from nsbot_sidecar.runtime.tools import build_workspace_tools, path_identity, resolve_path_arg
 
 
 WORKSPACE_BASED_INSTRUCTION = "DO NOT use any web search tool, you can only use the tools provided. Complete task based on the files on your workspace"

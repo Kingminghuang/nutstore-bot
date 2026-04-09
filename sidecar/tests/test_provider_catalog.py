@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from provider_catalog import catalog_version, list_providers
+from nsbot_sidecar.providers.provider_catalog import catalog_version, list_providers
 
 
 class ProviderCatalogTests(unittest.TestCase):

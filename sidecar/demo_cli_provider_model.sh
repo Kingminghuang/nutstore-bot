@@ -21,10 +21,10 @@ SEED_JSON="$(${PY_RUN[@]} - "$NS_BOT_HOME" <<'PY'
 import json
 import sys
 
-from provider_catalog import list_providers
-from repositories import create_repositories
-from secret_store import LocalSecretStore, ProviderSecretPayload
-from storage import connect_database
+from nsbot_sidecar.providers.provider_catalog import list_providers
+from nsbot_sidecar.infrastructure.repositories import create_repositories
+from nsbot_sidecar.infrastructure.secret_store import LocalSecretStore, ProviderSecretPayload
+from nsbot_sidecar.infrastructure.storage import connect_database
 
 ns_bot_home = sys.argv[1]
 db = connect_database(ns_bot_home)
@@ -146,7 +146,7 @@ OPENAI_MODEL_2="$(${PY_RUN[@]} -c 'import json,sys; print(json.loads(sys.argv[1]
 run_cli() {
   echo
   echo "==> $*"
-  ${PY_RUN[@]} cli.py --ns-bot-home "$NS_BOT_HOME" "$@"
+  ${PY_RUN[@]} -m nsbot_sidecar.cli --ns-bot-home "$NS_BOT_HOME" "$@"
 }
 
 echo

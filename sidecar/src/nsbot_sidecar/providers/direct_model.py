@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 from smolagents.models import LiteLLMModel, Model, OpenAIModel
 
-from provider_catalog import LITELLM_PROVIDERS, supports_reasoning
+from nsbot_sidecar.providers.provider_catalog import LITELLM_PROVIDERS, supports_reasoning
 
 
 class DirectModelError(RuntimeError):

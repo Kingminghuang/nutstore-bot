@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from worker import parse_request
+from nsbot_sidecar.runtime.worker import parse_request
 
 
 class WorkerRequestParsingTests(unittest.TestCase):
@@ -108,7 +108,7 @@ class WorkerRequestParsingTests(unittest.TestCase):
             }
         )
 
-        with patch("worker.sys.platform", "win32"):
+        with patch("nsbot_sidecar.runtime.worker.sys.platform", "win32"):
             with patch.dict(
                 os.environ,
                 {"APPDATA": r"C:\\Users\\test\\AppData\\Roaming"},

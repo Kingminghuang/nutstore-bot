@@ -7,8 +7,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from local_paths import nsbot_home
-from runtime_service import (
+from nsbot_sidecar.infrastructure.local_paths import nsbot_home
+from nsbot_sidecar.runtime.runtime_service import (
     CodeAgentRuntimeService,
     RunMetadata,
     RuntimeProcessError,

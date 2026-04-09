@@ -9,10 +9,10 @@ from typing import Any, Callable, cast
 
 from fastapi import BackgroundTasks, HTTPException, status
 
-from attachment_store import AttachmentStore
-from run_cancellation import RunCancellationRegistry
-from run_event_store import RunEventStore
-from run_events import (
+from nsbot_sidecar.infrastructure.attachment_store import AttachmentStore
+from nsbot_sidecar.domain.run_cancellation import RunCancellationRegistry
+from nsbot_sidecar.domain.run_event_store import RunEventStore
+from nsbot_sidecar.domain.run_events import (
     completed_event,
     delta_event,
     failed_event,
@@ -20,10 +20,10 @@ from run_events import (
     status_event,
     timeline_entry_event,
 )
-from local_paths import nsbot_home
-from provider_catalog import list_providers
-from redaction import redact_text
-from repositories import (
+from nsbot_sidecar.infrastructure.local_paths import nsbot_home
+from nsbot_sidecar.providers.provider_catalog import list_providers
+from nsbot_sidecar.api.redaction import redact_text
+from nsbot_sidecar.infrastructure.repositories import (
     AttachmentsRepository,
     DraftAttachmentsRepository,
     ProviderConnectionsRepository,
@@ -34,22 +34,22 @@ from repositories import (
     create_id,
     now_iso_timestamp,
 )
-from agent_memory_projection import (
+from nsbot_sidecar.domain.agent_memory_projection import (
     project_final_answer_to_timeline_entry,
     project_system_notice_to_timeline_entry,
 )
-from runtime_service import (
+from nsbot_sidecar.runtime.runtime_service import (
     CodeAgentRuntimeService,
     RuntimeCancelledError,
     RunMetadata,
     RuntimeProcessError,
     RuntimeWorkerConfig,
 )
-from session_manager import SessionManager
-from secret_store import LocalSecretStore
-from session_service import SessionService
-from storage import transaction
-from timeline_service import serialize_timeline_entry, serialize_session_summary
+from nsbot_sidecar.runtime.session_manager import SessionManager
+from nsbot_sidecar.infrastructure.secret_store import LocalSecretStore
+from nsbot_sidecar.application.session_service import SessionService
+from nsbot_sidecar.infrastructure.storage import transaction
+from nsbot_sidecar.application.timeline_service import serialize_timeline_entry, serialize_session_summary
 
 
 RuntimeExecutor = Callable[..., dict[str, Any]]

@@ -4,7 +4,7 @@ import unittest
 from types import SimpleNamespace
 from typing import Any, cast
 
-from direct_model import DirectModel, DirectModelConfig
+from nsbot_sidecar.providers.direct_model import DirectModel, DirectModelConfig
 
 
 class DirectModelTests(unittest.TestCase):

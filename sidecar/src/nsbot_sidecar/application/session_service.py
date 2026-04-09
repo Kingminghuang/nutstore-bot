@@ -8,21 +8,21 @@ from typing import Any, Callable, Protocol
 
 from fastapi import BackgroundTasks, HTTPException, status
 
-from attachment_store import AttachmentStore
-from redaction import redact_text
-from repositories import (
+from nsbot_sidecar.infrastructure.attachment_store import AttachmentStore
+from nsbot_sidecar.api.redaction import redact_text
+from nsbot_sidecar.infrastructure.repositories import (
     AttachmentsRepository,
     DraftAttachmentsRepository,
     SessionsRepository,
     WorkspacesRepository,
     create_id,
 )
-from session_manager import SessionManager
-from session_titles import (
+from nsbot_sidecar.runtime.session_manager import SessionManager
+from nsbot_sidecar.domain.session_titles import (
     build_first_user_message_fallback_title,
     build_heuristic_title,
 )
-from timeline_service import TimelineService, serialize_session_summary
+from nsbot_sidecar.application.timeline_service import TimelineService, serialize_session_summary
 
 
 ModelTitleGenerator = Callable[[str, str], str | None]

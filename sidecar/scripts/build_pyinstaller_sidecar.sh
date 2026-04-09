@@ -21,7 +21,7 @@ export PYINSTALLER_CONFIG_DIR="${PYI_CONFIG_DIR}"
 uv run --project "${SIDECAR_ROOT}" --with pyinstaller pyinstaller \
   --clean \
   --target-arch arm64 \
-  --paths "${SIDECAR_ROOT}" \
+  --paths "${SIDECAR_ROOT}/src" \
   --collect-data litellm \
   --collect-data smolagents \
   --hidden-import smolagents.prompts \
@@ -39,6 +39,6 @@ uv run --project "${SIDECAR_ROOT}" --with pyinstaller pyinstaller \
   --distpath "${DIST_DIR}" \
   --workpath "${BUILD_DIR}" \
   --specpath "${SPEC_DIR}" \
-  "${SIDECAR_ROOT}/src/api_server.py"
+  "${SIDECAR_ROOT}/src/nsbot_sidecar/api/api_server.py"
 
 echo "Built sidecar binary at: ${DIST_DIR}/nsbot-sidecar"

@@ -9,10 +9,10 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
-from cli import main as cli_main
-from repositories import create_repositories
-from secret_store import LocalSecretStore
-from storage import connect_database
+from nsbot_sidecar.cli import main as cli_main
+from nsbot_sidecar.infrastructure.repositories import create_repositories
+from nsbot_sidecar.infrastructure.secret_store import LocalSecretStore
+from nsbot_sidecar.infrastructure.storage import connect_database
 
 
 def _run_cli(argv: list[str]) -> tuple[int, str, str]:
@@ -93,7 +93,7 @@ class CliAuthTests(unittest.TestCase):
         pending = json.loads(pending_path.read_text(encoding="utf-8"))
 
         with patch(
-            "cli.requests.post",
+            "nsbot_sidecar.cli.requests.post",
             return_value=_FakeResponse(
                 {
                     "access_token": "gateway-token-123",

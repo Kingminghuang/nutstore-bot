@@ -16,17 +16,17 @@ from smolagents.models import (
 )
 from smolagents.monitoring import TokenUsage
 
-from memory import MemoryConsolidator
-from direct_model import DirectModelConfig
-from native_code_agent import NativeCodeAgent
-from direct_model import DirectModelError
-from runtime_service import (
+from nsbot_sidecar.runtime.memory import MemoryConsolidator
+from nsbot_sidecar.providers.direct_model import DirectModelConfig
+from nsbot_sidecar.runtime.native_code_agent import NativeCodeAgent
+from nsbot_sidecar.providers.direct_model import DirectModelError
+from nsbot_sidecar.runtime.runtime_service import (
     CodeAgentRuntimeService,
     RunMetadata,
     RuntimeProcessError,
     RuntimeWorkerConfig,
 )
-from run_service import execute_runtime_run
+from nsbot_sidecar.application.run_service import execute_runtime_run
 
 
 class FakeStreamingModel(Model):
@@ -357,7 +357,7 @@ class RuntimeServiceTests(unittest.TestCase):
         callback = lambda _event: None
         is_cancelled = lambda: False
 
-        with patch("run_service.CodeAgentRuntimeService") as service_cls:
+        with patch("nsbot_sidecar.application.run_service.CodeAgentRuntimeService") as service_cls:
             service_instance = service_cls.return_value
             service_instance.process.return_value = {
                 "deltas": [],

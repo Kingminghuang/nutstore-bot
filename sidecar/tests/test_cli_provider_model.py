@@ -10,10 +10,10 @@ from contextlib import redirect_stderr, redirect_stdout
 from unittest import mock
 from pathlib import Path
 
-from cli import main as cli_main
-from provider_catalog import list_providers
-from repositories import create_repositories
-from storage import connect_database
+from nsbot_sidecar.cli import main as cli_main
+from nsbot_sidecar.providers.provider_catalog import list_providers
+from nsbot_sidecar.infrastructure.repositories import create_repositories
+from nsbot_sidecar.infrastructure.storage import connect_database
 
 
 def _run_cli(argv: list[str]) -> tuple[int, str, str]:
@@ -283,13 +283,13 @@ class CliProviderModelTests(unittest.TestCase):
             rg_cache.write_text("fake-rg", encoding="utf-8")
 
             ns_home = Path(self.temp_dir) / "bootstrap"
-            with mock.patch("cli._runtime_paths", return_value={
+            with mock.patch("nsbot_sidecar.cli._runtime_paths", return_value={
                 "repo_root": runtime_root,
                 "sidecar_root": runtime_root,
                 "templates_dir": templates_dir,
                 "search_tools_cache_root": cache_root,
                 "prepare_search_tools_script": runtime_root / "scripts" / "prepare_search_tools.py",
-            }), mock.patch("cli._resolve_target_triple", return_value=target):
+            }), mock.patch("nsbot_sidecar.cli._resolve_target_triple", return_value=target):
                 code, stdout, _stderr = _run_cli(
                     ["--ns-bot-home", str(ns_home), "init"]
                 )
@@ -325,13 +325,13 @@ class CliProviderModelTests(unittest.TestCase):
             (ns_home / "templates").mkdir(parents=True, exist_ok=True)
             (ns_home / "templates" / "TOOLS.md").write_text("existing", encoding="utf-8")
 
-            with mock.patch("cli._runtime_paths", return_value={
+            with mock.patch("nsbot_sidecar.cli._runtime_paths", return_value={
                 "repo_root": runtime_root,
                 "sidecar_root": runtime_root,
                 "templates_dir": templates_dir,
                 "search_tools_cache_root": cache_root,
                 "prepare_search_tools_script": runtime_root / "scripts" / "prepare_search_tools.py",
-            }), mock.patch("cli._resolve_target_triple", return_value=target):
+            }), mock.patch("nsbot_sidecar.cli._resolve_target_triple", return_value=target):
                 code, stdout, _stderr = _run_cli(
                     ["--ns-bot-home", str(ns_home), "init"]
                 )
@@ -369,13 +369,13 @@ class CliProviderModelTests(unittest.TestCase):
                 rg_cache.write_text("fake-rg", encoding="utf-8")
                 return subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
 
-            with mock.patch("cli._runtime_paths", return_value={
+            with mock.patch("nsbot_sidecar.cli._runtime_paths", return_value={
                 "repo_root": runtime_root,
                 "sidecar_root": runtime_root,
                 "templates_dir": templates_dir,
                 "search_tools_cache_root": cache_root,
                 "prepare_search_tools_script": script_path,
-            }), mock.patch("cli._resolve_target_triple", return_value=target), mock.patch("cli.subprocess.run", side_effect=fake_run):
+            }), mock.patch("nsbot_sidecar.cli._resolve_target_triple", return_value=target), mock.patch("nsbot_sidecar.cli.subprocess.run", side_effect=fake_run):
                 code, stdout, _stderr = _run_cli(
                     ["--ns-bot-home", str(ns_home), "init"]
                 )
@@ -402,14 +402,14 @@ class CliProviderModelTests(unittest.TestCase):
             script_path.write_text("# placeholder", encoding="utf-8")
             ns_home = Path(self.temp_dir) / "bootstrap4"
 
-            with mock.patch("cli._runtime_paths", return_value={
+            with mock.patch("nsbot_sidecar.cli._runtime_paths", return_value={
                 "repo_root": runtime_root,
                 "sidecar_root": runtime_root,
                 "templates_dir": templates_dir,
                 "search_tools_cache_root": cache_root,
                 "prepare_search_tools_script": script_path,
-            }), mock.patch("cli._resolve_target_triple", return_value=target), mock.patch(
-                "cli.subprocess.run",
+            }), mock.patch("nsbot_sidecar.cli._resolve_target_triple", return_value=target), mock.patch(
+                "nsbot_sidecar.cli.subprocess.run",
                 return_value=subprocess.CompletedProcess(
                     args=[],
                     returncode=1,

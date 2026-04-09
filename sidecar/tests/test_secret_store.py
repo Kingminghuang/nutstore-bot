@@ -6,7 +6,7 @@ import shutil
 import tempfile
 import unittest
 
-from secret_store import LocalSecretStore, ProviderSecretPayload
+from nsbot_sidecar.infrastructure.secret_store import LocalSecretStore, ProviderSecretPayload
 
 
 class LocalSecretStoreTests(unittest.TestCase):

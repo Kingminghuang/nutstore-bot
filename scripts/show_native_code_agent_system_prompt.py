@@ -15,9 +15,9 @@ for candidate in (str(SIDECAR_ROOT), str(SRC_ROOT)):
 
 from smolagents.models import Model
 
-from context_builder import ContextBuilder, ContextBuilderConfig, RuntimeInfo
-from memory import MemoryStore
-from native_code_agent import NativeCodeAgent
+from nsbot_sidecar.runtime.context_builder import ContextBuilder, ContextBuilderConfig, RuntimeInfo
+from nsbot_sidecar.runtime.memory import MemoryStore
+from nsbot_sidecar.runtime.native_code_agent import NativeCodeAgent
 
 
 class _NoopModel(Model):

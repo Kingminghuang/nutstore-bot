@@ -3,7 +3,7 @@ from __future__ import annotations
 import shutil
 from pathlib import Path
 
-from local_paths import ensure_nsbot_root
+from nsbot_sidecar.infrastructure.local_paths import ensure_nsbot_root
 
 
 class AttachmentStore:

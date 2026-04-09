@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import unittest
 
-from redaction import REDACTED, RedactingLogFilter, redact_sensitive
+from nsbot_sidecar.api.redaction import REDACTED, RedactingLogFilter, redact_sensitive
 
 
 class RedactionTests(unittest.TestCase):

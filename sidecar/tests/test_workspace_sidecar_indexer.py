@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from workspace_sidecar_indexer import WorkspaceSidecarIndexer
+from nsbot_sidecar.runtime.workspace_sidecar_indexer import WorkspaceSidecarIndexer
 
 
 class FakeBackgroundTasks:
@@ -43,7 +43,7 @@ class WorkspaceSidecarIndexerTests(unittest.TestCase):
         (self.workspace / "docs" / ".private" / "skip.xlsx").write_bytes(b"xlsx")
 
         with patch(
-            "workspace_sidecar_indexer._convert_file",
+            "nsbot_sidecar.runtime.workspace_sidecar_indexer._convert_file",
             side_effect=lambda _source, output: output.write_text("converted", encoding="utf-8"),
         ):
             self.indexer.index_workspace("ws_1", str(self.workspace))
@@ -66,7 +66,7 @@ class WorkspaceSidecarIndexerTests(unittest.TestCase):
             converted_files.append(source)
             output.write_text(source.read_text(encoding="utf-8", errors="ignore"), encoding="utf-8")
 
-        with patch("workspace_sidecar_indexer._convert_file", side_effect=_fake_convert):
+        with patch("nsbot_sidecar.runtime.workspace_sidecar_indexer._convert_file", side_effect=_fake_convert):
             self.indexer.index_workspace("ws_1", str(self.workspace))
             self.indexer.index_workspace("ws_1", str(self.workspace))
             source_file.write_bytes(b"%PDF-b")
@@ -80,7 +80,7 @@ class WorkspaceSidecarIndexerTests(unittest.TestCase):
         source_file.write_bytes(b"xlsx")
 
         with patch(
-            "workspace_sidecar_indexer._convert_file",
+            "nsbot_sidecar.runtime.workspace_sidecar_indexer._convert_file",
             side_effect=lambda _source, output: output.write_text("converted", encoding="utf-8"),
         ):
             self.indexer.index_workspace("ws_1", str(self.workspace))
@@ -90,7 +90,7 @@ class WorkspaceSidecarIndexerTests(unittest.TestCase):
         source_file.unlink()
 
         with patch(
-            "workspace_sidecar_indexer._convert_file",
+            "nsbot_sidecar.runtime.workspace_sidecar_indexer._convert_file",
             side_effect=lambda _source, output: output.write_text("converted", encoding="utf-8"),
         ):
             self.indexer.index_workspace("ws_1", str(self.workspace))
@@ -109,7 +109,7 @@ class WorkspaceSidecarIndexerTests(unittest.TestCase):
         (self.workspace / "c.xlsx").write_bytes(b"xlsx")
 
         with patch(
-            "workspace_sidecar_indexer._convert_file",
+            "nsbot_sidecar.runtime.workspace_sidecar_indexer._convert_file",
             side_effect=lambda _source, output: output.write_text("converted", encoding="utf-8"),
         ):
             self.indexer.index_workspace("ws_1", str(self.workspace))

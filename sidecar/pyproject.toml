@@ -1,3 +1,7 @@
+[build-system]
+requires = ["hatchling>=1.25.0"]
+build-backend = "hatchling.build"
+
 [project]
 name = "nsbot-sidecar"
 version = "0.1.0"
@@ -22,7 +26,10 @@ dev = [
 ]
 
 [tool.uv]
-package = false
+package = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/nsbot_sidecar"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

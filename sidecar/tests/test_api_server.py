@@ -13,12 +13,12 @@ from fastapi import FastAPI, HTTPException
 from smolagents.models import ChatMessageStreamDelta, Model
 from smolagents.monitoring import TokenUsage
 
-from api_server import (
+from nsbot_sidecar.api.api_server import (
     ApiServerConfig,
     create_app,
     publish_service_discovery,
 )
-from direct_model import DirectModelError
+from nsbot_sidecar.providers.direct_model import DirectModelError
 
 
 class FakeValidationSuccessModel(Model):
@@ -75,15 +75,15 @@ class FakeWorkspaceSidecarIndexer:
         )
 
 
-from discovery import read_service_discovery
-from local_paths import nsbot_home
-from runtime_service import (
+from nsbot_sidecar.api.discovery import read_service_discovery
+from nsbot_sidecar.infrastructure.local_paths import nsbot_home
+from nsbot_sidecar.runtime.runtime_service import (
     RunMetadata,
     RuntimeProcessError,
     RuntimeWorkerConfig,
 )
-from session_manager import SessionManager
-from workspace_sidecar_indexer import WorkspaceSidecarIndexer
+from nsbot_sidecar.runtime.session_manager import SessionManager
+from nsbot_sidecar.runtime.workspace_sidecar_indexer import WorkspaceSidecarIndexer
 
 
 class ApiServerTests(unittest.TestCase):
@@ -321,7 +321,7 @@ class ApiServerTests(unittest.TestCase):
 
     def test_provider_save_blocks_sensitive_data_in_non_secret_fields(self) -> None:
         with self.assertLogs(
-            "provider_service", level=logging.WARNING
+            "nsbot_sidecar.application.provider_service", level=logging.WARNING
         ) as captured_logs:
             response = self.client.post(
                 "/providers",
@@ -935,7 +935,7 @@ class ApiServerTests(unittest.TestCase):
         self.assertEqual(rename_response.status_code, 200)
         self.assertEqual(rename_response.json()["titleSource"], "manual")
 
-        with self.assertLogs("session_service", level=logging.INFO) as captured_logs:
+        with self.assertLogs("nsbot_sidecar.application.session_service", level=logging.INFO) as captured_logs:
             rename_response = self.client.patch(
                 f"/sessions/{session_id}",
                 headers={"Authorization": "Bearer test-token"},
@@ -1763,7 +1763,7 @@ class ApiServerTests(unittest.TestCase):
         self.assertEqual(updated.json()["displayName"], "OpenAI Primary")
         self.assertEqual(updated.json()["apiKeyConfigured"], True)
 
-        with self.assertLogs("provider_service", level=logging.INFO) as captured_logs:
+        with self.assertLogs("nsbot_sidecar.application.provider_service", level=logging.INFO) as captured_logs:
             updated = self.client.patch(
                 f"/providers/{provider_id}",
                 headers={"Authorization": "Bearer test-token"},
@@ -2045,7 +2045,7 @@ class ApiServerTests(unittest.TestCase):
             "Run failed: Upstream model request failed",
         )
 
-        with self.assertLogs("run_service", level=logging.WARNING) as captured_logs:
+        with self.assertLogs("nsbot_sidecar.application.run_service", level=logging.WARNING) as captured_logs:
             response = self.client.post(
                 "/runs",
                 headers={"Authorization": "Bearer test-token"},
