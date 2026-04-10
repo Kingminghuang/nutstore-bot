@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-__all__ = ["CodeAgentRuntimeService", "RuntimeProcessError"]
+__all__ = ["AgentRuntimeService", "RuntimeProcessError"]
 
 
 def __getattr__(name: str):
@@ -10,12 +10,12 @@ def __getattr__(name: str):
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
     from nsbot_sidecar.runtime.runtime_service import (
-        CodeAgentRuntimeService,
+        AgentRuntimeService,
         RuntimeProcessError,
     )
 
     exports = {
-        "CodeAgentRuntimeService": CodeAgentRuntimeService,
+        "AgentRuntimeService": AgentRuntimeService,
         "RuntimeProcessError": RuntimeProcessError,
     }
     return exports[name]

@@ -9,7 +9,7 @@ from typing import Any
 
 from nsbot_sidecar.infrastructure.local_paths import nsbot_home
 from nsbot_sidecar.runtime.runtime_service import (
-    CodeAgentRuntimeService,
+    AgentRuntimeService,
     RunMetadata,
     RuntimeProcessError,
     RuntimeWorkerConfig,
@@ -139,7 +139,7 @@ def main() -> int:
 
     try:
         request = parse_request(raw)
-        service = CodeAgentRuntimeService(request.config)
+        service = AgentRuntimeService(request.config)
         result = service.process(
             run_id=request.run_id,
             user_input=request.user_input,

@@ -71,7 +71,7 @@ class RunMetadata:
     session_key: str | None = None
 
 
-class CodeAgentRuntimeService:
+class AgentRuntimeService:
     def __init__(
         self,
         config: RuntimeWorkerConfig,

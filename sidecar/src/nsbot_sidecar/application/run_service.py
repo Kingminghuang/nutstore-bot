@@ -39,7 +39,7 @@ from nsbot_sidecar.domain.agent_memory_projection import (
     project_system_notice_to_timeline_entry,
 )
 from nsbot_sidecar.runtime.runtime_service import (
-    CodeAgentRuntimeService,
+    AgentRuntimeService,
     RuntimeCancelledError,
     RunMetadata,
     RuntimeProcessError,
@@ -1176,7 +1176,7 @@ def execute_runtime_run(
     event_callback: Callable[[dict[str, Any]], None] | None = None,
     is_cancelled: Callable[[], bool] | None = None,
 ) -> dict[str, Any]:
-    service = CodeAgentRuntimeService(config)
+    service = AgentRuntimeService(config)
     return service.process(
         run_id=run_id,
         user_input=user_input,

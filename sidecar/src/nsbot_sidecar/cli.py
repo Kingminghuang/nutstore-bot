@@ -20,7 +20,7 @@ from nsbot_sidecar.infrastructure.local_paths import nsbot_home
 from nsbot_sidecar.application.provider_service import ProviderService
 from nsbot_sidecar.infrastructure.repositories import create_repositories
 from nsbot_sidecar.runtime.runtime_service import (
-    CodeAgentRuntimeService,
+    AgentRuntimeService,
     RunMetadata,
     RuntimeWorkerConfig,
 )
@@ -874,13 +874,13 @@ def _handle_run_command(args: SimpleNamespace) -> int:
         "exp_epoch": 0,
     }
 
-    print("[*] Initializing CodeAgentRuntimeService", file=sys.stderr)
+    print("[*] Initializing AgentRuntimeService", file=sys.stderr)
     print(f"[*] Workspace: {effective_workspace_path}", file=sys.stderr)
     model_disp = config.model or config.model_id
     print(f"[*] Model: {model_disp} (Provider: {config.provider})", file=sys.stderr)
     print(f"[*] Base URL: {config.base_url}", file=sys.stderr)
 
-    service = CodeAgentRuntimeService(config)
+    service = AgentRuntimeService(config)
     print(f"\n[*] Processing user input: {args.user_input}", file=sys.stderr)
     print("-" * 50, file=sys.stderr)
     result = service.process(
