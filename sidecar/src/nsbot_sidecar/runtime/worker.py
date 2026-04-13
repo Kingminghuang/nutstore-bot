@@ -8,8 +8,8 @@ from pathlib import Path
 from typing import Any
 
 from nsbot_sidecar.infrastructure.local_paths import nsbot_home
+from nsbot_sidecar.runtime.engine import create_runtime_engine
 from nsbot_sidecar.runtime.runtime_service import (
-    AgentRuntimeService,
     RunMetadata,
     RuntimeProcessError,
     RuntimeWorkerConfig,
@@ -139,8 +139,8 @@ def main() -> int:
 
     try:
         request = parse_request(raw)
-        service = AgentRuntimeService(request.config)
-        result = service.process(
+        runtime_engine = create_runtime_engine(request.config)
+        result = runtime_engine.process(
             run_id=request.run_id,
             user_input=request.user_input,
             auth_context=request.auth_context,

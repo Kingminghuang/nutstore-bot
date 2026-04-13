@@ -20,8 +20,8 @@ from nsbot_sidecar.runtime.memory import MemoryConsolidator
 from nsbot_sidecar.providers.direct_model import DirectModelConfig
 from nsbot_sidecar.runtime.native_code_agent import NativeCodeAgent
 from nsbot_sidecar.providers.direct_model import DirectModelError
+from nsbot_sidecar.runtime.engine import SmolagentsRuntimeEngine
 from nsbot_sidecar.runtime.runtime_service import (
-    AgentRuntimeService,
     RunMetadata,
     RuntimeProcessError,
     RuntimeWorkerConfig,
@@ -116,7 +116,7 @@ class RuntimeServiceTests(unittest.TestCase):
         )
 
     def test_has_delta_and_step_normalization(self) -> None:
-        service = AgentRuntimeService(
+        service = SmolagentsRuntimeEngine(
             self._config(),
             model_factory=lambda: FakeStreamingModel("ok"),
         )
@@ -147,7 +147,7 @@ class RuntimeServiceTests(unittest.TestCase):
             model="gpt-4.1",
         )
 
-        service = AgentRuntimeService(
+        service = SmolagentsRuntimeEngine(
             cfg,
             model_factory=lambda: FakeStreamingModel("direct-ok"),
         )
@@ -179,7 +179,7 @@ class RuntimeServiceTests(unittest.TestCase):
             captured["reasoning_effort"] = config.reasoning_effort
             return FakeStreamingModel("direct-ok")
 
-        service = AgentRuntimeService(cfg, model_factory=fake_model_factory)
+        service = SmolagentsRuntimeEngine(cfg, model_factory=fake_model_factory)
 
         result = service.process(
             run_id="run-direct-reasoning",
@@ -202,7 +202,7 @@ class RuntimeServiceTests(unittest.TestCase):
             model="gpt-4.1",
         )
 
-        service = AgentRuntimeService(cfg)
+        service = SmolagentsRuntimeEngine(cfg)
 
         with self.assertRaises(RuntimeProcessError) as ctx:
             service.process(
@@ -228,7 +228,7 @@ class RuntimeServiceTests(unittest.TestCase):
         def direct_failure_factory() -> Model:
             raise DirectModelError("provider_timeout", "provider timed out")
 
-        service = AgentRuntimeService(cfg, model_factory=direct_failure_factory)
+        service = SmolagentsRuntimeEngine(cfg, model_factory=direct_failure_factory)
 
         with self.assertRaises(RuntimeProcessError) as ctx:
             service.process(
@@ -243,7 +243,7 @@ class RuntimeServiceTests(unittest.TestCase):
         self.assertEqual(ctx.exception.code, "provider_timeout")
 
     def test_consolidation_failure_is_best_effort(self) -> None:
-        service = AgentRuntimeService(
+        service = SmolagentsRuntimeEngine(
             self._config(),
             model_factory=lambda: FakeStreamingModel("done"),
             consolidator_factory=lambda sessions, store: MemoryConsolidator(
@@ -265,7 +265,7 @@ class RuntimeServiceTests(unittest.TestCase):
         self.assertEqual(result["final_answer"], "done")
 
     def test_workspace_session_isolation(self) -> None:
-        service = AgentRuntimeService(
+        service = SmolagentsRuntimeEngine(
             self._config(),
             model_factory=lambda: FakeStreamingModel("ok"),
         )
@@ -293,7 +293,7 @@ class RuntimeServiceTests(unittest.TestCase):
 
     def test_windows_workspace_variants_share_default_session_key(self) -> None:
         cfg = replace(self._config(), tool_os_type="windows")
-        service = AgentRuntimeService(
+        service = SmolagentsRuntimeEngine(
             cfg,
             model_factory=lambda: FakeStreamingModel("ok"),
         )
@@ -357,9 +357,11 @@ class RuntimeServiceTests(unittest.TestCase):
         callback = lambda _event: None
         is_cancelled = lambda: False
 
-        with patch("nsbot_sidecar.application.run_service.AgentRuntimeService") as service_cls:
-            service_instance = service_cls.return_value
-            service_instance.process.return_value = {
+        with patch(
+            "nsbot_sidecar.application.run_service.create_runtime_engine"
+        ) as engine_factory:
+            runtime_engine = engine_factory.return_value
+            runtime_engine.process.return_value = {
                 "deltas": [],
                 "timeline_entries": [],
                 "final_answer": "ok",
@@ -376,8 +378,8 @@ class RuntimeServiceTests(unittest.TestCase):
             )
 
         self.assertEqual(result["final_answer"], "ok")
-        service_cls.assert_called_once_with(cfg)
-        service_instance.process.assert_called_once_with(
+        engine_factory.assert_called_once_with(cfg)
+        runtime_engine.process.assert_called_once_with(
             run_id="run-1",
             user_input="task",
             auth_context={"auth": "ctx"},

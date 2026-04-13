@@ -5,7 +5,7 @@ import inspect
 import json
 import logging
 import threading
-from typing import Any, Callable, cast
+from typing import Any, Callable
 
 from fastapi import BackgroundTasks, HTTPException, status
 
@@ -38,8 +38,8 @@ from nsbot_sidecar.domain.agent_memory_projection import (
     project_final_answer_to_timeline_entry,
     project_system_notice_to_timeline_entry,
 )
+from nsbot_sidecar.runtime.engine import RuntimeEngine, create_runtime_engine
 from nsbot_sidecar.runtime.runtime_service import (
-    AgentRuntimeService,
     RuntimeCancelledError,
     RunMetadata,
     RuntimeProcessError,
@@ -53,6 +53,7 @@ from nsbot_sidecar.application.timeline_service import serialize_timeline_entry,
 
 
 RuntimeExecutor = Callable[..., dict[str, Any]]
+RuntimeEngineFactory = Callable[[RuntimeWorkerConfig], RuntimeEngine]
 RunLauncher = Callable[[Callable[[], None]], None]
 
 
@@ -88,6 +89,7 @@ class RunService:
     cancellation_registry: RunCancellationRegistry | None = None
     ns_bot_home: str | None = None
     runtime_executor: RuntimeExecutor | None = None
+    runtime_engine_factory: RuntimeEngineFactory | None = None
     run_launcher: RunLauncher | None = None
     fd_executable: str | None = None
     rg_executable: str | None = None
@@ -707,58 +709,52 @@ class RunService:
         event_callback: Callable[[dict[str, Any]], None] | None = None,
         is_cancelled: Callable[[], bool] | None = None,
     ) -> tuple[dict[str, Any], bool]:
-        executor = self.runtime_executor or execute_runtime_run
-        signature = inspect.signature(executor)
-        executor_any = cast(Any, executor)
-        parameters = signature.parameters
-        has_var_keyword = any(
-            parameter.kind == inspect.Parameter.VAR_KEYWORD
-            for parameter in parameters.values()
-        )
-        has_var_positional = any(
-            parameter.kind == inspect.Parameter.VAR_POSITIONAL
-            for parameter in parameters.values()
-        )
-        supports_event_callback = (
-            "event_callback" in parameters
-            or has_var_keyword
-            or has_var_positional
-            or len(parameters) >= 6
-        )
-        supports_is_cancelled = (
-            "is_cancelled" in parameters
-            or has_var_keyword
-            or has_var_positional
-            or len(parameters) >= 7
-        )
-        base_args = [config, run_id, user_input, auth_context, metadata]
-
-        if has_var_positional:
+        if self.runtime_executor is not None:
+            # Compatibility bridge for tests that inject a fake function executor.
+            signature = inspect.signature(self.runtime_executor)
+            parameters = signature.parameters
+            supports_event_callback = (
+                "event_callback" in parameters or len(parameters) >= 6
+            )
+            supports_is_cancelled = (
+                "is_cancelled" in parameters or len(parameters) >= 7
+            )
+            if any(
+                parameter.kind == inspect.Parameter.VAR_KEYWORD
+                for parameter in parameters.values()
+            ):
+                supports_event_callback = True
+                supports_is_cancelled = True
+            base_args = [config, run_id, user_input, auth_context, metadata]
+            kwargs: dict[str, Any] = {}
+            if "event_callback" in parameters:
+                kwargs["event_callback"] = event_callback
+            if "is_cancelled" in parameters:
+                kwargs["is_cancelled"] = is_cancelled
+            if kwargs:
+                return (
+                    self.runtime_executor(*base_args, **kwargs),
+                    supports_event_callback,
+                )
             if supports_event_callback:
                 base_args.append(event_callback)
             if supports_is_cancelled:
                 base_args.append(is_cancelled)
-            return executor_any(*base_args), supports_event_callback
+            return self.runtime_executor(*base_args), supports_event_callback
 
-        kwargs: dict[str, Any] = {}
-        if supports_event_callback and (
-            "event_callback" in parameters or has_var_keyword
-        ):
-            kwargs["event_callback"] = event_callback
-        if supports_is_cancelled and ("is_cancelled" in parameters or has_var_keyword):
-            kwargs["is_cancelled"] = is_cancelled
-
-        if kwargs:
-            return executor_any(*base_args, **kwargs), supports_event_callback
-
-        if supports_event_callback:
-            call_args = list(base_args)
-            call_args.append(event_callback)
-            if supports_is_cancelled:
-                call_args.append(is_cancelled)
-            return executor_any(*call_args), True
-
-        return executor_any(*base_args), False
+        engine_factory = self.runtime_engine_factory or create_runtime_engine
+        engine = engine_factory(config)
+        return (
+            engine.process(
+                run_id=run_id,
+                user_input=user_input,
+                auth_context=auth_context,
+                metadata=metadata,
+                event_callback=event_callback,
+                is_cancelled=is_cancelled,
+            ),
+            True,
+        )
 
     def cancel_run(self, run_id: str) -> dict[str, Any]:
         run = self.runs.get_by_id(run_id)
@@ -1176,8 +1172,8 @@ def execute_runtime_run(
     event_callback: Callable[[dict[str, Any]], None] | None = None,
     is_cancelled: Callable[[], bool] | None = None,
 ) -> dict[str, Any]:
-    service = AgentRuntimeService(config)
-    return service.process(
+    engine = create_runtime_engine(config)
+    return engine.process(
         run_id=run_id,
         user_input=user_input,
         auth_context=auth_context,

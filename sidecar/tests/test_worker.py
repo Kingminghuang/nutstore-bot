@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import json
 import os
+from io import StringIO
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from nsbot_sidecar.runtime.worker import parse_request
+from nsbot_sidecar.runtime.worker import main, parse_request
 
 
 class WorkerRequestParsingTests(unittest.TestCase):
@@ -120,6 +121,37 @@ class WorkerRequestParsingTests(unittest.TestCase):
             req.config.ns_bot_home,
             str((Path(r"C:\Users\test\AppData\Roaming") / "NutstoreBot").resolve()),
         )
+
+    def test_main_uses_runtime_engine_and_prints_json_response(self) -> None:
+        request_payload = {
+            "runId": "run-main",
+            "userInput": "hello",
+            "authContext": {"uid": "u1"},
+            "metadata": {"workspacePath": "/tmp/ws", "sessionKey": "s-main"},
+            "config": {"modelId": "gpt-5.4", "nsBotHome": "/tmp/.nsbot"},
+        }
+        stdin = StringIO(json.dumps(request_payload) + "\n")
+        stdout = StringIO()
+        fake_result = {
+            "deltas": [],
+            "timeline_entries": [],
+            "session_messages": [],
+            "final_answer": "ok",
+        }
+
+        with patch("nsbot_sidecar.runtime.worker.sys.stdin", stdin):
+            with patch("nsbot_sidecar.runtime.worker.sys.stdout", stdout):
+                with patch(
+                    "nsbot_sidecar.runtime.worker.create_runtime_engine"
+                ) as engine_factory:
+                    engine_factory.return_value.process.return_value = fake_result
+                    code = main()
+
+        self.assertEqual(code, 0)
+        engine_factory.assert_called_once()
+        body = json.loads(stdout.getvalue().strip())
+        self.assertTrue(body["success"])
+        self.assertEqual(body["result"]["final_answer"], "ok")
 
 
 if __name__ == "__main__":

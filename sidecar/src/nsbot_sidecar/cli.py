@@ -19,8 +19,8 @@ from nsbot_sidecar.infrastructure.attachment_store import AttachmentStore
 from nsbot_sidecar.infrastructure.local_paths import nsbot_home
 from nsbot_sidecar.application.provider_service import ProviderService
 from nsbot_sidecar.infrastructure.repositories import create_repositories
+from nsbot_sidecar.runtime.engine import create_runtime_engine
 from nsbot_sidecar.runtime.runtime_service import (
-    AgentRuntimeService,
     RunMetadata,
     RuntimeWorkerConfig,
 )
@@ -874,16 +874,16 @@ def _handle_run_command(args: SimpleNamespace) -> int:
         "exp_epoch": 0,
     }
 
-    print("[*] Initializing AgentRuntimeService", file=sys.stderr)
+    print("[*] Initializing RuntimeEngine", file=sys.stderr)
     print(f"[*] Workspace: {effective_workspace_path}", file=sys.stderr)
     model_disp = config.model or config.model_id
     print(f"[*] Model: {model_disp} (Provider: {config.provider})", file=sys.stderr)
     print(f"[*] Base URL: {config.base_url}", file=sys.stderr)
 
-    service = AgentRuntimeService(config)
+    runtime_engine = create_runtime_engine(config)
     print(f"\n[*] Processing user input: {args.user_input}", file=sys.stderr)
     print("-" * 50, file=sys.stderr)
-    result = service.process(
+    result = runtime_engine.process(
         run_id=args.run_id,
         user_input=args.user_input,
         auth_context=auth_context,
