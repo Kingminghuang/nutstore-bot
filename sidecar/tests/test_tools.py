@@ -7,7 +7,14 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from nsbot_sidecar.runtime.tools import ToolCall, ToolLayer, path_identity, resolve_path_arg, under_root
+from nsbot_sidecar.runtime.tools import (
+    ToolCall,
+    ToolLayer,
+    build_workspace_tools,
+    path_identity,
+    resolve_path_arg,
+    under_root,
+)
 
 
 class ToolLayerTests(unittest.TestCase):
@@ -297,6 +304,29 @@ class ToolLayerTests(unittest.TestCase):
         self.assertEqual(p1, p5)
         self.assertEqual(path_identity("C:\\Workspace\\A", "windows"), path_identity("c:\\workspace\\a", "windows"))
         self.assertTrue(under_root("C:\\Workspace\\A", "c:\\workspace", "windows"))
+
+    def test_workspace_tool_metadata_is_unambiguous_and_actionable(self) -> None:
+        tools = build_workspace_tools(str(self.workspace))
+        by_name = {tool.name: tool for tool in tools}
+
+        self.assertIn("find", by_name)
+        self.assertIn("grep", by_name)
+        self.assertIn("read", by_name)
+        self.assertIn("edit", by_name)
+
+        find_inputs = by_name["find"].inputs
+        self.assertEqual(sorted(find_inputs.keys()), ["limit", "path", "pattern"])
+        self.assertIn("Defaults to '.'", str(find_inputs["path"]["description"]))
+
+        grep_inputs = by_name["grep"].inputs
+        self.assertIn("literal=true", str(grep_inputs["pattern"]["description"]))
+        self.assertIn("default 100", str(grep_inputs["limit"]["description"]))
+
+        read_inputs = by_name["read"].inputs
+        self.assertIn("1-based", str(read_inputs["offset"]["description"]))
+
+        edit_inputs = by_name["edit"].inputs
+        self.assertIn("exactly once", str(edit_inputs["old_text"]["description"]))
 
 
 if __name__ == "__main__":

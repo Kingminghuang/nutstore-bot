@@ -214,6 +214,12 @@ Home (Page)
          └── SubmitButton("Save provider")
 ```
 
+### Phase 1 Runtime Note (2026-04-13)
+1. Sidecar runtime agent kernel has switched to `ToolCallingAgent` as the main orchestrator.
+2. A managed `CodeAgent` (`python_exec_agent`) is injected for on-demand Python execution only.
+3. Frontend event protocol remains unchanged in this phase: still consumes `run.status`, `run.delta`, and `run.timeline-entry`.
+4. No frontend behavior or reducer contract changes are required for this phase; ThreadEventType migration is reserved for a later phase.
+
 ### 分析总结
 1. **外层布局**: 使用 `Home` 组件作为主视图。采用左右分栏的弹性布局（`flex h-screen`），左侧是**宽度可调**的 `Sidebar`（借助 ResizeHandle 拖拽更新宽度状态），右侧自适应撑满的是 `MainContent`，在需要时作为 Overlay 弹出 `SettingsModal`。
 2. **状态驱动的设置面板**: `SettingsModal` 没有采用跳转页面的方式，而是通过内部维护一个 `currentPage` 状态来实现不同配置项步骤（提供商列表、自定义提供商、连接提供商、已连接提供商编辑）间的切换。已连接 provider 列表已提升到 `Home` 页面级 state，通过 props 注入 `SettingsModal`，不再由 modal 内部独立持有。

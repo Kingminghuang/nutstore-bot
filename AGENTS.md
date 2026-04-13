@@ -49,3 +49,14 @@
 - For runtime-layer changes, run at minimum:
   - `cd sidecar && uv run pytest tests/test_runtime_service.py tests/test_worker.py tests/test_api_server.py`
 - When adding a new runtime backend, prefer injecting via `runtime_engine_factory` instead of branching at business call sites.
+
+## Phase 1 Runtime Conventions
+- Runtime kernel baseline is `ToolCallingAgent` (main) + managed `CodeAgent` (`python_exec_agent`) for on-demand Python execution.
+- Main-agent tool priority is a default strategy (not a hard requirement): prefer `read -> grep -> find -> ls`, and only use `edit/write` after sufficient evidence is collected.
+- Managed `CodeAgent` is a fallback path for tasks that cannot be completed efficiently or reliably with standard workspace tools (`read/grep/find/ls`), including but not limited to computation, data transformation, and script-style workflows.
+- Preserve Phase 1 external behavior: API contract unchanged, worker stdin/stdout JSON unchanged, and SSE event names remain `run.*`.
+- For runtime/tooling changes, run at minimum:
+  - `cd sidecar && uv run pytest tests/test_runtime_service.py tests/test_worker.py tests/test_api_server.py tests/test_tools.py`
+- In `sidecar/src/nsbot_sidecar/runtime/tools.py`, keep tool metadata unambiguous:
+  - no duplicate keys in `inputs`;
+  - include practical default/range semantics in parameter descriptions where relevant.

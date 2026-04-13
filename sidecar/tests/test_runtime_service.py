@@ -42,8 +42,12 @@ class FakeStreamingModel(Model):
         tools_to_call_from=None,
         **kwargs,
     ):
-        payload = (
-            f"Thought: solve quickly\n<code>\nfinal_answer('{self.answer}')\n</code>"
+        payload = json.dumps(
+            {
+                "name": "final_answer",
+                "arguments": {"answer": self.answer},
+                "thought": "solve quickly",
+            }
         )
         yield ChatMessageStreamDelta(
             content=payload,
@@ -58,7 +62,16 @@ class FakeStreamingModel(Model):
         tools_to_call_from=None,
         **kwargs,
     ):
-        return ChatMessage(role=MessageRole.ASSISTANT, content="unused")
+        return ChatMessage(
+            role=MessageRole.ASSISTANT,
+            content=json.dumps(
+                {
+                    "name": "final_answer",
+                    "arguments": {"answer": self.answer},
+                    "thought": "solve quickly",
+                }
+            ),
+        )
 
 
 class FakeDirectFailureModel(Model):
@@ -347,6 +360,63 @@ class RuntimeServiceTests(unittest.TestCase):
             "Here are the rules you should always follow to solve your task", prompt
         )
         self.assertNotIn("Above examples were using notional tools", prompt)
+
+    def test_runtime_service_wires_tool_calling_agent_with_managed_code_agent(self) -> None:
+        created: dict[str, object] = {}
+
+        class FakeCodeAgent:
+            def __init__(self, *args, **kwargs):
+                del args
+                created["code_kwargs"] = kwargs
+                created["code_instance"] = self
+
+        class FakeToolCallingAgent:
+            def __init__(self, *args, **kwargs):
+                del args
+                created["main_kwargs"] = kwargs
+                self.memory = type("Memory", (), {"steps": []})()
+
+            def run(self, *args, **kwargs):
+                del args, kwargs
+                return iter(())
+
+        with patch(
+            "nsbot_sidecar.runtime.runtime_service.NativeCodeAgent",
+            FakeCodeAgent,
+        ), patch(
+            "nsbot_sidecar.runtime.runtime_service.NativeToolCallingAgent",
+            FakeToolCallingAgent,
+        ):
+            service = SmolagentsRuntimeEngine(
+                self._config(),
+                model_factory=lambda: FakeStreamingModel("ok"),
+            )
+            result = service.process(
+                run_id="run-managed-agent",
+                user_input="task",
+                auth_context={},
+                metadata=RunMetadata(
+                    workspace_path=str(self.workspace_a),
+                    session_key=None,
+                ),
+            )
+
+        self.assertIsNone(result["final_answer"])
+        main_kwargs = created["main_kwargs"]
+        code_kwargs = created["code_kwargs"]
+        self.assertIn("managed_agents", main_kwargs)
+        self.assertEqual(len(main_kwargs["managed_agents"]), 1)
+        self.assertIs(main_kwargs["managed_agents"][0], created["code_instance"])
+        self.assertIn("non-mutating tools first", str(main_kwargs["instructions"]))
+        self.assertIn("Code Subagent Contract", str(code_kwargs["context_prefix"]))
+        self.assertIn(
+            "cannot be completed efficiently or reliably",
+            str(code_kwargs["context_prefix"]),
+        )
+        self.assertNotEqual(
+            str(main_kwargs["context_prefix"]),
+            str(code_kwargs["context_prefix"]),
+        )
 
     def test_execute_runtime_run_forwards_event_callback_and_is_cancelled(self) -> None:
         cfg = self._config()

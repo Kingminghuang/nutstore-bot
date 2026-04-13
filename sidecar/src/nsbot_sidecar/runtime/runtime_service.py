@@ -12,6 +12,7 @@ from smolagents.memory import ActionStep, FinalAnswerStep, PlanningStep
 from smolagents.models import ChatMessageStreamDelta
 
 from nsbot_sidecar.runtime.context_builder import (
+    SECTION_SEPARATOR,
     ContextBuildError,
     ContextBuilder,
     ContextBuilderConfig,
@@ -20,7 +21,10 @@ from nsbot_sidecar.runtime.context_builder import (
 from nsbot_sidecar.providers.direct_model import DirectModel, DirectModelConfig, DirectModelError
 from nsbot_sidecar.runtime.local_code_executor import LocalCodeExecutor
 from nsbot_sidecar.runtime.memory import MemoryConsolidator, MemoryStore
-from nsbot_sidecar.runtime.native_code_agent import NativeCodeAgent
+from nsbot_sidecar.runtime.native_code_agent import (
+    NativeCodeAgent,
+    NativeToolCallingAgent,
+)
 from nsbot_sidecar.domain.agent_memory_projection import (
     extract_action_thought,
     project_agent_memory_to_session_messages,
@@ -32,7 +36,12 @@ from nsbot_sidecar.runtime.session_manager import SessionManager
 from nsbot_sidecar.runtime.tools import build_workspace_tools, path_identity, resolve_path_arg
 
 
-WORKSPACE_BASED_INSTRUCTION = "DO NOT use any web search tool, you can only use the tools provided. Complete task based on the files on your workspace"
+WORKSPACE_BASED_INSTRUCTION = (
+    "DO NOT use any web search tool; you can only use the tools provided. "
+    "Complete tasks based on files in the workspace. Prefer non-mutating tools "
+    "first in this order: read, grep, find, ls. Only use edit/write after enough "
+    "evidence is collected and the target change is clear."
+)
 LOGGER = logging.getLogger(__name__)
 
 
@@ -203,19 +212,37 @@ class AgentRuntimeService:
             rg_executable=self.config.rg_executable,
             os_type=self.config.tool_os_type,
         )
-        executor = LocalCodeExecutor(
+        code_executor = LocalCodeExecutor(
             run_id=run_id,
             workspace_path=workspace_path,
             timeout_seconds=30,
         )
-        agent = NativeCodeAgent(
+        code_context_prefix = _build_code_context_prefix(
+            context_prompt=context_prompt,
+            workspace_path=workspace_path,
+        )
+
+        code_agent = NativeCodeAgent(
+            tools=tools,
+            model=model,
+            context_prefix=code_context_prefix,
+            stream_outputs=True,
+            max_steps=self.config.max_steps,
+            executor=code_executor,
+            name="python_exec_agent",
+            description=(
+                "Execute Python for calculations, data shaping, and temporary "
+                "scripted analysis when normal tools are insufficient."
+            ),
+        )
+        agent = NativeToolCallingAgent(
             tools=tools,
             model=model,
             context_prefix=context_prompt,
             instructions=WORKSPACE_BASED_INSTRUCTION,
             stream_outputs=True,
             max_steps=self.config.max_steps,
-            executor=executor,
+            managed_agents=[code_agent],
         )
 
         deltas: list[dict[str, Any]] = []
@@ -383,7 +410,7 @@ class AgentRuntimeService:
                 raise RuntimeProcessError("unauthorized", text) from exc
             raise RuntimeProcessError("runtime_error", text) from exc
         finally:
-            executor.release_run()
+            code_executor.release_run()
 
         projected_messages = project_agent_memory_to_session_messages(
             agent.memory, run_id=run_id
@@ -495,3 +522,17 @@ def _serialize_action_output(value: Any) -> Any:
         return value
     except TypeError:
         return str(value)
+
+
+def _build_code_context_prefix(*, context_prompt: str, workspace_path: str) -> str:
+    identity_layer = context_prompt.split(SECTION_SEPARATOR, 1)[0].strip()
+    contract = (
+        "## Code Subagent Contract\n"
+        "- You are a Python execution specialist.\n"
+        "- Treat Python execution as a fallback when tasks cannot be completed efficiently or reliably "
+        "with workspace tools (`read/grep/find/ls`).\n"
+        "- Typical fallback cases include computation, data transformation, and script-style workflows.\n"
+        "- If workspace tools are sufficient, do not execute Python.\n"
+        f"- The workspace root is: {workspace_path}"
+    )
+    return identity_layer + "\n\n" + contract

@@ -1188,16 +1188,16 @@ def build_workspace_tools(
 
     class LsTool(WorkspaceTool):
         name = "ls"
-        description = "List directory entries in lexical order."
+        description = "List visible directory entries in lexical order under the workspace."
         inputs = {
             "path": {
                 "type": "string",
-                "description": "Directory path under current workspace.",
+                "description": "Directory path under current workspace. Defaults to '.'.",
                 "nullable": True,
             },
             "limit": {
                 "type": "integer",
-                "description": "Max entries to return.",
+                "description": "Maximum entries to return (>=1, default 500).",
                 "nullable": True,
             },
         }
@@ -1209,21 +1209,20 @@ def build_workspace_tools(
 
     class FindTool(WorkspaceTool):
         name = "find"
-        description = "Find files matching a glob pattern."
+        description = "Find files/directories by glob pattern under the workspace."
         inputs = {
             "pattern": {
                 "type": "string",
-                "description": "Glob pattern, e.g. **/*.py or *.md.",
+                "description": "Glob pattern, e.g. '**/*.py' or '*.md'.",
             },
-            "path": {"type": "string", "description": "Search root under workspace."},
             "path": {
                 "type": "string",
-                "description": "Search root under workspace.",
+                "description": "Search root directory under workspace. Defaults to '.'.",
                 "nullable": True,
             },
             "limit": {
                 "type": "integer",
-                "description": "Max matches to return.",
+                "description": "Maximum matches to return (>=1, default 1000).",
                 "nullable": True,
             },
         }
@@ -1238,20 +1237,20 @@ def build_workspace_tools(
 
     class GrepTool(WorkspaceTool):
         name = "grep"
-        description = "Search file content and return matching lines."
+        description = "Search file content and return matching lines with optional context."
         inputs = {
             "pattern": {
                 "type": "string",
-                "description": "Regex pattern or literal text.",
+                "description": "Regex pattern by default, or literal text when literal=true.",
             },
             "path": {
                 "type": "string",
-                "description": "File or directory path under workspace.",
+                "description": "File or directory path under workspace. Defaults to '.'.",
                 "nullable": True,
             },
             "glob": {
                 "type": "string",
-                "description": "Optional glob filter when path is a directory.",
+                "description": "Optional glob filter when searching a directory.",
                 "nullable": True,
             },
             "ignore_case": {
@@ -1266,12 +1265,12 @@ def build_workspace_tools(
             },
             "context": {
                 "type": "integer",
-                "description": "Number of context lines around each match.",
+                "description": "Number of context lines around each match (>=0, default 0).",
                 "nullable": True,
             },
             "limit": {
                 "type": "integer",
-                "description": "Maximum matches returned.",
+                "description": "Maximum matches returned (>=1, default 100).",
                 "nullable": True,
             },
         }
@@ -1301,17 +1300,17 @@ def build_workspace_tools(
 
     class ReadTool(WorkspaceTool):
         name = "read"
-        description = "Read file content with optional line offset and limit."
+        description = "Read UTF-8 file content with pagination controls (offset/limit)."
         inputs = {
             "path": {"type": "string", "description": "File path under workspace."},
             "offset": {
                 "type": "integer",
-                "description": "Start line index (1-based).",
+                "description": "Start line index (1-based, default 1).",
                 "nullable": True,
             },
             "limit": {
                 "type": "integer",
-                "description": "Max lines to return.",
+                "description": "Maximum lines to return (>=1, default 2000).",
                 "nullable": True,
             },
         }
@@ -1326,10 +1325,10 @@ def build_workspace_tools(
 
     class WriteTool(WorkspaceTool):
         name = "write"
-        description = "Write full file content."
+        description = "Write full file content (overwrite existing file)."
         inputs = {
             "path": {"type": "string", "description": "File path under workspace."},
-            "content": {"type": "string", "description": "Full content to write."},
+            "content": {"type": "string", "description": "Full file content to write."},
         }
 
         def forward(self, path: str, content: str) -> dict[str, Any]:
@@ -1339,11 +1338,17 @@ def build_workspace_tools(
 
     class EditTool(WorkspaceTool):
         name = "edit"
-        description = "Replace one text span in a file."
+        description = "Replace one unique text span in a file."
         inputs = {
             "path": {"type": "string", "description": "File path under workspace."},
-            "old_text": {"type": "string", "description": "Text to replace."},
-            "new_text": {"type": "string", "description": "Replacement text."},
+            "old_text": {
+                "type": "string",
+                "description": "Exact text to replace; must match exactly once.",
+            },
+            "new_text": {
+                "type": "string",
+                "description": "Replacement text (can be empty).",
+            },
         }
 
         def forward(self, path: str, old_text: str, new_text: str) -> dict[str, Any]:
