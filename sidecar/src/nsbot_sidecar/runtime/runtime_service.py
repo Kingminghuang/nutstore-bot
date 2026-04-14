@@ -103,6 +103,7 @@ class AgentRuntimeService:
         metadata: RunMetadata,
         event_callback: Callable[[dict[str, Any]], None] | None = None,
         is_cancelled: Callable[[], bool] | None = None,
+        permission_requester: Callable[[dict[str, Any]], str] | None = None,
     ) -> dict[str, Any]:
         workspace_path = self._resolve_workspace_path(metadata)
         session_key = self._resolve_session_key(metadata, workspace_path)
@@ -211,11 +212,15 @@ class AgentRuntimeService:
             fd_executable=self.config.fd_executable,
             rg_executable=self.config.rg_executable,
             os_type=self.config.tool_os_type,
+            permission_requester=permission_requester,
+            auto_allow=permission_requester is None,
         )
         code_executor = LocalCodeExecutor(
             run_id=run_id,
             workspace_path=workspace_path,
             timeout_seconds=30,
+            permission_requester=permission_requester,
+            auto_allow=permission_requester is None,
         )
         code_context_prefix = _build_code_context_prefix(
             context_prompt=context_prompt,

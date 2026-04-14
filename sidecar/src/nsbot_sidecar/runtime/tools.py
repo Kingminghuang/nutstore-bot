@@ -435,6 +435,8 @@ class ToolLayer:
         fd_executable: str | None = None,
         rg_executable: str | None = None,
         timeout_ms: int = DEFAULT_TOOL_TIMEOUT_MS,
+        permission_requester: Any | None = None,
+        auto_allow: bool = True,
     ):
         self.os_type = _normalize_os_type(os_type)
         if self.os_type == "windows":
@@ -445,6 +447,25 @@ class ToolLayer:
         self.fd_executable = (fd_executable or "").strip()
         self.rg_executable = (rg_executable or "").strip()
         self.timeout_ms = max(1000, timeout_ms)
+        self.permission_requester = permission_requester
+        self.auto_allow = auto_allow
+
+    def _request_permission(self, *, kind: str, title: str, tool_call_id: str) -> None:
+        if self.auto_allow or self.permission_requester is None:
+            return
+        decision = str(
+            self.permission_requester(
+                {
+                    "kind": kind,
+                    "title": title,
+                    "toolCallId": tool_call_id,
+                }
+            )
+        ).strip()
+        if decision == "cancelled":
+            raise ToolLayerError("cancelled", "Permission request cancelled")
+        if decision != "allow":
+            raise ToolLayerError("permission_denied", "Permission denied")
 
     def execute_tool(self, call: ToolCall, signal: Any | None = None) -> ToolResult:
         del signal
@@ -1041,6 +1062,11 @@ if __name__ == "__main__":
         path = self._require_string(args, "path")
         content = self._require_string(args, "content", allow_empty=True)
         target = self._checked_path(path)
+        self._request_permission(
+            kind="write",
+            title=f"Write file {target}",
+            tool_call_id=f"write:{target}",
+        )
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
         byte_count = len(content.encode("utf-8"))
@@ -1055,6 +1081,11 @@ if __name__ == "__main__":
             raise ToolLayerError("invalid_args", "old_text must be non-empty string")
 
         target = self._checked_path(path)
+        self._request_permission(
+            kind="edit",
+            title=f"Edit file {target}",
+            tool_call_id=f"edit:{target}",
+        )
         if not target.exists():
             raise ToolLayerError("not_found", f"path not found: {target}")
         if not target.is_file():
@@ -1171,12 +1202,16 @@ def build_workspace_tools(
     fd_executable: str | None = None,
     rg_executable: str | None = None,
     os_type: str | None = None,
+    permission_requester: Any | None = None,
+    auto_allow: bool = True,
 ):
     layer = ToolLayer(
         workspace_path=workspace_path,
         fd_executable=fd_executable,
         rg_executable=rg_executable,
         os_type=os_type,
+        permission_requester=permission_requester,
+        auto_allow=auto_allow,
     )
 
     class WorkspaceTool(Tool):

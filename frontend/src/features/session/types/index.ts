@@ -19,6 +19,43 @@ export type Session = {
   timelineHydrationStatus: "idle" | "loading" | "loaded"
 }
 
+export type PermissionMode = "auto_allow" | "ask"
+
+export type LivePlanEntry = {
+  id: string
+  content: string
+  priority: "high" | "medium" | "low" | null
+  status: "pending" | "completed" | "failed"
+}
+
+export type LiveToolCall = {
+  toolCallId: string
+  title: string
+  kind: string
+  status: "pending" | "completed" | "failed" | "cancelled"
+}
+
+export type LiveTurn = {
+  optimisticEntries: TimelineEntry[]
+  truncatedAfterSequence: number | null
+  assistantDraft: string
+  planEntries: LivePlanEntry[]
+  toolCalls: LiveToolCall[]
+  waitingForPermission: boolean
+}
+
+export type PendingPermissionRequest = {
+  sessionId: string
+  toolCallId: string
+  title: string
+  kind: string
+  options: Array<{
+    optionId: string
+    name: string
+    kind: string
+  }>
+}
+
 export type ComposerAttachment = {
   id: string
   sessionId: string

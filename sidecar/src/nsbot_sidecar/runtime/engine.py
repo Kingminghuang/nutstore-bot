@@ -34,6 +34,7 @@ class RuntimeEngine(Protocol):
         metadata: RunMetadata,
         event_callback: Callable[[dict[str, Any]], None] | None = None,
         is_cancelled: Callable[[], bool] | None = None,
+        permission_requester: Callable[[dict[str, Any]], str] | None = None,
     ) -> RuntimeResult: ...
 
 
@@ -62,6 +63,7 @@ class SmolagentsRuntimeEngine:
         metadata: RunMetadata,
         event_callback: Callable[[dict[str, Any]], None] | None = None,
         is_cancelled: Callable[[], bool] | None = None,
+        permission_requester: Callable[[dict[str, Any]], str] | None = None,
     ) -> RuntimeResult:
         return self._runtime_service.process(
             run_id=run_id,
@@ -70,6 +72,7 @@ class SmolagentsRuntimeEngine:
             metadata=metadata,
             event_callback=event_callback,
             is_cancelled=is_cancelled,
+            permission_requester=permission_requester,
         )
 
 

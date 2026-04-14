@@ -1,7 +1,18 @@
 "use client"
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { invoke } from "@tauri-apps/api/core"
 
+import {
+  applyAssistantDraftChunk,
+  createLocalSession,
+  createOptimisticUserEntry,
+  mergeTimelineEntriesWithLiveTurn,
+  type LiveTurnStateBySession,
+  updateLiveTurnBySession,
+  upsertSession,
+} from "@/app/live-turn-state"
+import { usePermissionRequests } from "@/app/use-permission-requests"
 import { MainContent } from "@/features/runs"
 import { SettingsModal } from "@/features/settings"
 import { Sidebar } from "@/features/workspaces"
@@ -15,8 +26,9 @@ import {
   updateProvider,
   validateProvider,
   type TimelineEntry,
+  acpClient,
 } from "@/shared/api/sidecar"
-import { sidecarRequest, subscribeSidecarStream, type SidecarStreamSubscription } from "@/shared/api/sidecar/sidecar-transport"
+import { isTauriRuntime, sidecarRequest } from "@/shared/api/sidecar/sidecar-transport"
 import {
   normalizeSelectedReasoningEffort,
   type ModelOptionGroup,
@@ -27,16 +39,13 @@ import {
   type SelectedModelRef,
   isSelectedModelAvailable,
 } from "@/features/providers"
-import { parseRunEventEnvelope, type RunStreamEvent } from "@/features/runs"
-import type { ComposerAttachment, DraftAttachment, Project, Session, WorkspaceSummary } from "@/features/session"
-
-type TimelinePageResponse = {
-  entries: TimelineEntry[]
-  pagination?: {
-    hasMore?: boolean
-    nextBeforeSequence?: number | null
-  }
-}
+import type {
+  ComposerAttachment,
+  DraftAttachment,
+  Project,
+  Session,
+  WorkspaceSummary,
+} from "@/features/session"
 
 type ServerSession = Omit<
   Session,
@@ -104,16 +113,6 @@ function updateSessionInWorkspace(
   }
 }
 
-function appendTimelineEntry(entries: TimelineEntry[], entry: TimelineEntry): TimelineEntry[] {
-  const existingIndex = entries.findIndex((candidate) => candidate.id === entry.id)
-  if (existingIndex >= 0) {
-    const next = [...entries]
-    next[existingIndex] = entry
-    return next
-  }
-  return [...entries, entry]
-}
-
 export default function Home() {
   const [workspaces, setWorkspaces] = useState<WorkspaceSummary[]>([])
   const [sessionsByWorkspace, setSessionsByWorkspace] = useState<Record<string, Session[]>>({})
@@ -132,15 +131,23 @@ export default function Home() {
   const [providerError, setProviderError] = useState<string | null>(null)
   const [workspaceError, setWorkspaceError] = useState<string | null>(null)
   const [runError, setRunError] = useState<string | null>(null)
-  const [sessionRunStatusById, setSessionRunStatusById] = useState<Record<string, boolean>>({})
-  const [sessionActiveRunIdById, setSessionActiveRunIdById] = useState<Record<string, string | null>>({})
+  const [pendingSessionId, setPendingSessionId] = useState<string | null>(null)
+  const [liveTurnBySession, setLiveTurnBySession] = useState<LiveTurnStateBySession>({})
   const [attachmentsBySession, setAttachmentsBySession] = useState<Record<string, ComposerAttachment[]>>({})
   const [draftAttachmentsByWorkspace, setDraftAttachmentsByWorkspace] = useState<Record<string, DraftAttachment[]>>({})
   const [uploadingAttachmentTargetId, setUploadingAttachmentTargetId] = useState<string | null>(null)
-  const streamSubscriptionRef = useRef<SidecarStreamSubscription | null>(null)
-  const sessionActiveRunIdByIdRef = useRef<Record<string, string | null>>({})
   const lastHydrationAttemptSessionIdRef = useRef<string | null>(null)
   const isDragging = useRef(false)
+  const acpReadyRef = useRef(false)
+  const {
+    pendingPermissionRequest,
+    resolvePermissionRequest,
+    requestPermissionFromUser,
+    cancelAllPendingPermissionRequests,
+    cancelPendingPermissionRequestForSession,
+    hasPendingPermissionRequestForSession,
+    getPendingPermissionOptionId,
+  } = usePermissionRequests({ setLiveTurnBySession })
 
   const refreshProviderState = useCallback(async () => {
     setIsLoadingProviders(true)
@@ -227,6 +234,7 @@ export default function Home() {
       setWorkspaceError(error instanceof Error ? error.message : "Failed to load workspaces")
       setWorkspaces([])
       setSessionsByWorkspace({})
+      setLiveTurnBySession({})
       setAttachmentsBySession({})
       setDraftAttachmentsByWorkspace({})
       setActiveDraftWorkspaceId(null)
@@ -235,20 +243,248 @@ export default function Home() {
     }
   }, [])
 
+  const startLiveTurn = useCallback(
+    (
+      sessionId: string,
+      text: string,
+      options?: {
+        truncatedAfterSequence?: number | null
+      }
+    ) => {
+      setLiveTurnBySession((prev) =>
+        updateLiveTurnBySession(prev, sessionId, () => ({
+          optimisticEntries: [createOptimisticUserEntry(sessionId, text)],
+          truncatedAfterSequence: options?.truncatedAfterSequence ?? null,
+          assistantDraft: "",
+          planEntries: [],
+          toolCalls: [],
+          waitingForPermission: false,
+        }))
+      )
+    },
+    []
+  )
+
+  const hydrateSessionAfterRun = useCallback(async (workspaceId: string, sessionId: string) => {
+    const [refreshedTimeline, sessionsPayload] = await Promise.all([
+      getSessionTimeline(sessionId, { limit: TIMELINE_PAGE_SIZE }),
+      sidecarFetch<{ sessions: ServerSession[] }>(`/workspaces/${workspaceId}/sessions`),
+    ])
+    const refreshedSession = sessionsPayload.sessions.find((session) => session.id === sessionId)
+    if (!refreshedSession) {
+      throw new Error("session not found after prompt")
+    }
+
+    setSessionsByWorkspace((prev) => {
+      const existing = (prev[workspaceId] ?? []).find((session) => session.id === sessionId)
+      const nextSession = mergeSessionWithLocalHistory(refreshedSession, existing, refreshedTimeline.entries)
+      return {
+        ...prev,
+        [workspaceId]: upsertSession(prev[workspaceId] ?? [], nextSession),
+      }
+    })
+    setLiveTurnBySession((prev) => updateLiveTurnBySession(prev, sessionId, () => null))
+    return refreshedSession
+  }, [])
+
   useEffect(() => {
     void Promise.all([refreshProviderState(), refreshWorkspaceState()])
   }, [refreshProviderState, refreshWorkspaceState])
 
   useEffect(() => {
-    return () => {
-      streamSubscriptionRef.current?.close()
-      streamSubscriptionRef.current = null
+    if (acpReadyRef.current) {
+      return
     }
-  }, [])
+    acpReadyRef.current = true
+    let cancelled = false
 
-  useEffect(() => {
-    sessionActiveRunIdByIdRef.current = sessionActiveRunIdById
-  }, [sessionActiveRunIdById])
+    acpClient.onServerRequest(async (request) => {
+      if (cancelled) {
+        return { outcome: { outcome: "cancelled" } }
+      }
+
+      if (request.method === "session/request_permission") {
+        const toolCall = request.params?.toolCall as Record<string, unknown> | undefined
+        const options = Array.isArray(request.params?.options)
+          ? request.params.options.map((option) => {
+              const normalized = option as Record<string, unknown>
+              return {
+                optionId: String(normalized.optionId ?? ""),
+                name: String(normalized.name ?? ""),
+                kind: String(normalized.kind ?? ""),
+              }
+            })
+          : []
+
+        return requestPermissionFromUser({
+          sessionId: String(request.params?.sessionId ?? ""),
+          toolCallId: String(toolCall?.toolCallId ?? ""),
+          title: String(toolCall?.title ?? "Permission required"),
+          kind: String(toolCall?.kind ?? "other"),
+          options,
+        })
+      }
+
+      if (request.method === "fs/read_text_file") {
+        if (!isTauriRuntime()) {
+          return { content: "", error: "fs/read_text_file unavailable in browser runtime" }
+        }
+        const path = String(request.params?.path ?? "")
+        if (!path.trim()) {
+          return { content: "", error: "path is required" }
+        }
+        const content = await invoke<string>("acp_read_text_file", { path })
+        return { content }
+      }
+
+      if (request.method === "fs/write_text_file") {
+        if (!isTauriRuntime()) {
+          return { error: "fs/write_text_file unavailable in browser runtime" }
+        }
+        const path = String(request.params?.path ?? "")
+        const content = String(request.params?.content ?? "")
+        if (!path.trim()) {
+          return { error: "path is required" }
+        }
+        await invoke("acp_write_text_file", { path, content })
+        return {}
+      }
+
+      return { outcome: { outcome: "cancelled" } }
+    })
+    acpClient.onNotification((notification) => {
+      if (notification.method !== "session/update") {
+        return
+      }
+
+      const sessionId = String(notification.params?.sessionId ?? "")
+      const update = notification.params?.update as Record<string, unknown> | undefined
+      const sessionUpdate = String(update?.sessionUpdate ?? "")
+      if (!sessionId || !update) {
+        return
+      }
+
+      if (sessionUpdate === "agent_message_chunk") {
+        const content = update.content as Record<string, unknown> | undefined
+        const text = String(content?.text ?? "")
+        if (!text) {
+          return
+        }
+        setLiveTurnBySession((prev) =>
+          updateLiveTurnBySession(prev, sessionId, (liveTurn) => ({
+            ...liveTurn,
+            assistantDraft: applyAssistantDraftChunk(liveTurn.assistantDraft, text),
+          }))
+        )
+        return
+      }
+
+      if (sessionUpdate === "plan") {
+        const entries = Array.isArray(update.entries) ? update.entries : []
+        setLiveTurnBySession((prev) =>
+          updateLiveTurnBySession(prev, sessionId, (liveTurn) => ({
+            ...liveTurn,
+            planEntries: entries.map((entry, index) => {
+              const normalized = entry as Record<string, unknown>
+              return {
+                id: `${sessionId}-plan-${index}`,
+                content: String(normalized.content ?? ""),
+                priority:
+                  normalized.priority === "high" ||
+                  normalized.priority === "medium" ||
+                  normalized.priority === "low"
+                    ? normalized.priority
+                    : null,
+                status:
+                  normalized.status === "completed" || normalized.status === "failed"
+                    ? normalized.status
+                    : "pending",
+              }
+            }),
+          }))
+        )
+        return
+      }
+
+      if (sessionUpdate === "tool_call") {
+        const toolCallId = String(update.toolCallId ?? "")
+        if (!toolCallId) {
+          return
+        }
+        setLiveTurnBySession((prev) =>
+          updateLiveTurnBySession(prev, sessionId, (liveTurn) => {
+            const nextToolCall = {
+              toolCallId,
+              title: String(update.title ?? "Tool call"),
+              kind: String(update.kind ?? "other"),
+              status: "pending" as const,
+            }
+            const existingIndex = liveTurn.toolCalls.findIndex(
+              (toolCall) => toolCall.toolCallId === toolCallId
+            )
+            if (existingIndex < 0) {
+              return {
+                ...liveTurn,
+                toolCalls: [...liveTurn.toolCalls, nextToolCall],
+              }
+            }
+            return {
+              ...liveTurn,
+              toolCalls: liveTurn.toolCalls.map((toolCall, index) =>
+                index === existingIndex ? { ...toolCall, ...nextToolCall } : toolCall
+              ),
+            }
+          })
+        )
+        return
+      }
+
+      if (sessionUpdate === "tool_call_update") {
+        const toolCallId = String(update.toolCallId ?? "")
+        const status = String(update.status ?? "pending")
+        if (!toolCallId) {
+          return
+        }
+        setLiveTurnBySession((prev) =>
+          updateLiveTurnBySession(prev, sessionId, (liveTurn) => ({
+            ...liveTurn,
+            waitingForPermission:
+              status === "pending" ? liveTurn.waitingForPermission : false,
+            toolCalls: liveTurn.toolCalls.map((toolCall) =>
+              toolCall.toolCallId === toolCallId &&
+              (status === "pending" ||
+                status === "completed" ||
+                status === "failed" ||
+                status === "cancelled")
+                ? { ...toolCall, status }
+                : toolCall
+            ),
+          }))
+        )
+      }
+    })
+    void acpClient
+      .request("initialize", {
+        protocolVersion: 1,
+        clientCapabilities: {
+          fs: {
+            readTextFile: isTauriRuntime(),
+            writeTextFile: isTauriRuntime(),
+          },
+          terminal: false,
+        },
+        clientInfo: {
+          name: "nutstore-frontend",
+          title: "Nutstore Frontend",
+          version: "0.1.0",
+        },
+      })
+      .catch(() => undefined)
+    return () => {
+      cancelled = true
+      cancelAllPendingPermissionRequests()
+    }
+  }, [cancelAllPendingPermissionRequests, requestPermissionFromUser])
 
   useEffect(() => {
     setSelectedReasoningEffort((current) =>
@@ -264,8 +500,15 @@ export default function Home() {
           null,
     [activeSessionId, activeWorkspaceId, sessionsByWorkspace]
   )
-  const activeSessionRunId = activeSessionId ? (sessionActiveRunIdById[activeSessionId] ?? null) : null
-  const isActiveSessionRunning = activeSessionId ? Boolean(sessionRunStatusById[activeSessionId]) : false
+  const activeLiveTurn = useMemo(
+    () => (activeSessionId ? liveTurnBySession[activeSessionId] ?? null : null),
+    [activeSessionId, liveTurnBySession]
+  )
+  const activeTimelineEntries = useMemo(
+    () => mergeTimelineEntriesWithLiveTurn(activeSession?.timelineEntries ?? [], activeLiveTurn),
+    [activeLiveTurn, activeSession?.timelineEntries]
+  )
+  const isActiveSessionRunning = activeSessionId != null && pendingSessionId === activeSessionId
 
   const isDraftSessionActive =
     activeWorkspaceId != null &&
@@ -501,193 +744,74 @@ export default function Home() {
     [activeWorkspaceId]
   )
 
-  const startRunEventStream = useCallback((runId: string, workspaceId: string, sessionId: string) => {
-    streamSubscriptionRef.current?.close()
-
-    const markRunInactiveIfCurrent = (targetRunId: string) => {
-      if (sessionActiveRunIdByIdRef.current[sessionId] !== targetRunId) {
-        return
-      }
-      setSessionRunStatusById((prev) => ({
-        ...prev,
-        [sessionId]: false,
-      }))
-      setSessionActiveRunIdById((prev) => ({
-        ...prev,
-        [sessionId]: null,
-      }))
-    }
-
-    const closeSource = () => {
-      streamSubscriptionRef.current?.close()
-      streamSubscriptionRef.current = null
-      markRunInactiveIfCurrent(runId)
-    }
-
-    const updateActiveSession = (updateSession: (session: Session) => Session) => {
-      setSessionsByWorkspace((prev) => updateSessionInWorkspace(prev, workspaceId, sessionId, updateSession))
-    }
-
-    const refreshSessionSummary = () => {
-      void sidecarFetch<{ sessions: ServerSession[] }>(`/workspaces/${workspaceId}/sessions`)
-        .then((response) => {
-          const refreshed = response.sessions.find((session) => session.id === sessionId)
-          if (!refreshed) {
-            return
-          }
-          updateActiveSession((session) => ({
-            ...session,
-            ...refreshed,
-            timelineEntries: session.timelineEntries,
-          }))
-        })
-        .catch(() => undefined)
-    }
-
-    const applyTimelineEntryEvent = (event: Extract<RunStreamEvent, { type: "run.timeline-entry" }>) => {
-      updateActiveSession((session) => ({
-        ...session,
-        timelineEntries: appendTimelineEntry(session.timelineEntries, event.entry),
-      }))
-    }
-
-    const applyTerminalEvent = (event: Extract<RunStreamEvent, { type: "run.completed" | "run.failed" }>) => {
-      refreshSessionSummary()
-      setRunError(event.type === "run.failed" ? event.errorMessage : null)
-      markRunInactiveIfCurrent(event.runId)
-    }
-
-    const applyStatusEvent = (event: Extract<RunStreamEvent, { type: "run.status" }>) => {
-      if (event.status === "queued" || event.status === "running") {
-        setSessionRunStatusById((prev) => ({
-          ...prev,
-          [sessionId]: true,
-        }))
-        setSessionActiveRunIdById((prev) => ({
-          ...prev,
-          [sessionId]: event.runId,
-        }))
-        return
-      }
-      markRunInactiveIfCurrent(event.runId)
-    }
-
-    const applyEvent = (event: RunStreamEvent) => {
-      if (event.sessionId !== sessionId) {
-        return
-      }
-      if (event.type === "run.timeline-entry") {
-        applyTimelineEntryEvent(event)
-        return
-      }
-      if (event.type === "run.status") {
-        applyStatusEvent(event)
-        return
-      }
-      if (event.type === "run.completed" || event.type === "run.failed") {
-        applyTerminalEvent(event)
-        return
-      }
-      if (event.type === "run.replay-ready") {
-        markRunInactiveIfCurrent(event.runId)
-        closeSource()
-      }
-    }
-
-    const handleMessageEvent = (messageEvent: { lastEventId: string; type: string; data: unknown }) => {
-      try {
-        const envelope = parseRunEventEnvelope(
-          JSON.stringify({
-            id: messageEvent.lastEventId,
-            event: messageEvent.type,
-            data: messageEvent.data,
-          })
-        )
-        applyEvent(envelope.data)
-      } catch {
-        // ignore malformed stream events
-      }
-    }
-
-    void subscribeSidecarStream(`/runs/${runId}/events`, {
-      onEvent: (eventName, payload, eventId) => {
-        handleMessageEvent({ lastEventId: eventId, type: eventName, data: payload })
-      },
-      onError: () => {
-        closeSource()
-      },
-      onClose: () => {
-        if (streamSubscriptionRef.current != null) {
-          streamSubscriptionRef.current = null
-        }
-      },
-    }).then((subscription) => {
-      streamSubscriptionRef.current = subscription
-    }).catch(() => {
-      closeSource()
-    })
-  }, [])
-
   const handleSendMessage = useCallback(
-    async (text: string) => {
+    async (text: string, options: { autoAllow: boolean }) => {
       if (!activeWorkspaceId || !selectedModel) return
       const isDraftMode = activeSessionId == null && activeDraftWorkspaceId === activeWorkspaceId
 
       setRunError(null)
-      const attachmentIds = activeSessionId
-        ? (attachmentsBySession[activeSessionId] ?? []).map((item) => item.id)
-        : []
-      const draftAttachmentIds = isDraftMode
-        ? (draftAttachmentsByWorkspace[activeWorkspaceId] ?? []).map((item) => item.id)
-        : []
-      const requestSessionId = activeSessionId ?? undefined
+      let targetSessionId = activeSessionId
 
       try {
-        const runResponse = await sidecarFetch<{
-          run: { id: string; status: string; finalAnswer: string | null }
-          session: ServerSession
-          entries: TimelineEntry[]
-        }>("/runs", {
-          method: "POST",
-          body: JSON.stringify({
-            ...(requestSessionId ? { sessionId: requestSessionId } : {}),
-            workspaceId: activeWorkspaceId,
-            connectionId: selectedModel.connectionId,
-            modelId: selectedModel.modelId,
-            ...(selectedReasoningEffort ? { reasoningEffort: selectedReasoningEffort } : {}),
-            ...(attachmentIds.length > 0 ? { attachmentIds } : {}),
-            ...(draftAttachmentIds.length > 0 ? { draftAttachmentIds } : {}),
-            input: text,
-          }),
-        })
-
-        const nextSession = mergeSessionWithLocalHistory(
-          runResponse.session,
-          activeSessionId
-            ? (sessionsByWorkspace[activeWorkspaceId] ?? []).find((session) => session.id === activeSessionId)
-            : undefined,
-          runResponse.entries
-        )
-
-        setSessionsByWorkspace((prev) => {
-          const existing = prev[activeWorkspaceId] ?? []
-          if (activeSessionId) {
-            return {
-              ...prev,
-              [activeWorkspaceId]: existing.map((session) =>
-                session.id === activeSessionId ? { ...nextSession } : session
-              ),
-            }
+        if (!targetSessionId) {
+          const workspace = workspaces.find((item) => item.id === activeWorkspaceId)
+          if (!workspace) {
+            throw new Error("workspace not found")
           }
-          return {
+
+          const createdSession = await acpClient.request<{ sessionId: string }>("session/new", {
+            cwd: workspace.realPath,
+          })
+          targetSessionId = createdSession.sessionId
+          await acpClient.request("session/set_config_option", {
+            sessionId: targetSessionId,
+            configId: "model",
+            value: selectedModel.modelId,
+          })
+          const localSession = createLocalSession(
+            targetSessionId,
+            activeWorkspaceId,
+            selectedModel,
+            text
+          )
+          setSessionsByWorkspace((prev) => ({
             ...prev,
-            [activeWorkspaceId]: [nextSession, ...existing.filter((session) => session.id !== nextSession.id)],
-          }
+            [activeWorkspaceId]: upsertSession(prev[activeWorkspaceId] ?? [], localSession),
+          }))
+          setActiveSessionId(targetSessionId)
+        }
+
+        if (!targetSessionId) {
+          throw new Error("failed to resolve session")
+        }
+
+        startLiveTurn(targetSessionId, text)
+        setSessionsByWorkspace((prev) =>
+          updateSessionInWorkspace(prev, activeWorkspaceId, targetSessionId!, (session) => ({
+            ...session,
+            updatedAt: new Date().toISOString(),
+            lastMessageAt: new Date().toISOString(),
+            lastMessagePreview: text,
+            activeConnectionId: selectedModel.connectionId,
+            activeModelId: selectedModel.modelId,
+          }))
+        )
+        setPendingSessionId(targetSessionId)
+
+        await acpClient.request("session/prompt", {
+          sessionId: targetSessionId,
+          prompt: [{ type: "text", text }],
+          _meta: {
+            autoAllow: options.autoAllow,
+            selectedReasoningEffort: selectedReasoningEffort ?? null,
+          },
         })
+
+        await hydrateSessionAfterRun(activeWorkspaceId, targetSessionId)
 
         setAttachmentsBySession((prev) => ({
           ...prev,
-          [runResponse.session.id]: [],
+          [targetSessionId!]: [],
         }))
         if (isDraftMode) {
           setDraftAttachmentsByWorkspace((prev) => ({
@@ -696,70 +820,11 @@ export default function Home() {
           }))
           setActiveDraftWorkspaceId(null)
         }
-        setActiveSessionId(runResponse.session.id)
-        setSessionRunStatusById((prev) => ({
-          ...prev,
-          [runResponse.session.id]: runResponse.run.status === "queued" || runResponse.run.status === "running",
-        }))
-        setSessionActiveRunIdById((prev) => ({
-          ...prev,
-          [runResponse.session.id]:
-            runResponse.run.status === "queued" || runResponse.run.status === "running"
-              ? runResponse.run.id
-              : null,
-        }))
-
-        if (runResponse.run.status === "queued" || runResponse.run.status === "running") {
-          startRunEventStream(runResponse.run.id, activeWorkspaceId, runResponse.session.id)
-        }
+        setActiveSessionId(targetSessionId)
+        setPendingSessionId(null)
       } catch (error) {
-        if (error instanceof NSBotRequestError && error.payload) {
-          const payload = error.payload as {
-            detail?: string
-            session?: ServerSession
-            entries?: TimelineEntry[]
-          }
-          if (payload.session && payload.entries) {
-            const payloadSession = mergeSessionWithLocalHistory(
-              payload.session,
-              activeSessionId
-                ? (sessionsByWorkspace[activeWorkspaceId] ?? []).find((session) => session.id === activeSessionId)
-                : undefined,
-              payload.entries
-            )
-            setSessionsByWorkspace((prev) => {
-              const existing = prev[activeWorkspaceId] ?? []
-              if (activeSessionId) {
-                return {
-                  ...prev,
-                  [activeWorkspaceId]: existing.map((session) =>
-                    session.id === activeSessionId ? payloadSession : session
-                  ),
-                }
-              }
-              return {
-                ...prev,
-                [activeWorkspaceId]: [payloadSession, ...existing.filter((session) => session.id !== payloadSession.id)],
-              }
-            })
-            setActiveSessionId(payload.session.id)
-            setActiveDraftWorkspaceId(null)
-          }
-          if (activeSessionId) {
-            setAttachmentsBySession((prev) => ({
-              ...prev,
-              [activeSessionId]: [],
-            }))
-          } else if (isDraftMode) {
-            setDraftAttachmentsByWorkspace((prev) => ({
-              ...prev,
-              [activeWorkspaceId]: [],
-            }))
-          }
-          setRunError(payload.detail ?? error.message)
-        } else {
-          setRunError(error instanceof Error ? error.message : "Failed to run request")
-        }
+        setRunError(error instanceof Error ? error.message : "Failed to run request")
+        setPendingSessionId(null)
         throw error
       }
     },
@@ -767,14 +832,28 @@ export default function Home() {
       activeDraftWorkspaceId,
       activeSessionId,
       activeWorkspaceId,
-      attachmentsBySession,
-      draftAttachmentsByWorkspace,
-      sessionsByWorkspace,
+      hydrateSessionAfterRun,
       selectedModel,
       selectedReasoningEffort,
-      startRunEventStream,
+      startLiveTurn,
     ]
   )
+
+  const cancelSessionRun = useCallback(
+    async (sessionId: string) => {
+      resolvePermissionRequest({ outcome: { outcome: "cancelled" } }, sessionId)
+      await acpClient.notify("session/cancel", { sessionId })
+      setPendingSessionId((current) => (current === sessionId ? null : current))
+    },
+    [resolvePermissionRequest]
+  )
+
+  const handleCancelActiveRun = useCallback(async () => {
+    if (!activeSessionId || pendingSessionId !== activeSessionId) {
+      return
+    }
+    await cancelSessionRun(activeSessionId)
+  }, [activeSessionId, cancelSessionRun, pendingSessionId])
 
   const handleAttachFiles = useCallback(
     async (files: File[]) => {
@@ -870,65 +949,56 @@ export default function Home() {
   )
 
   const handleEditTimelineEntryAndRerun = useCallback(
-    async (entryId: string, nextContent: string) => {
-      if (!activeSessionId || !activeWorkspaceId || !selectedModel) {
+    async (entryId: string, nextContent: string, options: { autoAllow: boolean }) => {
+      if (!activeSessionId || !activeWorkspaceId || !selectedModel || !activeSession) {
         return
       }
 
+      const editedEntry = activeSession.timelineEntries.find((entry) => entry.id === entryId)
+      if (!editedEntry) {
+        throw new Error("Message not found")
+      }
+
       setRunError(null)
+      setPendingSessionId(activeSessionId)
+      startLiveTurn(activeSessionId, nextContent, {
+        truncatedAfterSequence: editedEntry.sequenceNo,
+      })
+      setSessionsByWorkspace((prev) =>
+        updateSessionInWorkspace(prev, activeWorkspaceId, activeSessionId, (session) => ({
+          ...session,
+          updatedAt: new Date().toISOString(),
+          lastMessageAt: new Date().toISOString(),
+          lastMessagePreview: nextContent,
+        }))
+      )
 
       try {
-        const runResponse = await sidecarFetch<{
-          run: { id: string; status: string; finalAnswer: string | null }
-          session: ServerSession
-          entries: TimelineEntry[]
-        }>(`/sessions/${activeSessionId}/timeline/${entryId}/edit-and-run`, {
-          method: "POST",
-          body: JSON.stringify({
-            content: nextContent,
-            workspaceId: activeWorkspaceId,
-            connectionId: selectedModel.connectionId,
-            modelId: selectedModel.modelId,
-            ...(selectedReasoningEffort ? { reasoningEffort: selectedReasoningEffort } : {}),
-          }),
+        await acpClient.request("session/edit_and_prompt", {
+          sessionId: activeSessionId,
+          entryId,
+          prompt: [{ type: "text", text: nextContent }],
+          _meta: {
+            autoAllow: options.autoAllow,
+            selectedReasoningEffort: selectedReasoningEffort ?? null,
+          },
         })
-
-        const nextSession = mergeSessionWithLocalHistory(
-          runResponse.session,
-          (sessionsByWorkspace[activeWorkspaceId] ?? []).find((session) => session.id === activeSessionId),
-          runResponse.entries
-        )
-
-        setSessionsByWorkspace((prev) => ({
-          ...prev,
-          [activeWorkspaceId]: (prev[activeWorkspaceId] ?? []).map((session) =>
-            session.id === activeSessionId ? nextSession : session
-          ),
-        }))
-
-        if (runResponse.run.status === "queued" || runResponse.run.status === "running") {
-          setSessionRunStatusById((prev) => ({
-            ...prev,
-            [activeSessionId]: true,
-          }))
-          setSessionActiveRunIdById((prev) => ({
-            ...prev,
-            [activeSessionId]: runResponse.run.id,
-          }))
-          startRunEventStream(runResponse.run.id, activeWorkspaceId, activeSessionId)
-        }
+        await hydrateSessionAfterRun(activeWorkspaceId, activeSessionId)
       } catch (error) {
-        setRunError(error instanceof Error ? error.message : "Failed to edit and rerun request")
+        setRunError(error instanceof Error ? error.message : "Failed to edit and rerun")
         throw error
+      } finally {
+        setPendingSessionId(null)
       }
     },
     [
       activeSessionId,
+      activeSession,
       activeWorkspaceId,
+      hydrateSessionAfterRun,
       selectedModel,
       selectedReasoningEffort,
-      sessionsByWorkspace,
-      startRunEventStream,
+      startLiveTurn,
     ]
   )
 
@@ -946,13 +1016,24 @@ export default function Home() {
         delete next[projectId]
         return next
       })
+      setLiveTurnBySession((prev) => {
+        const removableSessionIds = new Set((sessionsByWorkspace[projectId] ?? []).map((session) => session.id))
+        const next = { ...prev }
+        for (const sessionId of removableSessionIds) {
+          delete next[sessionId]
+        }
+        return next
+      })
       if (activeWorkspaceId === projectId) {
+        if (pendingPermissionRequestRef.current?.sessionId) {
+          resolvePermissionRequest({ outcome: { outcome: "cancelled" } })
+        }
         setActiveDraftWorkspaceId(null)
         setActiveWorkspaceId(null)
         setActiveSessionId(null)
       }
     },
-    [activeWorkspaceId]
+    [activeWorkspaceId, resolvePermissionRequest, sessionsByWorkspace]
   )
 
   const handleRemoveSession = useCallback(
@@ -975,15 +1056,15 @@ export default function Home() {
         delete next[sessionId]
         return next
       })
+      setLiveTurnBySession((prev) => updateLiveTurnBySession(prev, sessionId, () => null))
 
       if (activeWorkspaceId === workspaceId && activeSessionId === sessionId) {
-        streamSubscriptionRef.current?.close()
-        streamSubscriptionRef.current = null
+        cancelPendingPermissionRequestForSession(sessionId)
         setActiveSessionId(nextActiveSessionId)
         setActiveDraftWorkspaceId(nextActiveSessionId == null ? workspaceId : null)
       }
     },
-    [activeSessionId, activeWorkspaceId]
+    [activeSessionId, activeWorkspaceId, cancelPendingPermissionRequestForSession]
   )
 
   const projects = useMemo<Project[]>(
@@ -1093,8 +1174,11 @@ export default function Home() {
       <MainContent
         activeProject={activeProject}
         activeSession={activeSession}
+        timelineEntries={activeTimelineEntries}
+        liveTurn={activeLiveTurn}
         isDraftSession={isDraftSessionActive}
         onSendMessage={handleSendMessage}
+        onCancelRun={handleCancelActiveRun}
         modelOptionGroups={modelOptionGroups}
         selectedModel={selectedModel}
         selectedReasoningEffort={selectedReasoningEffort}
@@ -1108,7 +1192,10 @@ export default function Home() {
         onLoadEarlierTimeline={handleLoadEarlierTimeline}
         composerAttachments={
           activeSessionId
-            ? attachmentsBySession[activeSessionId] ?? []
+            ? attachmentsBySession[activeSessionId] ??
+              (activeWorkspaceId != null && activeDraftWorkspaceId === activeWorkspaceId
+                ? draftAttachmentsByWorkspace[activeWorkspaceId] ?? []
+                : [])
             : activeWorkspaceId != null && activeDraftWorkspaceId === activeWorkspaceId
               ? draftAttachmentsByWorkspace[activeWorkspaceId] ?? []
               : []
@@ -1123,9 +1210,56 @@ export default function Home() {
         onAttachFiles={handleAttachFiles}
         onRemoveAttachment={handleRemoveAttachment}
         onEditTimelineEntryAndRerun={handleEditTimelineEntryAndRerun}
+        pendingPermissionRequest={pendingPermissionRequest}
+        onAllowPermissionRequest={() => {
+          resolvePermissionRequest(
+            {
+              outcome: {
+                outcome: "selected",
+                optionId: getPendingPermissionOptionId("allow_once", "allow-once"),
+              },
+            },
+            pendingPermissionRequest?.sessionId
+          )
+        }}
+        onAllowAlwaysPermissionRequest={() => {
+          resolvePermissionRequest(
+            {
+              outcome: {
+                outcome: "selected",
+                optionId: getPendingPermissionOptionId("allow_once", "allow-once"),
+              },
+            },
+            pendingPermissionRequest?.sessionId
+          )
+        }}
+        onRejectPermissionRequest={() => {
+          resolvePermissionRequest(
+            {
+              outcome: {
+                outcome: "selected",
+                optionId: getPendingPermissionOptionId("reject_once", "reject-once"),
+              },
+            },
+            pendingPermissionRequest?.sessionId
+          )
+        }}
+        onCancelPermissionRequest={() => {
+          if (
+            activeSessionId != null &&
+            hasPendingPermissionRequestForSession(activeSessionId) &&
+            pendingPermissionRequest?.sessionId === activeSessionId
+          ) {
+            void cancelSessionRun(pendingPermissionRequest.sessionId)
+            return
+          }
+          resolvePermissionRequest(
+            { outcome: { outcome: "cancelled" } },
+            pendingPermissionRequest?.sessionId
+          )
+        }}
         onOpenSettings={() => setSettingsOpen(true)}
         isSessionRunning={isActiveSessionRunning}
-        activeRunId={activeSessionRunId}
       />
       <SettingsModal
         isOpen={settingsOpen}

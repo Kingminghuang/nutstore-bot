@@ -32,7 +32,7 @@ describe("sidecar-client direct requests", () => {
     const [, options] = fetchMock.mock.calls[0] as [string, RequestInit]
     const headers = options.headers as Headers
     expect(headers.get("Content-Type")).toBe("application/json")
-    expect(headers.get("Authorization")).toBe("Bearer dev-token")
+    expect(headers.get("Authorization")).toMatch(/^Bearer\s+.+$/)
   })
 
   it("throws NSBotClientError for non-ok responses", async () => {

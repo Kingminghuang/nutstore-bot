@@ -1,9 +1,8 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
-import json
+import importlib.util
 import os
-import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -15,25 +14,24 @@ from fastapi import (
     Query,
     Request,
     UploadFile,
+    WebSocket,
 )
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse
 
 from nsbot_sidecar.infrastructure.attachment_store import AttachmentStore
 from nsbot_sidecar.infrastructure.client_config import load_or_create_client_config
 from nsbot_sidecar.api.discovery import ServiceDiscovery, nsbot_home, write_service_discovery
 from nsbot_sidecar.application.provider_service import ProviderService
 from nsbot_sidecar.api.redaction import install_log_redaction_filter, redact_sensitive
-from nsbot_sidecar.domain.run_cancellation import RunCancellationRegistry
-from nsbot_sidecar.domain.run_event_store import RunEventStore
-from nsbot_sidecar.application.run_service import RunRequestFailed, RunService
 from nsbot_sidecar.infrastructure.repositories import create_repositories
 from nsbot_sidecar.application.session_service import SessionService
 from nsbot_sidecar.infrastructure.secret_store import LocalSecretStore
 from nsbot_sidecar.infrastructure.storage import connect_database
 from nsbot_sidecar.application.timeline_service import TimelineService
 from nsbot_sidecar.runtime.workspace_sidecar_indexer import WorkspaceSidecarIndexer
+from nsbot_sidecar.api.acp_ws import AcpWebSocketSession
 
 
 DEFAULT_HOST = "127.0.0.1"
@@ -63,6 +61,15 @@ def ensure_local_host(host: str) -> None:
         raise ValueError("NSBot host must bind to localhost")
 
 
+def detect_websocket_backend() -> str:
+    for module_name, backend in (("websockets", "websockets"), ("wsproto", "wsproto")):
+        if importlib.util.find_spec(module_name) is not None:
+            return backend
+    raise RuntimeError(
+        'NSBot sidecar requires a WebSocket backend. Install "websockets" or "wsproto".'
+    )
+
+
 def create_app(config: ApiServerConfig | None = None) -> FastAPI:
     cfg = config or ApiServerConfig()
     ensure_local_host(cfg.host)
@@ -83,23 +90,6 @@ def create_app(config: ApiServerConfig | None = None) -> FastAPI:
             timeline_entries=repositories.timeline_entries,
         ),
         workspace_sidecar_indexer=WorkspaceSidecarIndexer(),
-    )
-    run_service = RunService(
-        workspaces=repositories.workspaces,
-        sessions=repositories.sessions,
-        providers=repositories.providers,
-        runs=repositories.runs,
-        timeline_entries=repositories.timeline_entries,
-        session_service=session_service,
-        attachments=repositories.attachments,
-        draft_attachments=repositories.draft_attachments,
-        attachment_store=AttachmentStore(cfg.ns_bot_home),
-        secret_store=LocalSecretStore(cfg.ns_bot_home),
-        event_store=RunEventStore(),
-        cancellation_registry=RunCancellationRegistry(),
-        ns_bot_home=cfg.ns_bot_home,
-        fd_executable=cfg.fd_executable,
-        rg_executable=cfg.rg_executable,
     )
 
     @asynccontextmanager
@@ -124,8 +114,13 @@ def create_app(config: ApiServerConfig | None = None) -> FastAPI:
     app.state.repositories = repositories
     app.state.provider_service = provider_service
     app.state.session_service = session_service
-    app.state.run_service = run_service
+    app.state.secret_store = LocalSecretStore(cfg.ns_bot_home)
     install_log_redaction_filter()
+
+    @app.websocket("/acp/ws")
+    async def acp_ws(websocket: WebSocket):
+        session = AcpWebSocketSession(websocket, app.state)
+        await session.run()
 
     @app.exception_handler(RequestValidationError)
     async def request_validation_exception_handler(
@@ -275,28 +270,6 @@ def create_app(config: ApiServerConfig | None = None) -> FastAPI:
             before_sequence=before_sequence,
         )
 
-    @app.post("/sessions/{session_id}/timeline/{entry_id}/edit-and-run")
-    def edit_session_timeline_entry_and_run(
-        session_id: str,
-        entry_id: str,
-        payload: dict[str, object],
-        background_tasks: BackgroundTasks,
-        request: Request,
-    ):
-        service = request.app.state.run_service
-        try:
-            return service.edit_message_and_run(
-                session_id=session_id,
-                timeline_entry_id=entry_id,
-                payload=payload,
-                background_tasks=background_tasks,
-            )
-        except RunRequestFailed as exc:
-            return JSONResponse(
-                status_code=exc.status_code,
-                content=redact_sensitive(exc.payload),
-            )
-
     @app.get("/sessions/{session_id}/attachments")
     def get_session_attachments(session_id: str) -> dict[str, list[dict[str, object]]]:
         return session_service.list_attachments_payload(session_id)
@@ -317,76 +290,6 @@ def create_app(config: ApiServerConfig | None = None) -> FastAPI:
     @app.delete("/sessions/{session_id}/attachments/{attachment_id}", status_code=204)
     def delete_session_attachment(session_id: str, attachment_id: str) -> None:
         session_service.delete_attachment(session_id, attachment_id)
-
-    @app.post("/runs")
-    def create_run(
-        payload: dict[str, object], background_tasks: BackgroundTasks, request: Request
-    ):
-        service = request.app.state.run_service
-        try:
-            return service.create_run(payload, background_tasks=background_tasks)
-        except RunRequestFailed as exc:
-            return JSONResponse(
-                status_code=exc.status_code,
-                content=redact_sensitive(exc.payload),
-            )
-
-    @app.get("/runs/{run_id}/events")
-    def get_run_events(
-        run_id: str, request: Request, after: int = 0
-    ) -> StreamingResponse:
-        service = request.app.state.run_service
-        try:
-            service.runs.get_by_id(run_id)
-        except ValueError as exc:
-            raise HTTPException(status_code=404, detail="Run not found") from exc
-
-        last_sequence = [after]
-
-        def wrapped_stream():
-            idle_cycles = 0
-            while True:
-                envelopes = service.list_run_events(run_id, last_sequence[0])
-                if envelopes:
-                    idle_cycles = 0
-                for envelope in envelopes:
-                    last_sequence[0] = int(envelope.data.get("sequence", 0))
-                    yield f"id: {envelope.id}\n"
-                    yield f"event: {envelope.event}\n"
-                    yield f"data: {json.dumps(envelope.data, ensure_ascii=False)}\n\n"
-
-                if service.is_run_event_stream_closed(run_id):
-                    break
-
-                idle_cycles += 1
-                if idle_cycles >= 20:
-                    yield ": keepalive\n\n"
-                    idle_cycles = 0
-                time.sleep(0.05)
-
-        return StreamingResponse(
-            wrapped_stream(),
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-            },
-        )
-
-    @app.get("/runs/{run_id}/timeline")
-    def get_run_timeline(
-        run_id: str, request: Request
-    ) -> dict[str, list[dict[str, object]]]:
-        service = request.app.state.run_service
-        try:
-            return service.list_run_timeline_payload(run_id)
-        except ValueError as exc:
-            raise HTTPException(status_code=404, detail="Run not found") from exc
-
-    @app.post("/runs/{run_id}/cancel")
-    def cancel_run(run_id: str, request: Request) -> dict[str, object]:
-        service = request.app.state.run_service
-        return service.cancel_run(run_id)
 
     @app.post("/providers")
     def create_provider(
@@ -457,7 +360,12 @@ def main() -> int:
     )
 
     publish_service_discovery(config)
-    uvicorn.run(create_app(config), host=config.host, port=config.port)
+    uvicorn.run(
+        create_app(config),
+        host=config.host,
+        port=config.port,
+        ws=detect_websocket_backend(),
+    )
     return 0
 
 

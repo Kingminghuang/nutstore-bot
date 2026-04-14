@@ -12,6 +12,8 @@ class LocalCodeExecutor:
     run_id: str
     workspace_path: str
     timeout_seconds: int = 30
+    permission_requester: Any | None = None
+    auto_allow: bool = True
     _state: dict[str, Any] = field(default_factory=lambda: {"__name__": "__main__"})
     _tool_names: list[str] = field(default_factory=list)
 
@@ -31,6 +33,20 @@ class LocalCodeExecutor:
         self._executor.send_tools(tools)
 
     def __call__(self, code_action: str) -> CodeOutput:
+        if not self.auto_allow and self.permission_requester is not None:
+            decision = str(
+                self.permission_requester(
+                    {
+                        "kind": "python_exec_agent",
+                        "toolCallId": f"{self.run_id}:python_exec_agent",
+                        "title": "Execute python code",
+                    }
+                )
+            ).strip()
+            if decision == "cancelled":
+                raise RuntimeError("cancelled")
+            if decision != "allow":
+                raise RuntimeError("permission_denied")
         return self._executor(code_action)
 
     def release_run(self) -> None:

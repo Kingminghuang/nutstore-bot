@@ -291,6 +291,61 @@ class ToolLayerTests(unittest.TestCase):
         self.assertIn("-line2", result["details"]["diff"])
         self.assertIn("+line2-updated", result["details"]["diff"])
 
+    def test_write_and_edit_request_permission_when_auto_allow_disabled(self) -> None:
+        captured: list[dict[str, str]] = []
+
+        def requester(payload: dict[str, str]) -> str:
+            captured.append(payload)
+            return "allow"
+
+        layer = ToolLayer(
+            str(self.workspace),
+            permission_requester=requester,
+            auto_allow=False,
+        )
+        write_result = layer.execute_tool_dict(
+            "write",
+            {"path": "permission.txt", "content": "hello"},
+        )
+        edit_result = layer.execute_tool_dict(
+            "edit",
+            {"path": "permission.txt", "old_text": "hello", "new_text": "world"},
+        )
+
+        self.assertFalse(write_result["is_error"])
+        self.assertFalse(edit_result["is_error"])
+        self.assertEqual([item["kind"] for item in captured], ["write", "edit"])
+
+    def test_read_tool_does_not_request_permission(self) -> None:
+        requested = False
+
+        def requester(_payload: dict[str, str]) -> str:
+            nonlocal requested
+            requested = True
+            return "allow"
+
+        layer = ToolLayer(
+            str(self.workspace),
+            permission_requester=requester,
+            auto_allow=False,
+        )
+        result = layer.execute_tool_dict("read", {"path": "nested/a.txt"})
+        self.assertFalse(result["is_error"])
+        self.assertFalse(requested)
+
+    def test_permission_reject_blocks_controlled_write(self) -> None:
+        layer = ToolLayer(
+            str(self.workspace),
+            permission_requester=lambda _payload: "reject",
+            auto_allow=False,
+        )
+        result = layer.execute_tool_dict(
+            "write",
+            {"path": "deny.txt", "content": "blocked"},
+        )
+        self.assertTrue(result["is_error"])
+        self.assertEqual(result["error"]["code"], "permission_denied")
+
     def test_windows_path_normalization_helpers(self) -> None:
         p1 = resolve_path_arg("C:\\workspace\\src\\..\\README.md", "C:\\workspace", "windows")
         p2 = resolve_path_arg("C:/workspace/README.md", "C:\\workspace", "windows")

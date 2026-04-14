@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 import {
   AlertCircle,
+  AlertTriangle,
   ArrowDown,
   ArrowUp,
   Check,
@@ -22,6 +23,9 @@ import remarkGfm from "remark-gfm"
 import type {
   ComposerAttachment,
   DraftAttachment,
+  LiveTurn,
+  PendingPermissionRequest,
+  PermissionMode,
   Project,
   Session,
 } from "@/features/session"
@@ -35,16 +39,25 @@ import {
 } from "@/features/providers"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/shared/ui/tooltip"
 import { cn } from "@/shared/lib"
-
-type Permission = "default" | "full"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/shared/ui/dropdown-menu"
 
 const EMPTY_ENTRIES: TimelineEntry[] = []
 
 interface MainContentProps {
   activeProject: Project | null
   activeSession: Session | null
+  timelineEntries: TimelineEntry[]
+  liveTurn: LiveTurn | null
   isDraftSession: boolean
-  onSendMessage: (text: string) => Promise<void>
+  onSendMessage: (text: string, options: { autoAllow: boolean }) => Promise<void>
+  onCancelRun?: () => Promise<void> | void
   modelOptionGroups: ModelOptionGroup[]
   selectedModel: SelectedModelRef | null
   selectedReasoningEffort: SelectedReasoningEffort
@@ -60,17 +73,28 @@ interface MainContentProps {
   isUploadingAttachment: boolean
   onAttachFiles: (files: File[]) => Promise<void>
   onRemoveAttachment: (attachmentId: string) => Promise<void>
-  onEditTimelineEntryAndRerun: (entryId: string, nextContent: string) => Promise<void>
+  onEditTimelineEntryAndRerun: (
+    entryId: string,
+    nextContent: string,
+    options: { autoAllow: boolean }
+  ) => Promise<void>
+  pendingPermissionRequest: PendingPermissionRequest | null
+  onAllowPermissionRequest: () => void
+  onAllowAlwaysPermissionRequest: () => void
+  onRejectPermissionRequest: () => void
+  onCancelPermissionRequest: () => void
   onOpenSettings?: () => void
   isSessionRunning?: boolean
-  activeRunId?: string | null
 }
 
 export function MainContent({
   activeProject,
   activeSession,
+  timelineEntries,
+  liveTurn,
   isDraftSession,
   onSendMessage,
+  onCancelRun,
   modelOptionGroups,
   selectedModel,
   selectedReasoningEffort,
@@ -87,12 +111,16 @@ export function MainContent({
   onAttachFiles,
   onRemoveAttachment,
   onEditTimelineEntryAndRerun,
+  pendingPermissionRequest,
+  onAllowPermissionRequest,
+  onAllowAlwaysPermissionRequest,
+  onRejectPermissionRequest,
+  onCancelPermissionRequest,
   onOpenSettings,
   isSessionRunning = false,
-  activeRunId = null,
 }: MainContentProps) {
   const [permissionOpen, setPermissionOpen] = useState(false)
-  const [permission, setPermission] = useState<Permission>("default")
+  const [permission, setPermission] = useState<PermissionMode>("auto_allow")
   const [modelOpen, setModelOpen] = useState(false)
   const [reasoningOpen, setReasoningOpen] = useState(false)
   const [inputValue, setInputValue] = useState("")
@@ -110,7 +138,7 @@ export function MainContent({
   const copyResetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const pendingHistoryScrollRestore = useRef<{ previousTop: number; previousHeight: number } | null>(null)
 
-  const messages = activeSession?.timelineEntries ?? EMPTY_ENTRIES
+  const messages = timelineEntries ?? EMPTY_ENTRIES
   const canCompose = activeSession != null || isDraftSession
   const hasMessages = messages.length > 0
   const hasAvailableModels = modelOptionGroups.some((group) => group.models.length > 0)
@@ -121,29 +149,44 @@ export function MainContent({
   const supportsReasoningEffort = reasoningEffortOptions.length > 0
   const selectedReasoningEffortLabel = selectedReasoningEffort ?? "Auto"
   const showProviderNotice = Boolean(providerError || (!hasAvailableModels && !isLoadingModels))
-  const latestActionEntryId = useMemo(() => {
-    if (!activeRunId) {
-      return null
-    }
+  const lastUserMessageIndex = useMemo(() => {
     for (let i = messages.length - 1; i >= 0; i -= 1) {
-      const entry = messages[i]
-      if (entry.entryKind === "action" && entry.runId === activeRunId) {
+      if (messages[i].entryKind === "user_input") {
+        return i
+      }
+    }
+    return -1
+  }, [messages])
+  const currentTurnEntries = useMemo(
+    () => (lastUserMessageIndex >= 0 ? messages.slice(lastUserMessageIndex + 1) : []),
+    [lastUserMessageIndex, messages]
+  )
+  const latestCurrentTurnActionId = useMemo(() => {
+    for (let i = currentTurnEntries.length - 1; i >= 0; i -= 1) {
+      const entry = currentTurnEntries[i]
+      if (entry.entryKind === "action") {
         return entry.id
       }
     }
     return null
-  }, [activeRunId, messages])
-  const noStepCardYet = useMemo(
+  }, [currentTurnEntries])
+  const hasCurrentTurnStepCard = useMemo(
     () =>
-      activeRunId != null &&
-      !messages.some(
-        (entry) =>
-          entry.runId === activeRunId && (entry.entryKind === "planning" || entry.entryKind === "action")
+      currentTurnEntries.some(
+        (entry) => entry.entryKind === "planning" || entry.entryKind === "action"
       ),
-    [activeRunId, messages]
+    [currentTurnEntries]
   )
+  const hasLiveStepCard = (liveTurn?.planEntries.length ?? 0) > 0 || (liveTurn?.toolCalls.length ?? 0) > 0
+  const hasLiveAssistantDraft = Boolean(liveTurn?.assistantDraft.trim())
   const showPreStepLoading =
-    activeRunId != null && isSessionRunning && hasMessages && noStepCardYet && !isGenerating
+    isSessionRunning &&
+    hasMessages &&
+    lastUserMessageIndex >= 0 &&
+    !hasCurrentTurnStepCard &&
+    !hasLiveStepCard &&
+    !hasLiveAssistantDraft &&
+    !isGenerating
 
   useEffect(() => {
     if (!showProviderNotice || hasAnimatedProviderNotice) {
@@ -163,6 +206,16 @@ export function MainContent({
       }
     }
   }, [])
+
+  useEffect(() => {
+    if (!pendingPermissionRequest) {
+      return
+    }
+    setModelOpen(false)
+    setReasoningOpen(false)
+    setPermissionOpen(false)
+    inputRef.current?.blur()
+  }, [pendingPermissionRequest])
 
   const selectedModelLabel = useMemo(() => {
     if (isLoadingModels) {
@@ -221,9 +274,9 @@ export function MainContent({
     const text = inputValue.trim()
     if (!text || isGenerating || !canCompose || !selectedModel) return
     setIsGenerating(true)
+    setInputValue("")
     try {
-      await onSendMessage(text)
-      setInputValue("")
+      await onSendMessage(text, { autoAllow: permission === "auto_allow" })
     } catch {
       // Parent state already surfaces request errors.
     } finally {
@@ -302,7 +355,9 @@ export function MainContent({
     }
     setIsSubmittingEdit(true)
     try {
-      await onEditTimelineEntryAndRerun(editingEntryId, nextContent)
+      await onEditTimelineEntryAndRerun(editingEntryId, nextContent, {
+        autoAllow: permission === "auto_allow",
+      })
       setEditingEntryId(null)
       setEditingValue("")
     } catch {
@@ -312,13 +367,14 @@ export function MainContent({
     }
   }
 
-  const permissionOptions: { value: Permission; label: string }[] = [
-    { value: "default", label: "Default permissions" },
-    { value: "full", label: "Full access" },
+  const permissionOptions: { value: PermissionMode; label: string }[] = [
+    { value: "auto_allow", label: "Auto-allow" },
+    { value: "ask", label: "Ask first" },
   ]
 
   const activeSessionLabel = activeSession?.title ?? "New session"
   const activeProjectLabel = activeProject?.name ?? ""
+  const isPermissionOverlayVisible = pendingPermissionRequest != null
 
   return (
     <main
@@ -373,11 +429,9 @@ export function MainContent({
                 key={entry.id}
                 entry={entry}
                 showRunningIndicator={
-                  activeRunId != null &&
                   isSessionRunning &&
                   entry.entryKind === "action" &&
-                  entry.runId === activeRunId &&
-                  entry.id === latestActionEntryId
+                  entry.id === latestCurrentTurnActionId
                 }
                 isEditing={editingEntryId === entry.id}
                 editingValue={editingValue}
@@ -394,6 +448,16 @@ export function MainContent({
                 }}
               />
             ))}
+            {liveTurn?.planEntries.map((entry) => (
+              <LivePlanningStepCard key={entry.id} entry={entry} />
+            ))}
+            {liveTurn?.toolCalls.length ? (
+              <LiveToolCallsCard
+                toolCalls={liveTurn.toolCalls}
+                waitingForPermission={liveTurn.waitingForPermission}
+              />
+            ) : null}
+            {hasLiveAssistantDraft ? <LiveAssistantDraftRow content={liveTurn?.assistantDraft ?? ""} /> : null}
             {showPreStepLoading ? <PreStepRunLoading /> : null}
             {isGenerating && (
               <div className="flex gap-3 items-start">
@@ -427,7 +491,17 @@ export function MainContent({
           aria-hidden="true"
         />
 
-        <div className="bg-[#faf8f6] border border-[#e8e4e0] rounded-2xl relative" onClick={(e) => e.stopPropagation()}>
+        <div
+          className="bg-[#faf8f6] border border-[#e8e4e0] rounded-2xl relative overflow-hidden"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div
+            aria-hidden={isPermissionOverlayVisible}
+            className={cn(
+              "transition-opacity duration-150",
+              isPermissionOverlayVisible ? "pointer-events-none select-none opacity-25" : "opacity-100"
+            )}
+          >
           <div className="p-4">
             {composerAttachments.length > 0 && (
               <div className="flex flex-wrap gap-1.5 mb-3">
@@ -464,7 +538,7 @@ export function MainContent({
               onChange={(e) => setInputValue(e.target.value)}
               onKeyDown={handleKeyDown}
               placeholder={canCompose ? "Ask for follow-up changes" : "Select or create a session first"}
-              disabled={!canCompose}
+              disabled={!canCompose || isPermissionOverlayVisible}
               aria-keyshortcuts="Enter"
               className="w-full bg-transparent text-sm placeholder:text-muted-foreground focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed"
             />
@@ -532,35 +606,53 @@ export function MainContent({
               </Tooltip>
 
               <div className="relative">
-                <button
-                  onClick={() => {
-                    if (isLoadingModels) return
-                    if (!hasAvailableModels) {
+                <DropdownMenu
+                  open={modelOpen}
+                  onOpenChange={(nextOpen) => {
+                    if (nextOpen && isLoadingModels) {
+                      return
+                    }
+                    if (nextOpen && !hasAvailableModels) {
                       onOpenSettings?.()
                       return
                     }
-                    setModelOpen(!modelOpen)
-                    setReasoningOpen(false)
-                    setPermissionOpen(false)
+                    setModelOpen(nextOpen)
+                    if (nextOpen) {
+                      setReasoningOpen(false)
+                      setPermissionOpen(false)
+                    }
                   }}
-                  disabled={isLoadingModels || (!hasAvailableModels && !onOpenSettings)}
-                  className={cn(
-                    "flex items-center gap-1.5 text-sm transition-colors",
-                    hasAvailableModels && !isLoadingModels
-                      ? "text-muted-foreground hover:text-foreground"
-                      : onOpenSettings && !isLoadingModels
-                        ? "text-muted-foreground hover:text-foreground"
-                        : "text-muted-foreground/50 cursor-not-allowed"
-                  )}
                 >
-                  <span className="max-w-[260px] truncate">{selectedModelLabel}</span>
-                  <ChevronDown className="w-3.5 h-3.5" />
-                </button>
-                {modelOpen && (
-                  <div className="absolute bottom-full mb-2 left-0 bg-background border border-[#e8e4e0] rounded-xl shadow-md overflow-hidden z-20 w-80 max-h-80 overflow-y-auto">
-                    <div className="px-4 py-2 text-xs text-muted-foreground">Select model</div>
-                    {modelOptionGroups.map((group) => (
-                      <div key={group.connectionId} className="border-t border-[#f0ebe6] first:border-t-0">
+                  <DropdownMenuTrigger asChild>
+                    <button
+                      disabled={isLoadingModels || (!hasAvailableModels && !onOpenSettings)}
+                      className={cn(
+                        "flex items-center gap-1.5 text-sm transition-colors outline-none",
+                        hasAvailableModels && !isLoadingModels
+                          ? "text-muted-foreground hover:text-foreground"
+                          : onOpenSettings && !isLoadingModels
+                            ? "text-muted-foreground hover:text-foreground"
+                            : "text-muted-foreground/50 cursor-not-allowed"
+                      )}
+                    >
+                      <span className="max-w-[260px] truncate">{selectedModelLabel}</span>
+                      <ChevronDown className="w-3.5 h-3.5" />
+                    </button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent
+                    side="top"
+                    align="start"
+                    sideOffset={10}
+                    className="w-80 max-h-80 overflow-y-auto rounded-xl border-[#e8e4e0] bg-background p-0 shadow-md"
+                  >
+                    <DropdownMenuLabel className="px-4 py-2 text-xs font-normal text-muted-foreground">
+                      Select model
+                    </DropdownMenuLabel>
+                    {modelOptionGroups.map((group, groupIndex) => (
+                      <div key={group.connectionId}>
+                        {groupIndex > 0 ? (
+                          <DropdownMenuSeparator className="mx-0 my-0 bg-[#f0ebe6]" />
+                        ) : null}
                         <div className="px-4 py-2 text-[11px] uppercase tracking-[0.12em] text-foreground/45">
                           {group.providerLabel}
                         </div>
@@ -570,7 +662,7 @@ export function MainContent({
                             selectedModel.modelId === model.modelId
 
                           return (
-                            <button
+                            <DropdownMenuItem
                               key={`${group.connectionId}:${model.modelId}`}
                               onClick={() => {
                                 onSelectedModelChange({
@@ -579,89 +671,115 @@ export function MainContent({
                                 })
                                 setModelOpen(false)
                               }}
-                              className="w-full flex items-center justify-between px-4 py-2 text-sm text-foreground/80 hover:bg-[#efe9e4] transition-colors"
+                              className="justify-between rounded-none px-4 py-2 text-foreground/80 hover:bg-[#efe9e4] focus:bg-[#efe9e4]"
                             >
                               <span className="truncate">{model.label}</span>
-                              {isSelected && <Check className="w-4 h-4 text-foreground/70 flex-shrink-0" />}
-                            </button>
+                              {isSelected ? (
+                                <Check className="w-4 h-4 text-foreground/70 flex-shrink-0" />
+                              ) : null}
+                            </DropdownMenuItem>
                           )
                         })}
                       </div>
                     ))}
-                  </div>
-                )}
+                  </DropdownMenuContent>
+                </DropdownMenu>
               </div>
 
               {supportsReasoningEffort && (
                 <div className="relative">
-                  <button
-                    onClick={() => {
-                      setReasoningOpen(!reasoningOpen)
-                      setModelOpen(false)
-                      setPermissionOpen(false)
+                  <DropdownMenu
+                    open={reasoningOpen}
+                    onOpenChange={(nextOpen) => {
+                      setReasoningOpen(nextOpen)
+                      if (nextOpen) {
+                        setModelOpen(false)
+                        setPermissionOpen(false)
+                      }
                     }}
-                    className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors"
-                    aria-label="Reasoning effort"
                   >
-                    <span>{selectedReasoningEffortLabel}</span>
-                    <ChevronDown className="w-3.5 h-3.5" />
-                  </button>
-                  {reasoningOpen && (
-                    <div className="absolute bottom-full mb-2 left-0 bg-background border border-[#e8e4e0] rounded-xl shadow-md overflow-hidden z-20 w-44">
+                    <DropdownMenuTrigger asChild>
+                      <button
+                        className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors outline-none"
+                        aria-label="Reasoning effort"
+                      >
+                        <span>{selectedReasoningEffortLabel}</span>
+                        <ChevronDown className="w-3.5 h-3.5" />
+                      </button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent
+                      side="top"
+                      align="start"
+                      sideOffset={10}
+                      className="w-44 rounded-xl border-[#e8e4e0] bg-background p-1 shadow-md"
+                    >
                       {[null, ...reasoningEffortOptions].map((option) => {
                         const isSelected = (option ?? null) === (selectedReasoningEffort ?? null)
                         const label = option ?? "Auto"
 
                         return (
-                          <button
+                          <DropdownMenuItem
                             key={option ?? "auto"}
                             onClick={() => {
                               onSelectedReasoningEffortChange(option)
                               setReasoningOpen(false)
                             }}
-                            className="w-full flex items-center justify-between px-4 py-2 text-sm text-foreground/80 hover:bg-[#efe9e4] transition-colors"
+                            className="justify-between px-4 py-2 text-foreground/80 hover:bg-[#efe9e4] focus:bg-[#efe9e4]"
                           >
                             <span>{label}</span>
-                            {isSelected && <Check className="w-4 h-4 text-foreground/70 flex-shrink-0" />}
-                          </button>
+                            {isSelected ? (
+                              <Check className="w-4 h-4 text-foreground/70 flex-shrink-0" />
+                            ) : null}
+                          </DropdownMenuItem>
                         )
                       })}
-                    </div>
-                  )}
+                    </DropdownMenuContent>
+                  </DropdownMenu>
                 </div>
               )}
 
               <div className="relative">
-                <button
-                  onClick={() => {
-                    setPermissionOpen(!permissionOpen)
-                    setModelOpen(false)
-                    setReasoningOpen(false)
+                <DropdownMenu
+                  open={permissionOpen}
+                  onOpenChange={(nextOpen) => {
+                    setPermissionOpen(nextOpen)
+                    if (nextOpen) {
+                      setModelOpen(false)
+                      setReasoningOpen(false)
+                    }
                   }}
-                  className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors"
                 >
-                  <ShieldCheck className="w-4 h-4" />
-                  {permission === "default" ? "Default permissions" : "Full access"}
-                  <ChevronDown className="w-3.5 h-3.5" />
-                </button>
-                {permissionOpen && (
-                  <div className="absolute bottom-full mb-2 left-0 bg-background border border-[#e8e4e0] rounded-xl shadow-md overflow-hidden z-20 w-52">
+                  <DropdownMenuTrigger asChild>
+                    <button className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors outline-none">
+                      <ShieldCheck className="w-4 h-4" />
+                      {permission === "auto_allow" ? "Auto-allow" : "Ask first"}
+                      <ChevronDown className="w-3.5 h-3.5" />
+                    </button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent
+                    side="top"
+                    align="start"
+                    sideOffset={10}
+                    className="w-52 rounded-xl border-[#e8e4e0] bg-background p-1 shadow-md"
+                  >
                     {permissionOptions.map((opt) => (
-                      <button
+                      <DropdownMenuItem
                         key={opt.value}
                         onClick={() => {
                           setPermission(opt.value)
                           setPermissionOpen(false)
                         }}
-                        className="w-full flex items-center gap-2 px-4 py-2.5 text-sm text-foreground/80 hover:bg-[#efe9e4] transition-colors"
+                        className="gap-2 px-4 py-2.5 text-foreground/80 hover:bg-[#efe9e4] focus:bg-[#efe9e4]"
                       >
                         <ShieldCheck className="w-4 h-4 text-muted-foreground flex-shrink-0" />
                         <span className="flex-1 text-left">{opt.label}</span>
-                        {permission === opt.value && <Check className="w-4 h-4 text-foreground/70 flex-shrink-0" />}
-                      </button>
+                        {permission === opt.value ? (
+                          <Check className="w-4 h-4 text-foreground/70 flex-shrink-0" />
+                        ) : null}
+                      </DropdownMenuItem>
                     ))}
-                  </div>
-                )}
+                  </DropdownMenuContent>
+                </DropdownMenu>
               </div>
             </div>
 
@@ -672,7 +790,10 @@ export function MainContent({
 
               {isGenerating ? (
                 <button
-                  onClick={() => setIsGenerating(false)}
+                  onClick={() => {
+                    setIsGenerating(false)
+                    void onCancelRun?.()
+                  }}
                   className="p-2 bg-foreground hover:bg-foreground/80 text-background rounded-full transition-colors"
                   aria-label="Stop"
                 >
@@ -707,9 +828,109 @@ export function MainContent({
               )}
             </div>
           </div>
+          </div>
+
+          {pendingPermissionRequest ? (
+            <ComposerPermissionOverlay
+              request={pendingPermissionRequest}
+              onAllowOnce={onAllowPermissionRequest}
+              onAllowAlways={() => {
+                setPermission("auto_allow")
+                onAllowAlwaysPermissionRequest()
+              }}
+              onReject={onRejectPermissionRequest}
+              onCancelRun={onCancelPermissionRequest}
+            />
+          ) : null}
         </div>
       </div>
     </main>
+  )
+}
+
+function ComposerPermissionOverlay({
+  request,
+  onAllowOnce,
+  onAllowAlways,
+  onReject,
+  onCancelRun,
+}: {
+  request: PendingPermissionRequest
+  onAllowOnce: () => void
+  onAllowAlways: () => void
+  onReject: () => void
+  onCancelRun: () => void
+}) {
+  return (
+    <div
+      role="alertdialog"
+      aria-labelledby="composer-permission-title"
+      aria-describedby="composer-permission-description"
+      className="absolute inset-0 z-20 flex flex-col justify-between rounded-2xl border border-[#ddd4cb] bg-[#f8f4ef]/96 p-4 backdrop-blur-[2px] sm:p-5"
+    >
+      <div className="space-y-4">
+        <div className="flex items-start gap-3">
+          <div className="mt-0.5 flex h-8 w-8 items-center justify-center rounded-full border border-[#f2c07f] bg-[#fff4e8] text-[#d88922]">
+            <AlertTriangle className="h-4 w-4" aria-hidden="true" />
+          </div>
+          <div className="min-w-0 space-y-1">
+            <h2 id="composer-permission-title" className="text-[1.05rem] font-semibold text-foreground">
+              Permission required
+            </h2>
+            <p id="composer-permission-description" className="text-sm leading-6 text-foreground/62">
+              This run is paused before a sensitive action. Choose how to proceed from the composer.
+            </p>
+          </div>
+        </div>
+
+        <div className="rounded-[1.4rem] border border-[#ddd4cb] bg-white/70 px-5 py-4 shadow-[0_1px_2px_rgba(15,23,42,0.05)]">
+          <div className="text-[1.65rem] font-medium leading-tight text-foreground/72">{request.title}</div>
+          <div className="mt-4 flex flex-wrap gap-x-6 gap-y-2 text-sm text-foreground/58">
+            <span className="inline-flex items-center gap-2">
+              <span className="text-[11px] uppercase tracking-[0.14em] text-foreground/42">Kind</span>
+              <span className="font-medium text-foreground/72">{request.kind}</span>
+            </span>
+            <span className="inline-flex items-center gap-2">
+              <span className="text-[11px] uppercase tracking-[0.14em] text-foreground/42">Request</span>
+              <span className="font-medium text-foreground/72">{request.toolCallId}</span>
+            </span>
+          </div>
+        </div>
+      </div>
+
+      <div className="flex flex-wrap items-center justify-between gap-3 border-t border-[#e6ddd4] pt-4">
+        <button
+          type="button"
+          onClick={onCancelRun}
+          className="rounded-xl px-3 py-2 text-sm font-medium text-foreground/58 transition-colors hover:bg-[#ede4da] hover:text-foreground"
+        >
+          Cancel run
+        </button>
+        <div className="flex flex-wrap items-center justify-end gap-3">
+        <button
+          type="button"
+          onClick={onReject}
+          className="rounded-xl px-4 py-2 text-sm font-medium text-foreground/78 transition-colors hover:bg-[#ede4da] hover:text-foreground"
+        >
+          Deny
+        </button>
+        <button
+          type="button"
+          onClick={onAllowAlways}
+          className="rounded-xl border border-[#ddd4cb] bg-white/78 px-4 py-2 text-sm font-medium text-foreground shadow-sm transition-colors hover:bg-white"
+        >
+          Allow always
+        </button>
+        <button
+          type="button"
+          onClick={onAllowOnce}
+          className="rounded-xl bg-[#211c19] px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-[#3b342e]"
+        >
+          Allow once
+        </button>
+        </div>
+      </div>
+    </div>
   )
 }
 
@@ -857,6 +1078,18 @@ function PlanningStepCard({ step }: { step: PlanningEntry }) {
     <div className="rounded-2xl border border-[#e8e4e0] bg-[#fcfaf8] px-4 py-3">
       <div className="mb-2 text-xs uppercase tracking-[0.12em] text-foreground/45">Planning step</div>
       <AgentMessageContent content={step.contentText ?? ""} />
+    </div>
+  )
+}
+
+function LivePlanningStepCard({ entry }: { entry: LiveTurn["planEntries"][number] }) {
+  return (
+    <div className="rounded-2xl border border-[#e8e4e0] bg-[#fcfaf8] px-4 py-3">
+      <div className="mb-2 flex items-center justify-between text-xs uppercase tracking-[0.12em] text-foreground/45">
+        <span>Planning step</span>
+        <span>{entry.status}</span>
+      </div>
+      <AgentMessageContent content={entry.content} />
     </div>
   )
 }
@@ -1125,6 +1358,48 @@ function PreStepRunLoading() {
       <div className="w-7 h-7 rounded-full bg-gradient-to-br from-[#e87b5f] to-[#8bc28f] flex-shrink-0 mt-0.5" />
       <div className="bg-[#faf8f6] border border-[#e8e4e0] rounded-2xl px-4 py-3">
         <ThinkingDots />
+      </div>
+    </div>
+  )
+}
+
+function LiveToolCallsCard({
+  toolCalls,
+  waitingForPermission,
+}: {
+  toolCalls: LiveTurn["toolCalls"]
+  waitingForPermission: boolean
+}) {
+  return (
+    <div className="rounded-2xl border border-[#e8e4e0] bg-[#fcfaf8] px-4 py-3 space-y-3">
+      <div className="flex items-center justify-between text-xs uppercase tracking-[0.12em] text-foreground/45">
+        <span>Tool calls</span>
+        {waitingForPermission ? <span>Waiting for permission</span> : null}
+      </div>
+      <div className="space-y-2">
+        {toolCalls.map((toolCall) => (
+          <div
+            key={toolCall.toolCallId}
+            className="flex items-center justify-between rounded-xl border border-[#e8e4e0] bg-background px-3 py-2 text-sm"
+          >
+            <div className="min-w-0">
+              <div className="font-medium text-foreground/85">{toolCall.title}</div>
+              <div className="text-xs text-foreground/50">{toolCall.kind}</div>
+            </div>
+            <div className="text-xs uppercase tracking-[0.08em] text-foreground/55">{toolCall.status}</div>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function LiveAssistantDraftRow({ content }: { content: string }) {
+  return (
+    <div className="flex gap-3 items-start" data-testid="live-assistant-draft">
+      <div className="w-7 h-7 rounded-full bg-gradient-to-br from-[#e87b5f] to-[#8bc28f] flex-shrink-0 mt-0.5" />
+      <div className="flex-1 min-w-0">
+        <AgentMessageContent content={content} />
       </div>
     </div>
   )

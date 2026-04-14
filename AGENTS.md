@@ -28,6 +28,24 @@
 - Frontend uses Vitest + Testing Library. Name tests `*.test.ts` or `*.test.tsx`.
 - Sidecar uses Pytest with tests under `sidecar/tests/`.
 - Add or update tests for any behavior change, especially API contract changes and session/runtime flows.
+- Distinguish **in-process app tests** from **real runtime/transport smoke tests**. `fastapi.testclient.TestClient` validates ASGI app behavior, but it does not validate Uvicorn startup wiring, import-path issues, protocol upgrade handling, or optional websocket backend availability.
+- For sidecar features that depend on server startup, HTTP upgrade, optional dependencies, or packaging/import behavior, add at least one test that goes through the real entrypoint and a real client transport instead of only `TestClient` or patched unit tests.
+
+## Migration Closure Policy (No Dribble)
+- Skip budget is zero by default: target test suites should not end with `skipped` tests.
+- Do not use temporary evasion patterns (renaming to `legacy_*`, long-term `skip`, or commenting out failing tests) as a migration endpoint.
+- When removing/replacing an interface (for example `/runs*`), complete in one delivery:
+  1) new interface implementation,
+  2) equivalent test coverage for new interface,
+  3) old-interface test removal,
+  4) green run with no new skips.
+- Build an explicit mapping of `old test -> replacement test` before deleting legacy tests.
+- Definition of Done for migration/refactor work:
+  - required test commands pass,
+  - no failing tests,
+  - no newly introduced skips.
+- If full replacement cannot be completed promptly, escalate early with blockers and options instead of continuing incremental partial work.
+- Final report for migration work must include `passed/failed/skipped` counts.
 
 ## Commit & Pull Request Guidelines
 - Follow existing history style: imperative subject lines, often Conventional Commit prefixes (`feat:`, `fix:`, `refactor:`).
@@ -43,20 +61,36 @@
 - When designing solutions and writing code, there is no need to consider any compatibility or migration issues; functionality can be implemented entirely according to one's own vision. One is free to utilize the latest language features and libraries without any restrictions. This maximizes creativity and efficiency, enabling the rapid achievement of objectives.
 
 ## Runtime Architecture Guardrails
-- Runtime call sites (`RunService`, `sidecar/src/nsbot_sidecar/cli.py`, and `sidecar/src/nsbot_sidecar/runtime/worker.py`) must use the `nsbot_sidecar.runtime.engine` interface and must not directly instantiate `AgentRuntimeService`.
+- Runtime call sites (`sidecar/src/nsbot_sidecar/api/acp_ws.py`, `sidecar/src/nsbot_sidecar/cli.py`, and `sidecar/src/nsbot_sidecar/runtime/worker.py`) must use the `nsbot_sidecar.runtime.engine` interface and must not directly instantiate `AgentRuntimeService`.
 - Keep `execute_runtime_run` as a compatibility entry point, but keep it as a thin forwarder to RuntimeEngine.
-- During Phase 0 style refactors, preserve external behavior: API contract unchanged, worker stdin/stdout JSON unchanged, and SSE event names remain `run.*`.
+- Runtime interaction is ACP-only (`/acp/ws`). Do not add or restore `/runs*` endpoints, `run.*` event streams, or HTTP `edit-and-run` style paths.
+- For websocket or transport-layer changes, do not stop at route-level tests; verify a real Uvicorn process can start and complete an actual `/acp/ws` handshake.
 - For runtime-layer changes, run at minimum:
   - `cd sidecar && uv run pytest tests/test_runtime_service.py tests/test_worker.py tests/test_api_server.py`
 - When adding a new runtime backend, prefer injecting via `runtime_engine_factory` instead of branching at business call sites.
+
+## ACP Permission Policy
+- Default client policy is `auto-allow=true`.
+- Permission interception is limited to controlled actions: `write`, `edit`, and `python_exec_agent`.
+- Read-class tools (`read/grep/find/ls` and similar) must pass without permission prompts.
+- Only when `auto-allow=false`, agent emits `session/request_permission` and blocks until client response.
+- On `session/cancel`, all pending permission requests in that session must converge to `cancelled` and unblock waiting execution.
+
+## Frontend Runtime State Model
+- Frontend runtime UI state should be session/turn-based, not run-id based.
+- Do not introduce new `activeRunId`/`sessionRunStatusById` style state.
+- Loading indicators should derive from “current turn” semantics (entries after the latest `user_input`) plus session pending status.
 
 ## Phase 1 Runtime Conventions
 - Runtime kernel baseline is `ToolCallingAgent` (main) + managed `CodeAgent` (`python_exec_agent`) for on-demand Python execution.
 - Main-agent tool priority is a default strategy (not a hard requirement): prefer `read -> grep -> find -> ls`, and only use `edit/write` after sufficient evidence is collected.
 - Managed `CodeAgent` is a fallback path for tasks that cannot be completed efficiently or reliably with standard workspace tools (`read/grep/find/ls`), including but not limited to computation, data transformation, and script-style workflows.
-- Preserve Phase 1 external behavior: API contract unchanged, worker stdin/stdout JSON unchanged, and SSE event names remain `run.*`.
 - For runtime/tooling changes, run at minimum:
   - `cd sidecar && uv run pytest tests/test_runtime_service.py tests/test_worker.py tests/test_api_server.py tests/test_tools.py`
 - In `sidecar/src/nsbot_sidecar/runtime/tools.py`, keep tool metadata unambiguous:
   - no duplicate keys in `inputs`;
   - include practical default/range semantics in parameter descriptions where relevant.
+
+## Execution Hygiene
+- Use `apply_patch` for code edits; do not invoke `apply_patch` through `exec_command`.
+- For frontend tests in this repo, run `npm test` directly (do not append unsupported flags like `--runInBand`).

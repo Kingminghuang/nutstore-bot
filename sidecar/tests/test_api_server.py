@@ -1,21 +1,29 @@
 from __future__ import annotations
 
-from dataclasses import replace
+import asyncio
 import json
 import logging
+import os
+import socket
+import subprocess
+import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from typing import Any, cast
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 from fastapi import FastAPI, HTTPException
+import requests
 from smolagents.models import ChatMessageStreamDelta, Model
 from smolagents.monitoring import TokenUsage
 
 from nsbot_sidecar.api.api_server import (
     ApiServerConfig,
     create_app,
+    detect_websocket_backend,
     publish_service_discovery,
 )
 from nsbot_sidecar.providers.direct_model import DirectModelError
@@ -76,12 +84,6 @@ class FakeWorkspaceSidecarIndexer:
 
 
 from nsbot_sidecar.api.discovery import read_service_discovery
-from nsbot_sidecar.infrastructure.local_paths import nsbot_home
-from nsbot_sidecar.runtime.runtime_service import (
-    RunMetadata,
-    RuntimeProcessError,
-    RuntimeWorkerConfig,
-)
 from nsbot_sidecar.runtime.session_manager import SessionManager
 from nsbot_sidecar.runtime.workspace_sidecar_indexer import WorkspaceSidecarIndexer
 
@@ -100,12 +102,6 @@ class ApiServerTests(unittest.TestCase):
     @property
     def app(self) -> FastAPI:
         return cast(FastAPI, self.client.app)
-
-    def _set_sync_run_launcher(self) -> None:
-        self.app.state.run_service = replace(
-            self.app.state.run_service,
-            run_launcher=lambda task: task(),
-        )
 
     def _set_validation_model_factory(self, factory) -> None:
         object.__setattr__(self.app.state.provider_service, "model_factory", factory)
@@ -262,6 +258,25 @@ class ApiServerTests(unittest.TestCase):
                     auth_header_value="Bearer bad-token",
                 )
             )
+
+    def test_detect_websocket_backend_prefers_websockets(self) -> None:
+        def fake_find_spec(name: str):
+            if name == "websockets":
+                return object()
+            if name == "wsproto":
+                return object()
+            return None
+
+        with patch("nsbot_sidecar.api.api_server.importlib.util.find_spec", side_effect=fake_find_spec):
+            self.assertEqual(detect_websocket_backend(), "websockets")
+
+    def test_detect_websocket_backend_raises_when_missing(self) -> None:
+        with patch(
+            "nsbot_sidecar.api.api_server.importlib.util.find_spec",
+            return_value=None,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "WebSocket backend"):
+                detect_websocket_backend()
 
     def test_provider_catalog_returns_custom_template_without_auth(self) -> None:
         response = self.client.get("/provider-catalog")
@@ -955,7 +970,7 @@ class ApiServerTests(unittest.TestCase):
                 created_at=f"2026-03-24T12:00:0{index}Z",
             )
 
-        self.app.state.run_service.session_service.timeline_service.refresh_session_summary(
+        self.app.state.session_service.timeline_service.refresh_session_summary(
             str(session["id"])
         )
 
@@ -984,223 +999,6 @@ class ApiServerTests(unittest.TestCase):
         )
         self.assertEqual(older_body["pagination"]["hasMore"], False)
         self.assertIsNone(older_body["pagination"]["nextBeforeSequence"])
-
-    def test_edit_and_run_rewrites_suffix_messages_and_runs(self) -> None:
-        workspace = self._create_workspace("workspace-edit-run")
-        provider = self._create_provider()
-        session = self._create_session(
-            workspace_id=str(workspace["id"]),
-            connection_id=str(provider["id"]),
-        )
-        session_id = str(session["id"])
-        provider_id = str(provider["id"])
-        self._set_sync_run_launcher()
-        self.app.state.run_service = replace(
-            self.app.state.run_service,
-            runtime_executor=lambda *_args, **_kwargs: {
-                "deltas": [],
-                "timeline_entries": [],
-                "final_answer": "Edited run complete",
-            },
-        )
-
-        database = self.app.state.database
-        database.execute(
-            """
-            INSERT INTO runs (
-                id, session_id, workspace_id, connection_id, model_id, status, input_text,
-                final_answer, error_code, error_message, created_at, started_at, completed_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                "run_old_1",
-                session_id,
-                workspace["id"],
-                provider_id,
-                "gpt-5.4",
-                "completed",
-                "old input 1",
-                "done",
-                None,
-                None,
-                "2026-03-24T12:00:00Z",
-                "2026-03-24T12:00:00Z",
-                "2026-03-24T12:00:30Z",
-                "2026-03-24T12:00:30Z",
-            ),
-        )
-        database.execute(
-            """
-            INSERT INTO runs (
-                id, session_id, workspace_id, connection_id, model_id, status, input_text,
-                final_answer, error_code, error_message, created_at, started_at, completed_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                "run_old_2",
-                session_id,
-                workspace["id"],
-                provider_id,
-                "gpt-5.4",
-                "completed",
-                "old input 2",
-                "done",
-                None,
-                None,
-                "2026-03-24T12:01:00Z",
-                "2026-03-24T12:01:00Z",
-                "2026-03-24T12:01:30Z",
-                "2026-03-24T12:01:30Z",
-            ),
-        )
-        self._append_timeline_entry(
-            session_id=session_id,
-            timeline_entry_id="msg_keep_1",
-            run_id="run_old_1",
-            entry_kind="user_input",
-            display_role="user",
-            content_text="prefix user",
-            sequence_no=1,
-            created_at="2026-03-24T12:00:00Z",
-        )
-        self._append_timeline_entry(
-            session_id=session_id,
-            timeline_entry_id="msg_keep_2",
-            run_id="run_old_1",
-            entry_kind="final_answer",
-            display_role="assistant",
-            content_text="prefix assistant",
-            sequence_no=2,
-            created_at="2026-03-24T12:00:10Z",
-        )
-        self._append_timeline_entry(
-            session_id=session_id,
-            timeline_entry_id="msg_edit_1",
-            run_id="run_old_2",
-            entry_kind="user_input",
-            display_role="user",
-            content_text="old editable",
-            sequence_no=3,
-            created_at="2026-03-24T12:01:00Z",
-        )
-        self._append_timeline_entry(
-            session_id=session_id,
-            timeline_entry_id="msg_drop_2",
-            run_id="run_old_2",
-            entry_kind="final_answer",
-            display_role="assistant",
-            content_text="old assistant tail",
-            sequence_no=4,
-            created_at="2026-03-24T12:01:10Z",
-        )
-        database.execute(
-            """
-            UPDATE sessions
-            SET message_count = 4, last_message_preview = ?, last_message_at = ?, updated_at = ?
-            WHERE id = ?
-            """,
-            (
-                "old assistant tail",
-                "2026-03-24T12:01:10Z",
-                "2026-03-24T12:01:10Z",
-                session_id,
-            ),
-        )
-        database.commit()
-
-        response = self.client.post(
-            f"/sessions/{session_id}/timeline/msg_edit_1/edit-and-run",
-            headers={"Authorization": "Bearer test-token"},
-            json={
-                "content": "edited user message",
-                "workspaceId": workspace["id"],
-                "connectionId": provider_id,
-                "modelId": "gpt-5.4",
-            },
-        )
-        self.assertEqual(response.status_code, 200)
-        body = response.json()
-        self.assertEqual(body["run"]["status"], "completed")
-        self.assertEqual(body["entries"][0]["contentText"], "prefix user")
-        self.assertEqual(body["entries"][1]["contentText"], "prefix assistant")
-        self.assertEqual(body["entries"][2]["contentText"], "edited user message")
-        self.assertEqual(body["entries"][3]["contentText"], "Edited run complete")
-
-        run_ids = {
-            item["id"] for item in database.execute("SELECT id FROM runs").fetchall()
-        }
-        self.assertIn("run_old_1", run_ids)
-        self.assertNotIn("run_old_2", run_ids)
-
-    def test_edit_and_run_rejects_non_user_message(self) -> None:
-        workspace = self._create_workspace("workspace-edit-invalid-role")
-        provider = self._create_provider()
-        session = self._create_session(
-            workspace_id=str(workspace["id"]),
-            connection_id=str(provider["id"]),
-        )
-        entry = self._append_timeline_entry(
-            session_id=str(session["id"]),
-            entry_kind="final_answer",
-            display_role="assistant",
-            content_text="assistant content",
-        )
-        message_id = entry.id
-
-        edit_response = self.client.post(
-            f"/sessions/{session['id']}/timeline/{message_id}/edit-and-run",
-            headers={"Authorization": "Bearer test-token"},
-            json={
-                "content": "new content",
-                "workspaceId": workspace["id"],
-                "connectionId": provider["id"],
-                "modelId": "gpt-5.4",
-            },
-        )
-        self.assertEqual(edit_response.status_code, 400)
-        self.assertEqual(
-            edit_response.json()["detail"],
-            "Only user input timeline entries can be edited",
-        )
-
-    def test_edit_and_run_rejects_when_session_has_active_run(self) -> None:
-        workspace = self._create_workspace("workspace-edit-active-run")
-        provider = self._create_provider()
-        session = self._create_session(
-            workspace_id=str(workspace["id"]),
-            connection_id=str(provider["id"]),
-        )
-        message_id = self._append_timeline_entry(
-            session_id=str(session["id"]),
-            entry_kind="user_input",
-            display_role="user",
-            content_text="message while running",
-        ).id
-
-        run = self.app.state.repositories.runs.create(
-            session_id=str(session["id"]),
-            workspace_id=str(workspace["id"]),
-            connection_id=str(provider["id"]),
-            model_id="gpt-5.4",
-            input_text="pending",
-            status="running",
-        )
-        self.assertEqual(run.status, "running")
-
-        response = self.client.post(
-            f"/sessions/{session['id']}/timeline/{message_id}/edit-and-run",
-            headers={"Authorization": "Bearer test-token"},
-            json={
-                "content": "edited during running run",
-                "workspaceId": workspace["id"],
-                "connectionId": provider["id"],
-                "modelId": "gpt-5.4",
-            },
-        )
-        self.assertEqual(response.status_code, 409)
-        self.assertEqual(
-            response.json()["detail"], "Cannot edit while a run is in progress"
-        )
 
     def test_session_attachments_can_upload_list_and_delete(self) -> None:
         workspace = self._create_workspace("workspace-attachments")
@@ -1241,57 +1039,6 @@ class ApiServerTests(unittest.TestCase):
         self.assertEqual(list_after_delete.status_code, 200)
         self.assertEqual(list_after_delete.json()["attachments"], [])
 
-    def test_run_consumes_uploaded_attachments_and_persists_message_metadata(
-        self,
-    ) -> None:
-        workspace = self._create_workspace("workspace-run-attachments")
-        provider = self._create_provider()
-        session = self._create_session(
-            workspace_id=str(workspace["id"]),
-            connection_id=str(provider["id"]),
-        )
-        self._set_sync_run_launcher()
-
-        self.app.state.run_service = replace(
-            self.app.state.run_service,
-            runtime_executor=lambda *_args, **_kwargs: {
-                "deltas": [],
-                "timeline_entries": [],
-                "final_answer": "Attachment accepted",
-            },
-        )
-
-        uploaded = self.client.post(
-            f"/sessions/{session['id']}/attachments",
-            headers={"Authorization": "Bearer test-token"},
-            files={"file": ("context.md", b"hello", "text/markdown")},
-        )
-        self.assertEqual(uploaded.status_code, 200)
-        attachment_id = uploaded.json()["id"]
-
-        run_response = self.client.post(
-            "/runs",
-            headers={"Authorization": "Bearer test-token"},
-            json={
-                "sessionId": session["id"],
-                "workspaceId": workspace["id"],
-                "connectionId": provider["id"],
-                "modelId": "gpt-5.4",
-                "attachmentIds": [attachment_id],
-                "input": "Use the attached context",
-            },
-        )
-        self.assertEqual(run_response.status_code, 200)
-
-        attachments_response = self.client.get(
-            f"/sessions/{session['id']}/attachments",
-            headers={"Authorization": "Bearer test-token"},
-        )
-        self.assertEqual(attachments_response.status_code, 200)
-        self.assertEqual(attachments_response.json()["attachments"], [])
-
-        entries = self._get_session_timeline(str(session["id"]))
-        self.assertEqual(entries[0]["contentJson"], {"attachmentIds": [attachment_id]})
 
     def test_workspace_requires_existing_directory(self) -> None:
         response = self.client.post(
@@ -1640,89 +1387,7 @@ class ApiServerTests(unittest.TestCase):
         )
         self.assertEqual(after_assistant["messageCount"], 2)
 
-    def test_post_run_generates_model_title_from_timeline(
-        self,
-    ) -> None:
-        workspace = self._create_workspace("workspace-title-fallback")
-        provider = self._create_provider()
-        session = self._create_session(workspace["id"], str(provider["id"]))
-        self._set_sync_run_launcher()
 
-        def fake_runtime_executor(config, run_id, user_input, auth_context, metadata):
-            del config, run_id, user_input, auth_context, metadata
-            return {
-                "deltas": [],
-                "timeline_entries": [],
-                "final_answer": "Fallback title flow complete.",
-            }
-
-        self.app.state.run_service = replace(
-            self.app.state.run_service,
-            runtime_executor=fake_runtime_executor,
-        )
-
-        response = self.client.post(
-            "/runs",
-            headers={"Authorization": "Bearer test-token"},
-            json={
-                "sessionId": session["id"],
-                "workspaceId": workspace["id"],
-                "connectionId": provider["id"],
-                "modelId": "gpt-5.4",
-                "input": "Please help me integrate frontend and sidecar local service with robust auth and persistence",
-            },
-        )
-        self.assertEqual(response.status_code, 200)
-
-        listed = self.client.get(
-            f"/workspaces/{workspace['id']}/sessions",
-            headers={"Authorization": "Bearer test-token"},
-        ).json()["sessions"][0]
-        self.assertEqual(listed["titleSource"], "model")
-        self.assertEqual(
-            listed["title"],
-            "Please help me integrate frontend and sidecar local",
-        )
-
-    def test_post_run_passes_configured_fd_and_rg_to_runtime(self) -> None:
-        workspace = self._create_workspace("workspace-search-tools")
-        provider = self._create_provider()
-        session = self._create_session(workspace["id"], str(provider["id"]))
-        self._set_sync_run_launcher()
-        captured: dict[str, str | None] = {}
-
-        def fake_runtime_executor(config, run_id, user_input, auth_context, metadata):
-            del run_id, user_input, auth_context, metadata
-            captured["fd"] = config.fd_executable
-            captured["rg"] = config.rg_executable
-            return {
-                "deltas": [],
-                "timeline_entries": [],
-                "final_answer": "ok",
-            }
-
-        self.app.state.run_service = replace(
-            self.app.state.run_service,
-            runtime_executor=fake_runtime_executor,
-            fd_executable="/tmp/nsbot/bin/fd",
-            rg_executable="/tmp/nsbot/bin/rg",
-        )
-
-        response = self.client.post(
-            "/runs",
-            headers={"Authorization": "Bearer test-token"},
-            json={
-                "sessionId": session["id"],
-                "workspaceId": workspace["id"],
-                "connectionId": provider["id"],
-                "modelId": "gpt-5.4",
-                "input": "search tooling should work",
-            },
-        )
-
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(captured["fd"], "/tmp/nsbot/bin/fd")
-        self.assertEqual(captured["rg"], "/tmp/nsbot/bin/rg")
 
     def test_update_and_delete_provider(self) -> None:
         created = self.client.post(
@@ -1830,625 +1495,17 @@ class ApiServerTests(unittest.TestCase):
         self.assertEqual(len(groups), 1)
         self.assertEqual(groups[0]["connectionId"], provider_id)
 
-    def test_post_run_uses_session_id_as_runtime_session_key_and_persists_output(
-        self,
-    ) -> None:
-        workspace = self._create_workspace("workspace-run")
-        provider = self._create_provider()
-        session = self._create_session(workspace["id"], str(provider["id"]))
-        self._set_sync_run_launcher()
 
-        captured: dict[str, object] = {}
 
-        def fake_runtime_executor(config, run_id, user_input, auth_context, metadata):
-            captured["config"] = config
-            captured["run_id"] = run_id
-            captured["user_input"] = user_input
-            captured["auth_context"] = auth_context
-            captured["metadata"] = metadata
-            return {
-                "deltas": [],
-                "timeline_entries": [],
-                "final_answer": "Implemented sidecar run orchestration.",
-            }
 
-        self.app.state.run_service = replace(
-            self.app.state.run_service,
-            runtime_executor=fake_runtime_executor,
-        )
 
-        response = self.client.post(
-            "/runs",
-            headers={"Authorization": "Bearer test-token"},
-            json={
-                "sessionId": session["id"],
-                "workspaceId": workspace["id"],
-                "connectionId": provider["id"],
-                "modelId": "gpt-5.4",
-                "input": "Please wire the sidecar run flow",
-            },
-        )
-        self.assertEqual(response.status_code, 200)
 
-        body = response.json()
-        self.assertEqual(body["run"]["status"], "completed")
-        self.assertEqual(
-            body["run"]["finalAnswer"], "Implemented sidecar run orchestration."
-        )
-        self.assertEqual(body["session"]["id"], session["id"])
-        self.assertEqual(body["session"]["titleSource"], "model")
-        self.assertEqual(
-            body["entries"][-1]["contentText"],
-            "Implemented sidecar run orchestration.",
-        )
 
-        metadata = cast(RunMetadata, captured["metadata"])
-        self.assertEqual(metadata.session_key, session["id"])
-        self.assertEqual(metadata.workspace_path, workspace["realPath"])
 
-        config = cast(RuntimeWorkerConfig, captured["config"])
-        self.assertEqual(config.provider, "openai")
-        self.assertEqual(config.model, "gpt-5.4")
-        self.assertEqual(config.api_key, "sk-test")
-        self.assertEqual(config.direct_reasoning_effort, "medium")
 
-        entries = self._get_session_timeline(str(session["id"]))
-        self.assertEqual(
-            [item["displayRole"] for item in entries], ["user", "assistant"]
-        )
 
-        listed_session = self.client.get(
-            f"/workspaces/{workspace['id']}/sessions",
-            headers={"Authorization": "Bearer test-token"},
-        ).json()["sessions"][0]
-        self.assertEqual(listed_session["titleSource"], "model")
 
-    def test_post_run_rejects_unknown_model_for_connection(self) -> None:
-        workspace = self._create_workspace("workspace-run-invalid")
-        provider = self._create_provider()
-        session = self._create_session(workspace["id"], str(provider["id"]))
-        self._set_sync_run_launcher()
 
-        response = self.client.post(
-            "/runs",
-            headers={"Authorization": "Bearer test-token"},
-            json={
-                "sessionId": session["id"],
-                "workspaceId": workspace["id"],
-                "connectionId": provider["id"],
-                "modelId": "not-a-real-model",
-                "input": "Run this",
-            },
-        )
-        self.assertEqual(response.status_code, 400)
-        body = response.json()
-        self.assertEqual(body["run"]["status"], "failed")
-        self.assertEqual(
-            body["entries"][-1]["contentText"],
-            "Run failed: Model is not available for this provider connection",
-        )
-
-        messages = self._get_session_timeline(str(session["id"]))
-        self.assertEqual([item["displayRole"] for item in messages], ["user", "system"])
-        self.assertEqual(
-            messages[-1]["contentText"],
-            "Run failed: Model is not available for this provider connection",
-        )
-
-    def test_post_run_accepts_explicit_reasoning_effort(self) -> None:
-        workspace = self._create_workspace("workspace-run-reasoning")
-        provider = self._create_provider()
-        session = self._create_session(workspace["id"], str(provider["id"]))
-        self._set_sync_run_launcher()
-
-        captured: dict[str, object] = {}
-
-        def fake_runtime_executor(config, run_id, user_input, auth_context, metadata):
-            captured["config"] = config
-            return {
-                "deltas": [],
-                "timeline_entries": [],
-                "final_answer": "Reasoning set explicitly.",
-            }
-
-        self.app.state.run_service = replace(
-            self.app.state.run_service,
-            runtime_executor=fake_runtime_executor,
-        )
-
-        response = self.client.post(
-            "/runs",
-            headers={"Authorization": "Bearer test-token"},
-            json={
-                "sessionId": session["id"],
-                "workspaceId": workspace["id"],
-                "connectionId": provider["id"],
-                "modelId": "gpt-5.4",
-                "reasoningEffort": "xhigh",
-                "input": "Please think harder",
-            },
-        )
-        self.assertEqual(response.status_code, 200)
-        config = cast(RuntimeWorkerConfig, captured["config"])
-        self.assertEqual(config.direct_reasoning_effort, "xhigh")
-
-    def test_post_run_rejects_invalid_reasoning_effort_for_model(self) -> None:
-        workspace = self._create_workspace("workspace-run-invalid-reasoning")
-        provider = self._create_provider()
-        session = self._create_session(workspace["id"], str(provider["id"]))
-        self._set_sync_run_launcher()
-
-        response = self.client.post(
-            "/runs",
-            headers={"Authorization": "Bearer test-token"},
-            json={
-                "sessionId": session["id"],
-                "workspaceId": workspace["id"],
-                "connectionId": provider["id"],
-                "modelId": "gpt-5.4-mini",
-                "reasoningEffort": "xhigh",
-                "input": "Use unsupported effort",
-            },
-        )
-        self.assertEqual(response.status_code, 400)
-        body = response.json()
-        self.assertEqual(body["run"]["status"], "failed")
-        self.assertEqual(body["run"]["errorCode"], "invalid_reasoning_effort")
-        self.assertEqual(
-            body["entries"][-1]["contentText"],
-            "Run failed: Reasoning effort is not supported for this model",
-        )
-
-    def test_post_run_persists_system_message_for_runtime_failure(self) -> None:
-        workspace = self._create_workspace("workspace-run-runtime-failure")
-        provider = self._create_provider()
-        session = self._create_session(workspace["id"], str(provider["id"]))
-        self._set_sync_run_launcher()
-
-        def fake_runtime_executor(config, run_id, user_input, auth_context, metadata):
-            raise RuntimeProcessError("provider_error", "Upstream model request failed")
-
-        self.app.state.run_service = replace(
-            self.app.state.run_service,
-            runtime_executor=fake_runtime_executor,
-        )
-
-        response = self.client.post(
-            "/runs",
-            headers={"Authorization": "Bearer test-token"},
-            json={
-                "sessionId": session["id"],
-                "workspaceId": workspace["id"],
-                "connectionId": provider["id"],
-                "modelId": "gpt-5.4",
-                "input": "Trigger upstream failure",
-            },
-        )
-        self.assertEqual(response.status_code, 200)
-        body = response.json()
-        self.assertEqual(body["run"]["status"], "failed")
-        self.assertEqual(
-            body["entries"][-1]["contentText"],
-            "Run failed: Upstream model request failed",
-        )
-
-        with self.assertLogs("nsbot_sidecar.application.run_service", level=logging.WARNING) as captured_logs:
-            response = self.client.post(
-                "/runs",
-                headers={"Authorization": "Bearer test-token"},
-                json={
-                    "sessionId": session["id"],
-                    "workspaceId": workspace["id"],
-                    "connectionId": provider["id"],
-                    "modelId": "gpt-5.4",
-                    "input": "Trigger upstream failure again",
-                },
-            )
-        self.assertEqual(response.status_code, 200)
-        self.assertIn("Run failed:", captured_logs.output[0])
-
-        messages = self._get_session_timeline(str(session["id"]))
-        self.assertEqual(
-            [item["displayRole"] for item in messages],
-            ["user", "system", "user", "system"],
-        )
-        self.assertEqual(
-            messages[-1]["contentText"],
-            "Run failed: Upstream model request failed",
-        )
-
-    def test_post_run_handles_unexpected_background_exception(self) -> None:
-        workspace = self._create_workspace("workspace-run-unexpected-failure")
-        provider = self._create_provider()
-        session = self._create_session(workspace["id"], str(provider["id"]))
-        self._set_sync_run_launcher()
-
-        def fake_runtime_executor(config, run_id, user_input, auth_context, metadata):
-            raise ValueError("boom")
-
-        self.app.state.run_service = replace(
-            self.app.state.run_service,
-            runtime_executor=fake_runtime_executor,
-        )
-
-        response = self.client.post(
-            "/runs",
-            headers={"Authorization": "Bearer test-token"},
-            json={
-                "sessionId": session["id"],
-                "workspaceId": workspace["id"],
-                "connectionId": provider["id"],
-                "modelId": "gpt-5.4",
-                "input": "Trigger unexpected failure",
-            },
-        )
-        self.assertEqual(response.status_code, 200)
-        body = response.json()
-        self.assertEqual(body["run"]["status"], "failed")
-        self.assertEqual(body["run"]["errorCode"], "runtime_error")
-        self.assertEqual(
-            body["run"]["errorMessage"],
-            "Unexpected runtime error: boom",
-        )
-        self.assertEqual(
-            body["entries"][-1]["contentText"],
-            "Run failed: Unexpected runtime error: boom",
-        )
-
-    def test_post_run_maps_custom_provider_runtime_config(self) -> None:
-        workspace = self._create_workspace("workspace-run-custom")
-        provider = self._create_custom_provider()
-        self._set_sync_run_launcher()
-        session = self.client.post(
-            f"/workspaces/{workspace['id']}/sessions",
-            headers={"Authorization": "Bearer test-token"},
-            json={
-                "connectionId": provider["id"],
-                "modelId": "team-model",
-            },
-        ).json()
-
-        captured: dict[str, object] = {}
-
-        def fake_runtime_executor(config, run_id, user_input, auth_context, metadata):
-            captured["config"] = config
-            captured["run_id"] = run_id
-            captured["user_input"] = user_input
-            captured["auth_context"] = auth_context
-            captured["metadata"] = metadata
-            return {
-                "deltas": [],
-                "timeline_entries": [],
-                "final_answer": "Custom gateway run complete.",
-            }
-
-        self.app.state.run_service = replace(
-            self.app.state.run_service,
-            runtime_executor=fake_runtime_executor,
-        )
-
-        response = self.client.post(
-            "/runs",
-            headers={"Authorization": "Bearer test-token"},
-            json={
-                "sessionId": session["id"],
-                "workspaceId": workspace["id"],
-                "connectionId": provider["id"],
-                "modelId": "team-model",
-                "input": "Call the custom gateway",
-            },
-        )
-        self.assertEqual(response.status_code, 200)
-
-        config = cast(RuntimeWorkerConfig, captured["config"])
-        self.assertEqual(config.provider, "custom")
-        self.assertEqual(config.base_url, "https://llm.example.com/v1")
-        self.assertEqual(config.api_key, "sk-custom-test")
-        self.assertEqual(config.model, "team-model")
-        self.assertEqual(config.workspace_path_default, workspace["realPath"])
-        self.assertEqual(config.ns_bot_home, str(nsbot_home(str(self.temp_dir))))
-
-        metadata = cast(RunMetadata, captured["metadata"])
-        self.assertEqual(metadata.session_key, session["id"])
-        self.assertEqual(metadata.workspace_path, workspace["realPath"])
-
-        body = response.json()
-        self.assertEqual(body["run"]["status"], "completed")
-        self.assertEqual(body["run"]["modelId"], "team-model")
-        self.assertEqual(
-            body["entries"][-1]["contentText"], "Custom gateway run complete."
-        )
-
-    def test_post_run_returns_queued_state_before_background_launcher_executes(
-        self,
-    ) -> None:
-        workspace = self._create_workspace("workspace-run-queued")
-        provider = self._create_provider()
-        session = self._create_session(workspace["id"], str(provider["id"]))
-
-        launched_tasks = []
-
-        def fake_runtime_executor(config, run_id, user_input, auth_context, metadata):
-            return {
-                "deltas": [],
-                "timeline_entries": [],
-                "final_answer": "Queued run completed later.",
-            }
-
-        self.app.state.run_service = replace(
-            self.app.state.run_service,
-            runtime_executor=fake_runtime_executor,
-            run_launcher=lambda task: launched_tasks.append(task),
-        )
-
-        response = self.client.post(
-            "/runs",
-            headers={"Authorization": "Bearer test-token"},
-            json={
-                "sessionId": session["id"],
-                "workspaceId": workspace["id"],
-                "connectionId": provider["id"],
-                "modelId": "gpt-5.4",
-                "input": "Queue the run first",
-            },
-        )
-        self.assertEqual(response.status_code, 200)
-        body = response.json()
-        self.assertEqual(body["run"]["status"], "queued")
-        self.assertEqual(body["session"]["titleSource"], "heuristic")
-        self.assertEqual([item["displayRole"] for item in body["entries"]], ["user"])
-        self.assertEqual(len(launched_tasks), 1)
-
-        launched_tasks[0]()
-
-        events_response = self.client.get(
-            f"/runs/{body['run']['id']}/events",
-            headers={"Authorization": "Bearer test-token"},
-        )
-        self.assertEqual(events_response.status_code, 200)
-        self.assertIn("event: run.completed", events_response.text)
-
-    def test_get_run_events_replays_completed_run_sequence(self) -> None:
-        workspace = self._create_workspace("workspace-run-events")
-        provider = self._create_provider()
-        session = self._create_session(workspace["id"], str(provider["id"]))
-        self._set_sync_run_launcher()
-
-        def fake_runtime_executor(config, run_id, user_input, auth_context, metadata):
-            return {
-                "deltas": [
-                    {
-                        "step_id": "step-1",
-                        "text": "Searching workspace",
-                    }
-                ],
-                "timeline_entries": [
-                    {
-                        "session_id": str(session["id"]),
-                        "run_id": run_id,
-                        "entry_kind": "action",
-                        "display_role": "assistant",
-                        "step_id": "step-1",
-                        "step_number": 1,
-                        "content_text": None,
-                        "content_json": '{"thought":"search workspace files","toolCalls":[],"observations":["Found 3 files"],"codeAction":null,"actionOutput":null,"error":null,"usage":{"inputTokens":11,"outputTokens":7,"reasoningTokens":0},"durationMs":120}',
-                    }
-                ],
-                "final_answer": "Completed with SSE events.",
-            }
-
-        self.app.state.run_service = replace(
-            self.app.state.run_service,
-            runtime_executor=fake_runtime_executor,
-        )
-
-        run_response = self.client.post(
-            "/runs",
-            headers={"Authorization": "Bearer test-token"},
-            json={
-                "sessionId": session["id"],
-                "workspaceId": workspace["id"],
-                "connectionId": provider["id"],
-                "modelId": "gpt-5.4",
-                "input": "Emit SSE events",
-            },
-        )
-        self.assertEqual(run_response.status_code, 200)
-        run_id = run_response.json()["run"]["id"]
-
-        events_response = self.client.get(
-            f"/runs/{run_id}/events",
-            headers={"Authorization": "Bearer test-token"},
-        )
-        self.assertEqual(events_response.status_code, 200)
-        self.assertEqual(
-            events_response.headers["content-type"], "text/event-stream; charset=utf-8"
-        )
-
-        payload = events_response.text
-        self.assertIn("event: run.status", payload)
-        self.assertIn('"status": "queued"', payload)
-        self.assertIn('"status": "running"', payload)
-        self.assertIn("event: run.delta", payload)
-        self.assertIn('"text": "Searching workspace"', payload)
-        self.assertIn("event: run.timeline-entry", payload)
-        self.assertIn('"entryKind": "user_input"', payload)
-        self.assertIn("event: run.completed", payload)
-        self.assertIn('"finalAnswer": "Completed with SSE events."', payload)
-        self.assertIn("event: run.replay-ready", payload)
-
-    def test_get_run_events_replays_failed_run_sequence(self) -> None:
-        workspace = self._create_workspace("workspace-run-events-failed")
-        provider = self._create_provider()
-        session = self._create_session(workspace["id"], str(provider["id"]))
-        self._set_sync_run_launcher()
-
-        response = self.client.post(
-            "/runs",
-            headers={"Authorization": "Bearer test-token"},
-            json={
-                "sessionId": session["id"],
-                "workspaceId": workspace["id"],
-                "connectionId": provider["id"],
-                "modelId": "not-a-real-model",
-                "input": "Fail the run",
-            },
-        )
-        self.assertEqual(response.status_code, 400)
-        run_id = response.json()["run"]["id"]
-
-        events_response = self.client.get(
-            f"/runs/{run_id}/events",
-            headers={"Authorization": "Bearer test-token"},
-        )
-        self.assertEqual(events_response.status_code, 200)
-
-        payload = events_response.text
-        self.assertIn("event: run.failed", payload)
-        self.assertIn(
-            '"errorMessage": "Model is not available for this provider connection"',
-            payload,
-        )
-        self.assertIn("event: run.timeline-entry", payload)
-        self.assertIn('"entryKind": "system_notice"', payload)
-        self.assertIn(
-            '"contentText": "Run failed: Model is not available for this provider connection"',
-            payload,
-        )
-        self.assertIn("event: run.replay-ready", payload)
-
-    def test_get_run_timeline_returns_persisted_entries(self) -> None:
-        workspace = self._create_workspace("workspace-run-steps")
-        provider = self._create_provider()
-        session = self._create_session(workspace["id"], str(provider["id"]))
-        self._set_sync_run_launcher()
-
-        def fake_runtime_executor(config, run_id, user_input, auth_context, metadata):
-            return {
-                "deltas": [],
-                "timeline_entries": [
-                    {
-                        "session_id": str(session["id"]),
-                        "run_id": run_id,
-                        "entry_kind": "planning",
-                        "display_role": "assistant",
-                        "step_id": "step-1",
-                        "step_number": None,
-                        "content_text": "Inspect the workspace and outline the approach.",
-                        "content_json": None,
-                    },
-                    {
-                        "session_id": str(session["id"]),
-                        "run_id": run_id,
-                        "entry_kind": "action",
-                        "display_role": "assistant",
-                        "step_id": "step-2",
-                        "step_number": 1,
-                        "content_text": None,
-                        "content_json": '{"thought":"verify result output","toolCalls":[],"observations":["Execution logs:","done"],"codeAction":"print(\\"done\\")","actionOutput":{"result":"done"},"error":null,"usage":{"inputTokens":9,"outputTokens":3,"reasoningTokens":0},"durationMs":180}',
-                    },
-                ],
-                "final_answer": "Done.",
-            }
-
-        self.app.state.run_service = replace(
-            self.app.state.run_service,
-            runtime_executor=fake_runtime_executor,
-        )
-
-        run_response = self.client.post(
-            "/runs",
-            headers={"Authorization": "Bearer test-token"},
-            json={
-                "sessionId": session["id"],
-                "workspaceId": workspace["id"],
-                "connectionId": provider["id"],
-                "modelId": "gpt-5.4",
-                "input": "Persist the run steps",
-            },
-        )
-        self.assertEqual(run_response.status_code, 200)
-        run_id = run_response.json()["run"]["id"]
-
-        steps_response = self.client.get(
-            f"/runs/{run_id}/timeline",
-            headers={"Authorization": "Bearer test-token"},
-        )
-        self.assertEqual(steps_response.status_code, 200)
-
-        body = steps_response.json()
-        self.assertEqual(len(body["entries"]), 4)
-        self.assertEqual(body["entries"][0]["entryKind"], "user_input")
-        self.assertEqual(body["entries"][1]["entryKind"], "planning")
-        self.assertEqual(body["entries"][2]["entryKind"], "action")
-        self.assertEqual(body["entries"][3]["entryKind"], "final_answer")
-
-    def test_cancel_run_marks_run_cancelled_and_emits_terminal_events(self) -> None:
-        workspace = self._create_workspace("workspace-run-cancel")
-        provider = self._create_provider()
-        session = self._create_session(workspace["id"], str(provider["id"]))
-
-        launched_tasks = []
-
-        def fake_runtime_executor(
-            config,
-            run_id,
-            user_input,
-            auth_context,
-            metadata,
-            event_callback=None,
-            is_cancelled=None,
-        ):
-            if is_cancelled is not None and is_cancelled():
-                raise RuntimeProcessError("cancelled", "Run cancelled")
-            return {
-                "deltas": [],
-                "timeline_entries": [],
-                "final_answer": "Should not complete",
-            }
-
-        self.app.state.run_service = replace(
-            self.app.state.run_service,
-            runtime_executor=fake_runtime_executor,
-            run_launcher=lambda task: launched_tasks.append(task),
-        )
-
-        run_response = self.client.post(
-            "/runs",
-            headers={"Authorization": "Bearer test-token"},
-            json={
-                "sessionId": session["id"],
-                "workspaceId": workspace["id"],
-                "connectionId": provider["id"],
-                "modelId": "gpt-5.4",
-                "input": "Cancel this run",
-            },
-        )
-        self.assertEqual(run_response.status_code, 200)
-        run_id = run_response.json()["run"]["id"]
-
-        cancel_response = self.client.post(
-            f"/runs/{run_id}/cancel",
-            headers={"Authorization": "Bearer test-token"},
-        )
-        self.assertEqual(cancel_response.status_code, 200)
-        self.assertTrue(cancel_response.json()["cancelled"])
-        self.assertEqual(cancel_response.json()["run"]["status"], "cancelled")
-
-        launched_tasks[0]()
-
-        entries = self._get_session_timeline(str(session["id"]))
-        self.assertEqual(entries[-1]["contentText"], "Run cancelled")
-
-        events_response = self.client.get(
-            f"/runs/{run_id}/events",
-            headers={"Authorization": "Bearer test-token"},
-        )
-        self.assertEqual(events_response.status_code, 200)
-        payload = events_response.text
-        self.assertIn('"status": "cancelled"', payload)
-        self.assertIn('"contentText": "Run cancelled"', payload)
-        self.assertIn("event: run.replay-ready", payload)
 
     def test_workspace_draft_attachments_crud(self) -> None:
         workspace = self._create_workspace("workspace-draft-attachments")
@@ -2485,91 +1542,7 @@ class ApiServerTests(unittest.TestCase):
         self.assertEqual(list_after_delete.status_code, 200)
         self.assertEqual(list_after_delete.json()["draftAttachments"], [])
 
-    def test_post_run_without_session_id_promotes_draft_attachments(self) -> None:
-        workspace = self._create_workspace("workspace-run-draft-attachments")
-        provider = self._create_provider()
-        self._set_sync_run_launcher()
 
-        def fake_runtime_executor(*args, **kwargs):
-            return {
-                "deltas": [],
-                "timeline_entries": [],
-                "final_answer": "Draft attachment run complete.",
-            }
-
-        self.app.state.run_service = replace(
-            self.app.state.run_service,
-            runtime_executor=fake_runtime_executor,
-        )
-
-        upload_response = self.client.post(
-            f"/workspaces/{workspace['id']}/draft-attachments",
-            headers={"Authorization": "Bearer test-token"},
-            files={"file": ("draft.txt", b"hello draft", "text/plain")},
-        )
-        self.assertEqual(upload_response.status_code, 200)
-        draft_attachment_id = upload_response.json()["id"]
-
-        run_response = self.client.post(
-            "/runs",
-            headers={"Authorization": "Bearer test-token"},
-            json={
-                "workspaceId": workspace["id"],
-                "connectionId": provider["id"],
-                "modelId": "gpt-5.4",
-                "input": "Please process my draft attachment",
-                "draftAttachmentIds": [draft_attachment_id],
-            },
-        )
-        self.assertEqual(run_response.status_code, 200)
-        body = run_response.json()
-        session_id = body["session"]["id"]
-        self.assertTrue(session_id.startswith("sess_"))
-
-        records = self.app.state.repositories.attachments.list_by_session_id(session_id)
-        self.assertEqual(len(records), 1)
-        self.assertEqual(records[0].status, "consumed")
-        self.assertEqual(records[0].workspace_id, workspace["id"])
-        self.assertIn("draft.txt", records[0].storage_path)
-
-        remaining_drafts = (
-            self.app.state.repositories.draft_attachments.list_by_workspace_id(
-                workspace["id"]
-            )
-        )
-        self.assertEqual(remaining_drafts, [])
-
-    def test_post_run_without_session_id_rejects_cross_workspace_draft_attachment(
-        self,
-    ) -> None:
-        workspace_one = self._create_workspace("workspace-run-draft-a")
-        workspace_two = self._create_workspace("workspace-run-draft-b")
-        provider = self._create_provider()
-
-        upload_response = self.client.post(
-            f"/workspaces/{workspace_two['id']}/draft-attachments",
-            headers={"Authorization": "Bearer test-token"},
-            files={"file": ("cross.txt", b"cross workspace", "text/plain")},
-        )
-        self.assertEqual(upload_response.status_code, 200)
-        draft_attachment_id = upload_response.json()["id"]
-
-        run_response = self.client.post(
-            "/runs",
-            headers={"Authorization": "Bearer test-token"},
-            json={
-                "workspaceId": workspace_one["id"],
-                "connectionId": provider["id"],
-                "modelId": "gpt-5.4",
-                "input": "Try wrong draft attachment",
-                "draftAttachmentIds": [draft_attachment_id],
-            },
-        )
-        self.assertEqual(run_response.status_code, 400)
-        self.assertEqual(
-            run_response.json()["detail"],
-            "Draft attachment does not belong to this workspace",
-        )
 
     def test_delete_session_cascades_related_records(self) -> None:
         workspace = self._create_workspace("workspace-delete-session")
@@ -2660,6 +1633,108 @@ class ApiServerTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 404)
         self.assertEqual(response.json()["detail"], "Session not found")
+
+
+class ApiServerRuntimeSmokeTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp_dir = Path(tempfile.mkdtemp(prefix="sidecar-api-runtime-"))
+
+    def _reserve_free_port(self) -> int:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.bind(("127.0.0.1", 0))
+            return int(sock.getsockname()[1])
+
+    def _start_real_server(self, port: int) -> subprocess.Popen[str]:
+        env = os.environ.copy()
+        env["NS_BOT_HOST"] = "127.0.0.1"
+        env["NS_BOT_PORT"] = str(port)
+        env["NS_BOT_HOME"] = str(self.temp_dir)
+        env["PYTHONPATH"] = str(Path(__file__).resolve().parent.parent / "src")
+        env["PYTHONUNBUFFERED"] = "1"
+        return subprocess.Popen(
+            [sys.executable, "-m", "nsbot_sidecar.api.api_server"],
+            cwd=str(Path(__file__).resolve().parent.parent),
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+
+    def _wait_for_server_ready(
+        self, process: subprocess.Popen[str], base_url: str, timeout_seconds: float = 8.0
+    ) -> None:
+        deadline = time.monotonic() + timeout_seconds
+        while time.monotonic() < deadline:
+            if process.poll() is not None:
+                stdout, stderr = process.communicate(timeout=1)
+                self.fail(
+                    "sidecar exited before becoming ready\n"
+                    f"exit={process.returncode}\nstdout:\n{stdout}\nstderr:\n{stderr}"
+                )
+            try:
+                response = requests.get(f"{base_url}/health", timeout=0.2)
+                if response.status_code == 200:
+                    return
+            except requests.RequestException:
+                pass
+            time.sleep(0.1)
+
+        process.terminate()
+        stdout, stderr = process.communicate(timeout=3)
+        self.fail(
+            "sidecar did not become ready in time\n"
+            f"stdout:\n{stdout}\nstderr:\n{stderr}"
+        )
+
+    def test_real_uvicorn_process_accepts_acp_websocket(self) -> None:
+        port = self._reserve_free_port()
+        process = self._start_real_server(port)
+        base_url = f"http://127.0.0.1:{port}"
+
+        try:
+            self._wait_for_server_ready(process, base_url)
+
+            async def run_handshake() -> dict[str, Any]:
+                import websockets
+
+                async with websockets.connect(f"ws://127.0.0.1:{port}/acp/ws") as websocket:
+                    await websocket.send(
+                        json.dumps(
+                            {
+                                "jsonrpc": "2.0",
+                                "id": 1,
+                                "method": "initialize",
+                                "params": {
+                                    "protocolVersion": 1,
+                                    "clientCapabilities": {
+                                        "fs": {
+                                            "readTextFile": False,
+                                            "writeTextFile": False,
+                                        },
+                                        "terminal": False,
+                                    },
+                                    "clientInfo": {
+                                        "name": "runtime-smoke-test",
+                                        "title": "Runtime Smoke Test",
+                                        "version": "0.1.0",
+                                    },
+                                },
+                            }
+                        )
+                    )
+                    return json.loads(await websocket.recv())
+
+            response = asyncio.run(run_handshake())
+            self.assertEqual(response["id"], 1)
+            self.assertEqual(response["result"]["protocolVersion"], 1)
+            self.assertEqual(response["result"]["agentInfo"]["name"], "nutstore-sidecar")
+        finally:
+            process.terminate()
+            try:
+                process.communicate(timeout=3)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.communicate(timeout=3)
 
 
 if __name__ == "__main__":

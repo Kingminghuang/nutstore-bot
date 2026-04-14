@@ -104,6 +104,20 @@ fn get_sidecar_client_config(
 }
 
 #[tauri::command]
+fn acp_read_text_file(path: String) -> Result<String, String> {
+    fs::read_to_string(PathBuf::from(path)).map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+fn acp_write_text_file(path: String, content: String) -> Result<(), String> {
+    let target = PathBuf::from(path);
+    if let Some(parent) = target.parent() {
+        fs::create_dir_all(parent).map_err(|err| err.to_string())?;
+    }
+    fs::write(target, content).map_err(|err| err.to_string())
+}
+
+#[tauri::command]
 fn runtime_retry(
     app: AppHandle,
     state: tauri::State<'_, Arc<Mutex<RuntimeState>>>,
@@ -203,7 +217,9 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             runtime_status,
             runtime_retry,
-            get_sidecar_client_config
+            get_sidecar_client_config,
+            acp_read_text_file,
+            acp_write_text_file
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

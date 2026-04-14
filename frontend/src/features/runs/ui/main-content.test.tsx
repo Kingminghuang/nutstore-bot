@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 
 import { MainContent } from "@/features/runs"
+import type { LiveTurn, PendingPermissionRequest } from "@/features/session"
 import type { TimelineEntry } from "@/shared/api/sidecar"
 import type { ModelOptionGroup, SelectedModelRef } from "@/features/providers"
 
@@ -62,21 +63,32 @@ function buildSession(timelineEntries: TimelineEntry[] = []) {
 function renderMainContent(
   selection: SelectedModelRef | null,
   timelineEntries: TimelineEntry[] = [],
-  options?: { isSessionRunning?: boolean; activeRunId?: string | null }
+  options?: {
+    isSessionRunning?: boolean
+    liveTurn?: LiveTurn | null
+    pendingPermissionRequest?: PendingPermissionRequest | null
+    onAllowPermissionRequest?: () => void
+    onAllowAlwaysPermissionRequest?: () => void
+    onRejectPermissionRequest?: () => void
+    onCancelPermissionRequest?: () => void
+  }
 ) {
   const onSelectedModelChange = vi.fn()
+  const onSelectedReasoningEffortChange = vi.fn()
 
   render(
     <MainContent
       activeProject={{ id: "ws_1", name: "nutstore-bot", path: "/tmp/nutstore-bot", sessions: [] }}
       activeSession={buildSession(timelineEntries)}
+      timelineEntries={timelineEntries}
+      liveTurn={options?.liveTurn ?? null}
       isDraftSession={false}
       onSendMessage={vi.fn()}
       modelOptionGroups={groups}
       selectedModel={selection}
       selectedReasoningEffort={null}
       onSelectedModelChange={onSelectedModelChange}
-      onSelectedReasoningEffortChange={vi.fn()}
+      onSelectedReasoningEffortChange={onSelectedReasoningEffortChange}
       isLoadingModels={false}
       providerError={null}
       runError={null}
@@ -88,12 +100,16 @@ function renderMainContent(
       onAttachFiles={vi.fn(async () => undefined)}
       onRemoveAttachment={vi.fn(async () => undefined)}
       onEditTimelineEntryAndRerun={vi.fn(async () => undefined)}
+      pendingPermissionRequest={options?.pendingPermissionRequest ?? null}
+      onAllowPermissionRequest={options?.onAllowPermissionRequest ?? vi.fn()}
+      onAllowAlwaysPermissionRequest={options?.onAllowAlwaysPermissionRequest ?? vi.fn()}
+      onRejectPermissionRequest={options?.onRejectPermissionRequest ?? vi.fn()}
+      onCancelPermissionRequest={options?.onCancelPermissionRequest ?? vi.fn()}
       isSessionRunning={options?.isSessionRunning ?? false}
-      activeRunId={options?.activeRunId ?? null}
     />
   )
 
-  return { onSelectedModelChange }
+  return { onSelectedModelChange, onSelectedReasoningEffortChange }
 }
 
 const flushMicrotasks = async () => {
@@ -118,7 +134,7 @@ describe("MainContent model selector", () => {
       modelId: "gpt-5.4",
     })
 
-    fireEvent.click(screen.getByText("OpenAI - gpt-5.4"))
+    fireEvent.pointerDown(screen.getByText("OpenAI - gpt-5.4"))
     expect(screen.getByText("OpenAI")).toBeInTheDocument()
     expect(screen.getByText("Gemini")).toBeInTheDocument()
 
@@ -135,6 +151,8 @@ describe("MainContent model selector", () => {
       <MainContent
         activeProject={{ id: "ws_1", name: "nutstore-bot", path: "/tmp/nutstore-bot", sessions: [] }}
         activeSession={buildSession()}
+        timelineEntries={[]}
+        liveTurn={null}
         isDraftSession={false}
         onSendMessage={vi.fn()}
         modelOptionGroups={[]}
@@ -153,6 +171,11 @@ describe("MainContent model selector", () => {
         onAttachFiles={vi.fn(async () => undefined)}
         onRemoveAttachment={vi.fn(async () => undefined)}
         onEditTimelineEntryAndRerun={vi.fn(async () => undefined)}
+        pendingPermissionRequest={null}
+        onAllowPermissionRequest={vi.fn()}
+        onAllowAlwaysPermissionRequest={vi.fn()}
+        onRejectPermissionRequest={vi.fn()}
+        onCancelPermissionRequest={vi.fn()}
       />
     )
 
@@ -167,6 +190,8 @@ describe("MainContent model selector", () => {
       <MainContent
         activeProject={{ id: "ws_1", name: "nutstore-bot", path: "/tmp/nutstore-bot", sessions: [] }}
         activeSession={buildSession()}
+        timelineEntries={[]}
+        liveTurn={null}
         isDraftSession={false}
         onSendMessage={vi.fn()}
         modelOptionGroups={[]}
@@ -185,12 +210,17 @@ describe("MainContent model selector", () => {
         onAttachFiles={vi.fn(async () => undefined)}
         onRemoveAttachment={vi.fn(async () => undefined)}
         onEditTimelineEntryAndRerun={vi.fn(async () => undefined)}
+        pendingPermissionRequest={null}
+        onAllowPermissionRequest={vi.fn()}
+        onAllowAlwaysPermissionRequest={vi.fn()}
+        onRejectPermissionRequest={vi.fn()}
+        onCancelPermissionRequest={vi.fn()}
         onOpenSettings={onOpenSettings}
       />
     )
 
     fireEvent.click(screen.getByRole("button", { name: "Open Settings" }))
-    fireEvent.click(screen.getByText("No configured providers"))
+    fireEvent.pointerDown(screen.getByText("No configured providers"))
 
     expect(onOpenSettings).toHaveBeenCalledTimes(2)
   })
@@ -200,6 +230,27 @@ describe("MainContent model selector", () => {
 
     expect(screen.getByRole("button", { name: "Reasoning effort" })).toBeInTheDocument()
     expect(screen.getByText("Auto")).toBeInTheDocument()
+  })
+
+  it("updates reasoning effort from the reasoning selector dropdown", () => {
+    const { onSelectedReasoningEffortChange } = renderMainContent({
+      connectionId: "prov_openai",
+      modelId: "gpt-5.4",
+    })
+
+    fireEvent.pointerDown(screen.getByRole("button", { name: "Reasoning effort" }))
+    fireEvent.click(screen.getByText("high"))
+
+    expect(onSelectedReasoningEffortChange).toHaveBeenCalledWith("high")
+  })
+
+  it("updates permission mode from the permission selector dropdown", () => {
+    renderMainContent({ connectionId: "prov_openai", modelId: "gpt-5.4" })
+
+    fireEvent.pointerDown(screen.getByText("Auto-allow"))
+    fireEvent.click(screen.getByText("Ask first"))
+
+    expect(screen.getByText("Ask first")).toBeInTheDocument()
   })
 
   it("renders persisted planning and action entries with action display priority", () => {
@@ -288,6 +339,18 @@ describe("MainContent model selector", () => {
       { connectionId: "prov_openai", modelId: "gpt-5.4" },
       [
         {
+          id: "entry_user_1",
+          sessionId: "sess_1",
+          runId: "run_1",
+          sequenceNo: 0,
+          entryKind: "user_input",
+          displayRole: "user",
+          stepId: null,
+          stepNumber: null,
+          contentText: "run now",
+          createdAt: "2026-03-24T12:00:00Z",
+        },
+        {
           id: "entry_action_1",
           sessionId: "sess_1",
           runId: "run_1",
@@ -332,7 +395,7 @@ describe("MainContent model selector", () => {
           },
         },
       ],
-      { isSessionRunning: true, activeRunId: "run_1" }
+      { isSessionRunning: true }
     )
 
     expect(screen.getByText("Running...")).toBeInTheDocument()
@@ -374,7 +437,7 @@ describe("MainContent model selector", () => {
     expect(screen.queryByText("Running...")).not.toBeInTheDocument()
   })
 
-  it("scopes running indicator to latest action within active run id", () => {
+  it("shows pre-step loading for the current turn before any step card appears", () => {
     renderMainContent(
       { connectionId: "prov_openai", modelId: "gpt-5.4" },
       [
@@ -413,7 +476,7 @@ describe("MainContent model selector", () => {
           createdAt: "2026-03-24T12:00:03Z",
         },
       ],
-      { isSessionRunning: true, activeRunId: "run_2" }
+      { isSessionRunning: true }
     )
 
     expect(screen.queryByText("Running...")).not.toBeInTheDocument()
@@ -437,7 +500,7 @@ describe("MainContent model selector", () => {
           createdAt: "2026-03-24T12:00:00Z",
         },
       ],
-      { isSessionRunning: true, activeRunId: "run_1" }
+      { isSessionRunning: true }
     )
 
     expect(screen.getByTestId("pre-step-run-loading")).toBeInTheDocument()
@@ -472,10 +535,85 @@ describe("MainContent model selector", () => {
           createdAt: "2026-03-24T12:00:01Z",
         },
       ],
-      { isSessionRunning: true, activeRunId: "run_1" }
+      { isSessionRunning: true }
     )
 
     expect(screen.queryByTestId("pre-step-run-loading")).not.toBeInTheDocument()
+  })
+
+  it("renders live plan, tool call, and assistant draft overlays", () => {
+    renderMainContent(
+      { connectionId: "prov_openai", modelId: "gpt-5.4" },
+      [
+        {
+          id: "entry_user_1",
+          sessionId: "sess_1",
+          runId: "run_1",
+          sequenceNo: 1,
+          entryKind: "user_input",
+          displayRole: "user",
+          stepId: null,
+          stepNumber: null,
+          contentText: "Run through sidecar",
+          createdAt: "2026-03-24T12:00:00Z",
+        },
+      ],
+      {
+        isSessionRunning: true,
+        liveTurn: {
+          optimisticEntries: [],
+          truncatedAfterSequence: null,
+          assistantDraft: "Streaming answer",
+          waitingForPermission: true,
+          planEntries: [
+            {
+              id: "plan_1",
+              content: "Inspect files first",
+              priority: "medium",
+              status: "pending",
+            },
+          ],
+          toolCalls: [
+            {
+              toolCallId: "tool_1",
+              title: "write",
+              kind: "write",
+              status: "pending",
+            },
+          ],
+        },
+      }
+    )
+
+    expect(screen.getByText("Inspect files first")).toBeInTheDocument()
+    expect(screen.getByText("Waiting for permission")).toBeInTheDocument()
+    expect(screen.getByText("Streaming answer")).toBeInTheDocument()
+    expect(screen.getByTestId("live-assistant-draft")).toBeInTheDocument()
+  })
+
+  it("renders permission overlay inside the composer and supports allow always", () => {
+    const onAllowAlwaysPermissionRequest = vi.fn()
+
+    renderMainContent(
+      { connectionId: "prov_openai", modelId: "gpt-5.4" },
+      [],
+      {
+        pendingPermissionRequest: {
+          sessionId: "sess_1",
+          toolCallId: "tool_1",
+          title: "Access files outside the project directory",
+          kind: "write",
+          options: [],
+        },
+        onAllowAlwaysPermissionRequest,
+      }
+    )
+
+    expect(screen.getByText("Permission required")).toBeInTheDocument()
+    expect(screen.getByText("Access files outside the project directory")).toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: "Allow always" }))
+    expect(onAllowAlwaysPermissionRequest).toHaveBeenCalledTimes(1)
+    expect(screen.getByText("Auto-allow")).toBeInTheDocument()
   })
 
   it("does not show pre-step loading while composer is generating", async () => {
@@ -504,6 +642,21 @@ describe("MainContent model selector", () => {
             createdAt: "2026-03-24T12:00:00Z",
           },
         ])}
+        timelineEntries={[
+          {
+            id: "entry_user_1",
+            sessionId: "sess_1",
+            runId: "run_1",
+            sequenceNo: 1,
+            entryKind: "user_input",
+            displayRole: "user",
+            stepId: null,
+            stepNumber: null,
+            contentText: "Run through sidecar",
+            createdAt: "2026-03-24T12:00:00Z",
+          },
+        ]}
+        liveTurn={null}
         isDraftSession={false}
         onSendMessage={onSendMessage}
         modelOptionGroups={groups}
@@ -522,8 +675,12 @@ describe("MainContent model selector", () => {
         onAttachFiles={vi.fn(async () => undefined)}
         onRemoveAttachment={vi.fn(async () => undefined)}
         onEditTimelineEntryAndRerun={vi.fn(async () => undefined)}
+        pendingPermissionRequest={null}
+        onAllowPermissionRequest={vi.fn()}
+        onAllowAlwaysPermissionRequest={vi.fn()}
+        onRejectPermissionRequest={vi.fn()}
+        onCancelPermissionRequest={vi.fn()}
         isSessionRunning={true}
-        activeRunId="run_2"
       />
     )
 
@@ -533,7 +690,7 @@ describe("MainContent model selector", () => {
     fireEvent.click(screen.getByLabelText("Send"))
 
     await waitFor(() => {
-      expect(onSendMessage).toHaveBeenCalledWith("go")
+      expect(onSendMessage).toHaveBeenCalledWith("go", { autoAllow: true })
     })
     expect(screen.queryByTestId("pre-step-run-loading")).not.toBeInTheDocument()
 
@@ -580,6 +737,33 @@ describe("MainContent model selector", () => {
             createdAt: "2026-03-24T12:00:01Z",
           },
         ])}
+        timelineEntries={[
+          {
+            id: "msg_user",
+            sessionId: "sess_1",
+            runId: "run_1",
+            sequenceNo: 1,
+            entryKind: "user_input",
+            displayRole: "user",
+            stepId: null,
+            stepNumber: null,
+            contentText: "please update this",
+            createdAt: "2026-03-24T12:00:00Z",
+          },
+          {
+            id: "msg_assistant",
+            sessionId: "sess_1",
+            runId: "run_1",
+            sequenceNo: 2,
+            entryKind: "final_answer",
+            displayRole: "assistant",
+            stepId: null,
+            stepNumber: null,
+            contentText: "```ts\nconsole.log('a')\n```",
+            createdAt: "2026-03-24T12:00:01Z",
+          },
+        ]}
+        liveTurn={null}
         isDraftSession={false}
         onSendMessage={vi.fn()}
         modelOptionGroups={groups}
@@ -598,6 +782,11 @@ describe("MainContent model selector", () => {
         onAttachFiles={vi.fn(async () => undefined)}
         onRemoveAttachment={vi.fn(async () => undefined)}
         onEditTimelineEntryAndRerun={onEditTimelineEntryAndRerun}
+        pendingPermissionRequest={null}
+        onAllowPermissionRequest={vi.fn()}
+        onAllowAlwaysPermissionRequest={vi.fn()}
+        onRejectPermissionRequest={vi.fn()}
+        onCancelPermissionRequest={vi.fn()}
       />
     )
 
@@ -612,7 +801,11 @@ describe("MainContent model selector", () => {
     fireEvent.click(screen.getByText("Send"))
 
     await waitFor(() => {
-      expect(onEditTimelineEntryAndRerun).toHaveBeenCalledWith("msg_user", "please update this now")
+      expect(onEditTimelineEntryAndRerun).toHaveBeenCalledWith(
+        "msg_user",
+        "please update this now",
+        { autoAllow: true }
+      )
     })
   })
 

@@ -24,6 +24,8 @@ uv run --project "${SIDECAR_ROOT}" --with pyinstaller pyinstaller \
   --paths "${SIDECAR_ROOT}/src" \
   --collect-data litellm \
   --collect-data smolagents \
+  --collect-submodules websockets \
+  --collect-submodules wsproto \
   --hidden-import smolagents.prompts \
   --exclude-module tensorflow \
   --exclude-module torch \
