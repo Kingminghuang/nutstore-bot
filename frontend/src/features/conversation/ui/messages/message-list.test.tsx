@@ -8,7 +8,7 @@ import type { ConversationMessage } from "./types"
 const timelineEntry: ConversationEvent = {
   id: "entry-1",
   sessionId: "sess-1",
-  runId: null,
+  turnId: null,
   sequenceNo: 1,
   entryKind: "user_input",
   displayRole: "user",

@@ -98,7 +98,7 @@ describe("Sidebar workspace controls", () => {
     })
   })
 
-  it("uses directory picker mode when available and submits picked values", async () => {
+  it("starts native picker flow immediately and creates the workspace after selection", async () => {
     const onAddProject = vi.fn(async () => undefined)
     vi.mocked(canUseTauriDirectoryPicker).mockReturnValue(true)
     vi.mocked(pickDirectoryWithTauriDialog).mockResolvedValue({
@@ -125,31 +125,18 @@ describe("Sidebar workspace controls", () => {
     )
 
     fireEvent.click(screen.getByLabelText("Add a new directory"))
-    expect(screen.queryByLabelText("Directory name")).not.toBeInTheDocument()
-    expect(screen.queryByLabelText("Directory path")).not.toBeInTheDocument()
-    fireEvent.click(screen.getByRole("button", { name: "Select directory" }))
-
     await waitFor(() => {
-      expect(screen.getByText("repo-from-shell")).toBeInTheDocument()
-      expect(screen.getByText("/Users/demo/repo-from-shell")).toBeInTheDocument()
-    })
-
-    fireEvent.click(screen.getByRole("button", { name: "Add directory" }))
-    await waitFor(() => {
+      expect(pickDirectoryWithTauriDialog).toHaveBeenCalled()
       expect(onAddProject).toHaveBeenCalledWith("repo-from-shell", "/Users/demo/repo-from-shell")
     })
+    expect(screen.queryByLabelText("Directory name")).not.toBeInTheDocument()
+    expect(screen.queryByLabelText("Directory path")).not.toBeInTheDocument()
   })
 
-  it("uses the native Tauri picker when directory selection is available", async () => {
-    const onAddProject = vi.fn(async () => undefined)
+  it("does nothing when the native picker is cancelled", async () => {
+    const onAddProject = vi.fn()
     vi.mocked(canUseTauriDirectoryPicker).mockReturnValue(true)
-    vi.mocked(pickDirectoryWithTauriDialog).mockResolvedValue({
-      status: "selected",
-      selection: {
-        name: "repo-from-shell-window",
-        path: "/Users/demo/repo-from-shell-window",
-      },
-    })
+    vi.mocked(pickDirectoryWithTauriDialog).mockResolvedValue({ status: "cancelled" })
 
     render(
       <Sidebar
@@ -167,24 +154,17 @@ describe("Sidebar workspace controls", () => {
     )
 
     fireEvent.click(screen.getByLabelText("Add a new directory"))
-    fireEvent.click(screen.getByRole("button", { name: "Select directory" }))
     await waitFor(() => {
+      expect(pickDirectoryWithTauriDialog).toHaveBeenCalled()
       expect(onAddProject).not.toHaveBeenCalled()
-      expect(screen.getByText("/Users/demo/repo-from-shell-window")).toBeInTheDocument()
     })
-    fireEvent.click(screen.getByRole("button", { name: "Add directory" }))
-    await waitFor(() => {
-      expect(onAddProject).toHaveBeenCalledWith(
-        "repo-from-shell-window",
-        "/Users/demo/repo-from-shell-window"
-      )
-    })
-    expect(pickDirectoryWithTauriDialog).toHaveBeenCalled()
+    expect(screen.queryByLabelText("Directory name")).not.toBeInTheDocument()
+    expect(screen.queryByLabelText("Directory path")).not.toBeInTheDocument()
   })
 
-  it("keeps add directory disabled when picker is available but no folder is chosen", async () => {
+  it("falls back to manual inputs when the native picker is unavailable", async () => {
     vi.mocked(canUseTauriDirectoryPicker).mockReturnValue(true)
-    vi.mocked(pickDirectoryWithTauriDialog).mockResolvedValue({ status: "cancelled" })
+    vi.mocked(pickDirectoryWithTauriDialog).mockResolvedValue({ status: "unavailable" })
 
     render(
       <Sidebar
@@ -202,9 +182,13 @@ describe("Sidebar workspace controls", () => {
     )
 
     fireEvent.click(screen.getByLabelText("Add a new directory"))
-    expect(screen.getByRole("button", { name: "Add directory" })).toBeDisabled()
-    fireEvent.click(screen.getByRole("button", { name: "Select directory" }))
-    expect(screen.getByRole("button", { name: "Add directory" })).toBeDisabled()
+    await waitFor(() => {
+      expect(
+        screen.getByText("Unable to open the native folder picker; please manually enter the directory name and path.")
+      ).toBeInTheDocument()
+    })
+    expect(screen.getByLabelText("Directory name")).toBeInTheDocument()
+    expect(screen.getByLabelText("Directory path")).toBeInTheDocument()
   })
 
   it("shows manual fallback fields with user-friendly guidance when picker is unavailable", async () => {
@@ -261,9 +245,6 @@ describe("Sidebar workspace controls", () => {
     )
 
     fireEvent.click(screen.getByLabelText("Add a new directory"))
-    expect(screen.queryByLabelText("Directory name")).not.toBeInTheDocument()
-    expect(screen.queryByLabelText("Directory path")).not.toBeInTheDocument()
-    fireEvent.click(screen.getByRole("button", { name: "Select directory" }))
 
     await waitFor(() => {
       expect(
@@ -272,6 +253,44 @@ describe("Sidebar workspace controls", () => {
     })
     expect(screen.getByLabelText("Directory name")).toBeInTheDocument()
     expect(screen.getByLabelText("Directory path")).toBeInTheDocument()
+  })
+
+  it("falls back to the manual dialog with prefilled values when direct creation fails", async () => {
+    const onAddProject = vi.fn(async () => {
+      throw new Error("Directory path is already registered")
+    })
+    vi.mocked(canUseTauriDirectoryPicker).mockReturnValue(true)
+    vi.mocked(pickDirectoryWithTauriDialog).mockResolvedValue({
+      status: "selected",
+      selection: {
+        name: "repo-conflict",
+        path: "/Users/demo/repo-conflict",
+      },
+    })
+
+    render(
+      <Sidebar
+        projects={[]}
+        activeProjectId={null}
+        activeSessionId={null}
+        width={230}
+        onAddProject={onAddProject}
+        onRenameProject={vi.fn()}
+        onNewSession={vi.fn()}
+        onSessionChange={vi.fn()}
+        onRemoveProject={vi.fn()}
+        onResizeStart={vi.fn()}
+      />
+    )
+
+    fireEvent.click(screen.getByLabelText("Add a new directory"))
+
+    await waitFor(() => {
+      expect(onAddProject).toHaveBeenCalledWith("repo-conflict", "/Users/demo/repo-conflict")
+    })
+    expect(screen.getByLabelText("Directory name")).toHaveValue("repo-conflict")
+    expect(screen.getByLabelText("Directory path")).toHaveValue("/Users/demo/repo-conflict")
+    expect(screen.getByText("Directory path is already registered")).toBeInTheDocument()
   })
 
   it("opens rename dialog and submits backend rename", async () => {

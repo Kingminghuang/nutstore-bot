@@ -26,7 +26,6 @@ class LocalSecretStoreTests(unittest.TestCase):
             ProviderSecretPayload(
                 version=1,
                 api_key="sk-test",
-                secret_headers={"hdr_1": "secret-value"},
             ),
         )
         self.assertTrue(secret_path.endswith("sec_provider_1.enc"))
@@ -38,37 +37,36 @@ class LocalSecretStoreTests(unittest.TestCase):
             ProviderSecretPayload(
                 version=1,
                 api_key="sk-test",
-                secret_headers={"hdr_1": "secret-value"},
             ),
         )
         file_payload = json.loads(Path(secret_path).read_text(encoding="utf-8"))
         self.assertEqual(file_payload["version"], 1)
         self.assertEqual(file_payload["apiKey"], "sk-test")
-        self.assertEqual(file_payload["secretHeaders"], {"hdr_1": "secret-value"})
 
         self.store.delete_provider_secret("sec_provider_1")
         self.assertFalse(self.store.has_secret("sec_provider_1"))
         self.assertIsNone(self.store.load_provider_secret("sec_provider_1"))
 
-    def test_overwriting_secret_payload_removes_stale_secret_headers(self) -> None:
+    def test_load_provider_secret_ignores_legacy_secret_headers_key(self) -> None:
         self.store.save_provider_secret(
             "sec_provider_2",
             ProviderSecretPayload(
                 version=1,
                 api_key="sk-old",
-                secret_headers={"hdr_1": "secret-a", "hdr_2": "secret-b"},
             ),
         )
 
-        self.store.save_provider_secret(
-            "sec_provider_2",
-            ProviderSecretPayload(
-                version=1,
-                api_key="sk-new",
-                secret_headers={"hdr_2": "secret-b-rotated"},
+        secret_path = Path(self.temp_dir) / "secrets" / "sec_provider_2.enc"
+        secret_path.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "apiKey": "sk-new",
+                    "secretHeaders": {"hdr_1": "legacy"},
+                }
             ),
+            encoding="utf-8",
         )
 
         payload = self.store.load_provider_secret("sec_provider_2")
         self.assertEqual(payload.api_key, "sk-new")
-        self.assertEqual(payload.secret_headers, {"hdr_2": "secret-b-rotated"})

@@ -790,7 +790,6 @@ def _resolve_run_target(
                     "modelId": str(selected_model),
                     "baseUrl": bundle.connection.base_url,
                     "hasApiKey": bool(api_key),
-                    "healthStatus": bundle.connection.health_status,
                 },
             )
 
@@ -798,7 +797,7 @@ def _resolve_run_target(
         default_selection = options.get("defaultSelection")
         if not isinstance(default_selection, dict):
             raise ValueError(
-                "No default provider/model available. Configure and validate a provider first."
+                "No default provider/model available. Configure a provider first."
             )
         connection_id = str(default_selection.get("connectionId") or "")
         model_id = str(default_selection.get("modelId") or "")
@@ -835,7 +834,6 @@ def _resolve_run_target(
                 "modelId": model_id,
                 "baseUrl": bundle.connection.base_url,
                 "hasApiKey": bool(api_key),
-                "healthStatus": bundle.connection.health_status,
             },
         )
     finally:
@@ -884,7 +882,7 @@ def _handle_run_command(args: SimpleNamespace) -> int:
     print(f"\n[*] Processing user input: {args.user_input}", file=sys.stderr)
     print("-" * 50, file=sys.stderr)
     result = runtime_engine.process(
-        run_id=args.run_id,
+        turn_id=args.turn_id,
         user_input=args.user_input,
         auth_context=auth_context,
         metadata=metadata,
@@ -1244,7 +1242,7 @@ def init_command(ctx: typer.Context) -> None:
 def run_command(
     ctx: typer.Context,
     user_input: str = typer.Argument(..., help="Task prompt"),
-    run_id: str = typer.Option(str(uuid.uuid4()), "--run-id"),
+    turn_id: str = typer.Option(str(uuid.uuid4()), "--turn-id"),
     workspace_path: str = typer.Option(os.getcwd(), "--workspace-path"),
     model_id: str = typer.Option("gpt-5.4", "--model-id"),
     connection_id: str = typer.Option("", "--connection-id"),
@@ -1268,7 +1266,7 @@ def run_command(
             SimpleNamespace(
                 ns_bot_home=_ns_bot_home_from_ctx(ctx),
                 user_input=user_input,
-                run_id=run_id,
+                turn_id=turn_id,
                 workspace_path=workspace_path,
                 model_id=model_id,
                 connection_id=connection_id,

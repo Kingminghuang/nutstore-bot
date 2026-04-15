@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react"
 
 import { SettingsModal } from "@/features/settings"
-import type { ProviderCatalogEntry, ProviderConnectionDetail } from "@/features/providers"
+import { STORED_API_KEY_MASK, type ProviderCatalogEntry, type ProviderConnectionDetail } from "@/features/providers"
 
 const providerCatalog: ProviderCatalogEntry[] = [
   {
@@ -46,13 +46,99 @@ describe("SettingsModal provider config", () => {
     fireEvent.click(screen.getAllByRole("button", { name: "+ Connect" })[1])
 
     await waitFor(() => {
-      expect(screen.getByText("Connect Gemini")).toBeInTheDocument()
+      expect(screen.getByText("Gemini Configuration")).toBeInTheDocument()
     })
 
     expect(screen.queryByLabelText("Base URL")).not.toBeInTheDocument()
+    expect(screen.getByLabelText("Gemini API key")).toBeInTheDocument()
   })
 
-  it("shows provider health status badges for connected providers", () => {
+  it("creates a builtin provider from a single configuration screen", async () => {
+    const onSaveProvider = vi.fn(async () => undefined)
+
+    render(
+      <SettingsModal
+        isOpen={true}
+        onClose={vi.fn()}
+        providerCatalog={providerCatalog}
+        providerConnections={[]}
+        onSaveProvider={onSaveProvider}
+        onRemoveProvider={vi.fn(async () => undefined)}
+      />
+    )
+
+    fireEvent.click(screen.getAllByRole("button", { name: "+ Connect" })[0])
+    await screen.findByText("OpenAI / Compatible Configuration")
+
+    fireEvent.change(screen.getByLabelText("OpenAI / Compatible API key"), {
+      target: { value: "sk-openai" },
+    })
+    fireEvent.click(screen.getByRole("button", { name: "Connect provider" }))
+
+    await waitFor(() => {
+      expect(onSaveProvider).toHaveBeenCalledWith(
+        expect.objectContaining({
+          kind: "builtin",
+          catalogProviderId: "openai",
+          apiKey: "sk-openai",
+        }),
+        undefined
+      )
+    })
+  })
+
+  it("creates a custom provider from a single configuration screen", async () => {
+    const onSaveProvider = vi.fn(async () => undefined)
+
+    render(
+      <SettingsModal
+        isOpen={true}
+        onClose={vi.fn()}
+        providerCatalog={providerCatalog}
+        providerConnections={[]}
+        onSaveProvider={onSaveProvider}
+        onRemoveProvider={vi.fn(async () => undefined)}
+      />
+    )
+
+    fireEvent.click(screen.getByRole("button", { name: /Configure custom provider/i }))
+    await screen.findByText("Custom OpenAI-Compatible Configuration")
+
+    fireEvent.change(screen.getByLabelText("Provider ID"), {
+      target: { value: "minimax" },
+    })
+    fireEvent.change(screen.getByLabelText("Display name"), {
+      target: { value: "MiniMax" },
+    })
+    fireEvent.change(screen.getByLabelText("Base URL"), {
+      target: { value: "https://api.minimax.example/v1" },
+    })
+    fireEvent.change(screen.getByPlaceholderText("model-id"), {
+      target: { value: "MiniMax-M2.7-highspeed" },
+    })
+    fireEvent.click(screen.getByRole("button", { name: "Save provider" }))
+
+    await waitFor(() => {
+      expect(onSaveProvider).toHaveBeenCalledWith(
+        expect.objectContaining({
+          kind: "custom",
+          customSlug: "minimax",
+          displayName: "MiniMax",
+          baseUrl: "https://api.minimax.example/v1",
+          customModels: [
+            expect.objectContaining({
+              modelId: "MiniMax-M2.7-highspeed",
+              enabled: true,
+            }),
+          ],
+        }),
+        undefined
+      )
+    })
+  })
+
+  it("shows a masked API key for existing providers and preserves the stored key when unchanged", async () => {
+    const onSaveProvider = vi.fn(async () => undefined)
     const providerConnections: ProviderConnectionDetail[] = [
       {
         id: "prov_openai",
@@ -62,15 +148,11 @@ describe("SettingsModal provider config", () => {
         displayName: "OpenAI",
         baseUrl: null,
         apiKeyConfigured: true,
-        healthStatus: "connected",
-        healthMessage: "Validation succeeded",
-        lastValidatedAt: "2026-03-24T12:00:00Z",
         preferredModelId: "gpt-5.4",
         enabledModelIds: ["gpt-5.4"],
         updatedAt: "2026-03-24T12:00:00Z",
         modelPolicy: "all_catalog",
         customModels: [],
-        headers: [],
       },
     ]
 
@@ -80,13 +162,83 @@ describe("SettingsModal provider config", () => {
         onClose={vi.fn()}
         providerCatalog={providerCatalog}
         providerConnections={providerConnections}
-        onSaveProvider={vi.fn(async () => undefined)}
+        onSaveProvider={onSaveProvider}
         onRemoveProvider={vi.fn(async () => undefined)}
       />
     )
 
-    expect(screen.getByText("Connected")).toBeInTheDocument()
-    expect(screen.getByText("Validation succeeded")).toBeInTheDocument()
+    fireEvent.click(screen.getByText("OpenAI"))
+
+    await waitFor(() => {
+      expect(screen.getByText("OpenAI Configuration")).toBeInTheDocument()
+    })
+
+    const input = screen.getByLabelText("API key") as HTMLInputElement
+    expect(input.value).toBe(STORED_API_KEY_MASK)
+    expect(input).toHaveAttribute("readonly")
+    expect(screen.getByRole("button", { name: "Replace API key" })).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole("button", { name: "Save provider" }))
+
+    await waitFor(() => {
+      expect(onSaveProvider).toHaveBeenCalledWith(
+        expect.objectContaining({
+          kind: "builtin",
+          apiKey: undefined,
+        }),
+        "prov_openai"
+      )
+    })
+  })
+
+  it("submits a replacement API key after the masked field is unlocked", async () => {
+    const onSaveProvider = vi.fn(async () => undefined)
+    const providerConnections: ProviderConnectionDetail[] = [
+      {
+        id: "prov_openai",
+        kind: "builtin",
+        runtimeProvider: "openai",
+        catalogProviderId: "openai",
+        displayName: "OpenAI",
+        baseUrl: null,
+        apiKeyConfigured: true,
+        preferredModelId: "gpt-5.4",
+        enabledModelIds: ["gpt-5.4"],
+        updatedAt: "2026-03-24T12:00:00Z",
+        modelPolicy: "all_catalog",
+        customModels: [],
+      },
+    ]
+
+    render(
+      <SettingsModal
+        isOpen={true}
+        onClose={vi.fn()}
+        providerCatalog={providerCatalog}
+        providerConnections={providerConnections}
+        onSaveProvider={onSaveProvider}
+        onRemoveProvider={vi.fn(async () => undefined)}
+      />
+    )
+
+    fireEvent.click(screen.getByText("OpenAI"))
+    await screen.findByText("OpenAI Configuration")
+
+    fireEvent.click(screen.getByRole("button", { name: "Replace API key" }))
+    fireEvent.change(screen.getByLabelText("API key"), {
+      target: { value: "sk-replaced-key" },
+    })
+    fireEvent.click(screen.getByRole("button", { name: "Save provider" }))
+
+    await waitFor(() => {
+      expect(onSaveProvider).toHaveBeenCalledWith(
+        expect.objectContaining({
+          kind: "builtin",
+          apiKey: "sk-replaced-key",
+        }),
+        "prov_openai"
+      )
+    })
   })
 
   it("blocks submit when non-secret fields contain sensitive-looking content", async () => {
@@ -108,22 +260,22 @@ describe("SettingsModal provider config", () => {
     fireEvent.change(screen.getByPlaceholderText("provider-id"), {
       target: { value: "minimax" },
     })
-    fireEvent.change(screen.getByPlaceholderText("My AI Provider"), {
+    fireEvent.change(screen.getByLabelText("Display name"), {
       target: { value: 'MiniMax apiKey="sk-sensitive-123456"' },
     })
-    fireEvent.change(screen.getByPlaceholderText("https://api.myprovider.com/v1"), {
+    fireEvent.change(screen.getByLabelText("Base URL"), {
       target: { value: "https://api.minimaxi.com/v1" },
     })
     fireEvent.change(screen.getByPlaceholderText("model-id"), {
       target: { value: "MiniMax-M2.7-highspeed" },
     })
 
-    fireEvent.click(screen.getByRole("button", { name: "Save and continue" }))
+    fireEvent.click(screen.getByRole("button", { name: "Save provider" }))
 
     await waitFor(() => {
       expect(
         screen.getByText(
-          "Sensitive data detected in non-secret fields. Move keys/tokens to API key or secret headers."
+          "Sensitive data detected in non-secret fields. Move keys/tokens to the API key field."
         )
       ).toBeInTheDocument()
     })

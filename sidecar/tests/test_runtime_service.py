@@ -26,7 +26,7 @@ from nsbot_sidecar.runtime.runtime_service import (
     RuntimeProcessError,
     RuntimeWorkerConfig,
 )
-from nsbot_sidecar.application.run_service import execute_runtime_run
+from nsbot_sidecar.application.turn_service import execute_runtime_turn
 
 
 class FakeStreamingModel(Model):
@@ -135,7 +135,7 @@ class RuntimeServiceTests(unittest.TestCase):
         )
 
         result = service.process(
-            run_id="run-1",
+            turn_id="turn-1",
             user_input="say ok",
             auth_context={},
             metadata=RunMetadata(
@@ -166,7 +166,7 @@ class RuntimeServiceTests(unittest.TestCase):
         )
 
         result = service.process(
-            run_id="run-direct",
+            turn_id="turn-direct",
             user_input="task",
             auth_context={},
             metadata=RunMetadata(
@@ -195,7 +195,7 @@ class RuntimeServiceTests(unittest.TestCase):
         service = SmolagentsRuntimeEngine(cfg, model_factory=fake_model_factory)
 
         result = service.process(
-            run_id="run-direct-reasoning",
+            turn_id="turn-direct-reasoning",
             user_input="task",
             auth_context={},
             metadata=RunMetadata(
@@ -219,7 +219,7 @@ class RuntimeServiceTests(unittest.TestCase):
 
         with self.assertRaises(RuntimeProcessError) as ctx:
             service.process(
-                run_id="run-direct-no-key",
+                turn_id="turn-direct-no-key",
                 user_input="task",
                 auth_context={},
                 metadata=RunMetadata(
@@ -245,7 +245,7 @@ class RuntimeServiceTests(unittest.TestCase):
 
         with self.assertRaises(RuntimeProcessError) as ctx:
             service.process(
-                run_id="run-provider-failure",
+                turn_id="turn-provider-failure",
                 user_input="task",
                 auth_context={},
                 metadata=RunMetadata(
@@ -267,7 +267,7 @@ class RuntimeServiceTests(unittest.TestCase):
         )
 
         result = service.process(
-            run_id="run-3",
+            turn_id="turn-3",
             user_input="continue",
             auth_context={},
             metadata=RunMetadata(
@@ -284,7 +284,7 @@ class RuntimeServiceTests(unittest.TestCase):
         )
 
         service.process(
-            run_id="run-a",
+            turn_id="turn-a",
             user_input="task-a",
             auth_context={},
             metadata=RunMetadata(
@@ -292,7 +292,7 @@ class RuntimeServiceTests(unittest.TestCase):
             ),
         )
         service.process(
-            run_id="run-b",
+            turn_id="turn-b",
             user_input="task-b",
             auth_context={},
             metadata=RunMetadata(
@@ -312,7 +312,7 @@ class RuntimeServiceTests(unittest.TestCase):
         )
 
         service.process(
-            run_id="run-win-1",
+            turn_id="turn-win-1",
             user_input="task-a",
             auth_context={},
             metadata=RunMetadata(
@@ -320,7 +320,7 @@ class RuntimeServiceTests(unittest.TestCase):
             ),
         )
         service.process(
-            run_id="run-win-2",
+            turn_id="turn-win-2",
             user_input="task-b",
             auth_context={},
             metadata=RunMetadata(
@@ -328,7 +328,7 @@ class RuntimeServiceTests(unittest.TestCase):
             ),
         )
         service.process(
-            run_id="run-win-3",
+            turn_id="turn-win-3",
             user_input="task-c",
             auth_context={},
             metadata=RunMetadata(
@@ -392,7 +392,7 @@ class RuntimeServiceTests(unittest.TestCase):
                 model_factory=lambda: FakeStreamingModel("ok"),
             )
             result = service.process(
-                run_id="run-managed-agent",
+                turn_id="turn-managed-agent",
                 user_input="task",
                 auth_context={},
                 metadata=RunMetadata(
@@ -418,7 +418,7 @@ class RuntimeServiceTests(unittest.TestCase):
             str(code_kwargs["context_prefix"]),
         )
 
-    def test_execute_runtime_run_forwards_event_callback_and_is_cancelled(self) -> None:
+    def test_execute_runtime_turn_forwards_event_callback_and_is_cancelled(self) -> None:
         cfg = self._config()
         metadata = RunMetadata(
             workspace_path=str(self.workspace_a),
@@ -428,7 +428,7 @@ class RuntimeServiceTests(unittest.TestCase):
         is_cancelled = lambda: False
 
         with patch(
-            "nsbot_sidecar.application.run_service.create_runtime_engine"
+            "nsbot_sidecar.application.turn_service.create_runtime_engine"
         ) as engine_factory:
             runtime_engine = engine_factory.return_value
             runtime_engine.process.return_value = {
@@ -437,7 +437,7 @@ class RuntimeServiceTests(unittest.TestCase):
                 "final_answer": "ok",
             }
 
-            result = execute_runtime_run(
+            result = execute_runtime_turn(
                 cfg,
                 "run-1",
                 "task",
@@ -450,7 +450,7 @@ class RuntimeServiceTests(unittest.TestCase):
         self.assertEqual(result["final_answer"], "ok")
         engine_factory.assert_called_once_with(cfg)
         runtime_engine.process.assert_called_once_with(
-            run_id="run-1",
+            turn_id="run-1",
             user_input="task",
             auth_context={"auth": "ctx"},
             metadata=metadata,

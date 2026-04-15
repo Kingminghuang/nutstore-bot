@@ -46,7 +46,7 @@ class Session:
             "role": normalized_role,
             "content": content,
             "timestamp": now_iso8601(),
-            "run_id": kwargs.pop("run_id", None),
+            "turn_id": kwargs.pop("turn_id", None),
             "step_id": kwargs.pop("step_id", None),
             "source_kind": kwargs.pop("source_kind", None),
             "internal": bool(kwargs.pop("internal", False)),
@@ -67,10 +67,10 @@ class Session:
                 },
             )
 
-    def truncate_by_run_id(self, run_id: str) -> None:
+    def truncate_by_turn_id(self, turn_id: str) -> None:
         cutoff = None
         for idx, message in enumerate(self.messages):
-            if str(message.get("run_id") or "") == run_id:
+            if str(message.get("turn_id") or "") == turn_id:
                 cutoff = idx
                 break
         if cutoff is None:
@@ -101,7 +101,7 @@ class Session:
                 "tool_calls",
                 "tool_call_id",
                 "name",
-                "run_id",
+                "turn_id",
                 "step_id",
                 "source_kind",
                 "internal",

@@ -42,7 +42,7 @@ def _response_for(outgoing: list[dict[str, Any]], request_id: int) -> dict[str, 
 class _FakeEngine:
     def process(
         self,
-        run_id,
+        turn_id,
         user_input,
         auth_context,
         metadata,
@@ -50,7 +50,7 @@ class _FakeEngine:
         is_cancelled=None,
         permission_requester=None,
     ):
-        del run_id, auth_context, metadata, is_cancelled, permission_requester
+        del turn_id, auth_context, metadata, is_cancelled, permission_requester
         if event_callback is not None:
             event_callback({"type": "delta", "payload": {"text": "chunk"}})
         return {"final_answer": f"ok: {user_input}"}
@@ -85,7 +85,7 @@ class AcpSessionTests(unittest.TestCase):
         )
         self.app_state.secret_store.save_provider_secret(
             self.provider.connection.secret_ref,
-            ProviderSecretPayload(version=1, api_key="sk-test", secret_headers={}),
+            ProviderSecretPayload(version=1, api_key="sk-test"),
         )
 
     def test_initialize(self) -> None:

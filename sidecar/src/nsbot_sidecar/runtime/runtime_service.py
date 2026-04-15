@@ -52,7 +52,7 @@ class RuntimeProcessError(RuntimeError):
 
 
 class RuntimeCancelledError(RuntimeProcessError):
-    def __init__(self, message: str = "Run cancelled"):
+    def __init__(self, message: str = "Turn cancelled"):
         super().__init__("cancelled", message)
 
 
@@ -96,7 +96,7 @@ class AgentRuntimeService:
 
     def process(
         self,
-        run_id: str,
+        turn_id: str,
         user_input: str,
         auth_context: dict[str, Any],
         metadata: RunMetadata,
@@ -215,7 +215,7 @@ class AgentRuntimeService:
             auto_allow=permission_requester is None,
         )
         code_executor = LocalCodeExecutor(
-            run_id=run_id,
+            turn_id=turn_id,
             workspace_path=workspace_path,
             timeout_seconds=30,
             permission_requester=permission_requester,
@@ -297,7 +297,7 @@ class AgentRuntimeService:
                     step_id = allocate_step_id(current_step_id)
                     timeline_entry_payload = {
                         "session_id": session_key,
-                        "run_id": run_id,
+                        "turn_id": turn_id,
                         "entry_kind": "planning",
                         "display_role": "assistant",
                         "step_id": step_id,
@@ -329,8 +329,8 @@ class AgentRuntimeService:
                         thought_source = "none"
 
                     LOGGER.info(
-                        "ActionStep thought extraction: run_id=%s step_id=%s source=%s has_thought=%s preview=%s",
-                        run_id,
+                        "ActionStep thought extraction: turn_id=%s step_id=%s source=%s has_thought=%s preview=%s",
+                        turn_id,
                         step_id,
                         thought_source,
                         extracted_thought is not None,
@@ -355,7 +355,7 @@ class AgentRuntimeService:
                         )
                     timeline_entry_payload = {
                         "session_id": session_key,
-                        "run_id": run_id,
+                        "turn_id": turn_id,
                         "entry_kind": "action",
                         "display_role": "assistant",
                         "step_id": step_id,
@@ -414,11 +414,11 @@ class AgentRuntimeService:
             code_executor.release_run()
 
         projected_messages = project_agent_memory_to_session_messages(
-            agent.memory, run_id=run_id
+            agent.memory, turn_id=turn_id
         )
         if final_answer is not None:
             projected_messages.append(
-                project_final_answer_to_session_message(final_answer, run_id=run_id)
+                project_final_answer_to_session_message(final_answer, turn_id=turn_id)
             )
         session.append_messages(projected_messages)
         self.sessions.save(session)

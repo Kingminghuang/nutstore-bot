@@ -59,10 +59,11 @@
 
 ## Harness Guide
 - When designing solutions and writing code, there is no need to consider any compatibility or migration issues; functionality can be implemented entirely according to one's own vision. One is free to utilize the latest language features and libraries without any restrictions. This maximizes creativity and efficiency, enabling the rapid achievement of objectives.
+- Do not design or implement database migrations, compatibility layers, backward-compatibility shims, or transitional fallback paths unless the user explicitly overrides this rule for a specific task.
 
 ## Runtime Architecture Guardrails
 - Runtime call sites (`sidecar/src/nsbot_sidecar/api/acp_session.py`, `sidecar/src/nsbot_sidecar/cli.py`, and `sidecar/src/nsbot_sidecar/runtime/worker.py`) must use the `nsbot_sidecar.runtime.engine` interface and must not directly instantiate `AgentRuntimeService`.
-- Keep `execute_runtime_run` as a compatibility entry point, but keep it as a thin forwarder to RuntimeEngine.
+- Keep `execute_runtime_turn` as the thin application entry point to RuntimeEngine.
 - Runtime interaction is ACP-only over stdio (desktop path: Frontend IPC -> Tauri bridge -> sidecar stdio JSON-RPC). Do not add or restore `/runs*` endpoints, `run.*` event streams, HTTP `edit-and-run` style paths, or frontend-facing ACP websocket routes.
 - `sidecar` HTTP surface is probe-only (`/health`). Any new business capability must go through ACP methods, not REST.
 - For transport-layer changes, do not stop at in-process app tests; verify real stdio ACP handshake and request/notification flow through the bridge.

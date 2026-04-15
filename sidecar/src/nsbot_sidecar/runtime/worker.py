@@ -18,7 +18,7 @@ from nsbot_sidecar.runtime.runtime_service import (
 
 @dataclass(frozen=True)
 class RuntimeRequest:
-    run_id: str
+    turn_id: str
     user_input: str
     auth_context: dict[str, Any]
     metadata: RunMetadata
@@ -60,7 +60,7 @@ def parse_request(raw: str) -> RuntimeRequest:
     config_data = data.get("config") or {}
 
     return RuntimeRequest(
-        run_id=str(data.get("run_id") or data.get("runId") or ""),
+        turn_id=str(data.get("turn_id") or data.get("turnId") or ""),
         user_input=str(data.get("user_input") or data.get("userInput") or ""),
         auth_context={
             "uid": _pick(auth_context_data, "uid", "uid"),
@@ -141,7 +141,7 @@ def main() -> int:
         request = parse_request(raw)
         runtime_engine = create_runtime_engine(request.config)
         result = runtime_engine.process(
-            run_id=request.run_id,
+            turn_id=request.turn_id,
             user_input=request.user_input,
             auth_context=request.auth_context,
             metadata=request.metadata,

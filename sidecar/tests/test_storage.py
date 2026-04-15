@@ -33,12 +33,19 @@ class StorageTests(unittest.TestCase):
             self.assertIn("workspaces", tables)
             self.assertIn("provider_connections", tables)
             self.assertIn("provider_models", tables)
-            self.assertIn("provider_headers", tables)
             self.assertIn("sessions", tables)
             self.assertIn("acp_event_log", tables)
             self.assertIn("attachments", tables)
             self.assertIn("draft_attachments", tables)
-            self.assertIn("runs", tables)
+            self.assertNotIn("runs", tables)
+
+            provider_columns = {
+                str(row[1])
+                for row in connection.execute("PRAGMA table_info(provider_connections)").fetchall()
+            }
+            self.assertNotIn("health_status", provider_columns)
+            self.assertNotIn("health_message", provider_columns)
+            self.assertNotIn("last_validated_at", provider_columns)
         finally:
             connection.close()
 

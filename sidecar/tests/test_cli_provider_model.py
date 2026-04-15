@@ -44,15 +44,11 @@ class CliProviderModelTests(unittest.TestCase):
                 "base_url": None,
                 "secret_ref": "sec_test_openai",
                 "api_key_configured": True,
-                "health_status": "connected",
-                "health_message": "Validation succeeded",
-                "last_validated_at": None,
                 "model_policy": "all_catalog",
                 "preferred_model_id": None,
                 "is_enabled": True,
             },
             models=[],
-            headers=[],
         )
         return bundle.connection.id
 
@@ -125,9 +121,6 @@ class CliProviderModelTests(unittest.TestCase):
                 "base_url": "https://llm.example.com/v1",
                 "secret_ref": "sec_test_custom",
                 "api_key_configured": True,
-                "health_status": "connected",
-                "health_message": "Validation succeeded",
-                "last_validated_at": None,
                 "model_policy": "custom_only",
                 "preferred_model_id": "model-a",
                 "is_enabled": True,
@@ -148,7 +141,6 @@ class CliProviderModelTests(unittest.TestCase):
                     "sort_order": 1,
                 },
             ],
-            headers=[],
         )
 
         code, stdout, _stderr = _run_cli(

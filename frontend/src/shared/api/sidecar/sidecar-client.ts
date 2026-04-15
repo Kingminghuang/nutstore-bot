@@ -31,7 +31,7 @@ export type ConversationEventBase = {
   id: string
   eventId?: string
   sessionId: string
-  runId: string | null
+  turnId: string | null
   sequenceNo: number
   entryKind: "user_input" | "planning" | "action" | "final_answer" | "thinking" | "system_notice"
   displayRole: "user" | "assistant" | "system"
@@ -147,7 +147,7 @@ export function projectConversationEvents(sessionId: string, events: TimelineEve
         id: eventId,
         eventId,
         sessionId,
-        runId: null,
+        turnId: event.turnId,
         sequenceNo,
         entryKind: sessionUpdate === "user_message_chunk" ? "user_input" : "final_answer",
         displayRole: sessionUpdate === "user_message_chunk" ? "user" : "assistant",
@@ -177,7 +177,7 @@ export function projectConversationEvents(sessionId: string, events: TimelineEve
         id: eventId,
         eventId,
         sessionId,
-        runId: null,
+        turnId: event.turnId,
         sequenceNo,
         entryKind: "thinking",
         displayRole: "assistant",
@@ -206,7 +206,7 @@ export function projectConversationEvents(sessionId: string, events: TimelineEve
         normalized.push({
           id: `${eventId}:plan:${idx}`,
           sessionId,
-          runId: null,
+          turnId: event.turnId,
           sequenceNo,
           entryKind: "planning",
           displayRole: "assistant",
@@ -232,7 +232,7 @@ export function projectConversationEvents(sessionId: string, events: TimelineEve
       const entry: ActionEntry = {
         id: `${eventId}:action`,
         sessionId,
-        runId: null,
+        turnId: event.turnId,
         sequenceNo,
         entryKind: "action",
         displayRole: "assistant",
@@ -299,7 +299,7 @@ export function projectConversationEvents(sessionId: string, events: TimelineEve
       normalized.push({
         id: `${eventId}:action-update`,
         sessionId,
-        runId: null,
+        turnId: event.turnId,
         sequenceNo,
         entryKind: "action",
         displayRole: "assistant",
@@ -356,27 +356,6 @@ export async function updateProvider(
   return acpClient.request<ProviderConnectionDetail>("provider/update", {
     providerId,
     ...(payload as Record<string, unknown>),
-  })
-}
-
-export async function validateProvider(
-  providerId: string,
-  payload?: { modelId?: string }
-): Promise<{
-  ok: boolean
-  providerId: string
-  modelId: string
-  runtimeProvider?: string
-  baseUrl?: string | null
-  errorCode?: string
-  errorMessage?: string
-  healthStatus: string
-  healthMessage: string | null
-  lastValidatedAt: string | null
-}> {
-  return acpClient.request("provider/validate", {
-    providerId,
-    ...((payload ?? {}) as Record<string, unknown>),
   })
 }
 

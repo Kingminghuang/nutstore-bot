@@ -1,10 +1,12 @@
 import {
+  formFromConnection,
   getModelOptionLabel,
   getReasoningEffortOptions,
   getSelectedModelOption,
   isSelectedModelAvailable,
   normalizeSelectedReasoningEffort,
   type ModelOptionGroup,
+  type ProviderConnectionDetail,
 } from "@/features/providers"
 
 const groups: ModelOptionGroup[] = [
@@ -42,6 +44,26 @@ const groups: ModelOptionGroup[] = [
 ]
 
 describe("provider-settings helpers", () => {
+  it("marks stored API keys without exposing the raw value in edit forms", () => {
+    const form = formFromConnection({
+      id: "prov_openai",
+      kind: "builtin",
+      runtimeProvider: "openai",
+      catalogProviderId: "openai",
+      displayName: "OpenAI",
+      baseUrl: null,
+      apiKeyConfigured: true,
+      preferredModelId: "gpt-5.4",
+      enabledModelIds: ["gpt-5.4"],
+      updatedAt: "2026-04-15T00:00:00Z",
+      modelPolicy: "all_catalog",
+      customModels: [],
+    } satisfies ProviderConnectionDetail)
+
+    expect(form.apiKey).toBe("")
+    expect(form.hasStoredApiKey).toBe(true)
+  })
+
   it("checks selected model availability by connection and model id", () => {
     expect(
       isSelectedModelAvailable(

@@ -3,21 +3,17 @@ from __future__ import annotations
 from dataclasses import dataclass
 import logging
 import sqlite3
-from typing import Any, Callable
+from typing import Any
 
 from fastapi import HTTPException, status
 
-from nsbot_sidecar.providers.direct_model import DirectModel, DirectModelConfig, DirectModelError
 from nsbot_sidecar.providers.provider_catalog import BUILTIN_PROVIDERS, catalog_version, list_providers
 from nsbot_sidecar.api.redaction import redact_sensitive
 from nsbot_sidecar.domain.sensitive_write_guard import detect_sensitive_write_issues
 from nsbot_sidecar.infrastructure.repositories import (
     ProviderConnectionBundle,
     ProviderConnectionsRepository,
-    ProviderHeaderRecord,
     ProviderModelRecord,
-    create_id,
-    now_iso_timestamp,
 )
 from nsbot_sidecar.infrastructure.secret_store import LocalSecretStore, ProviderSecretPayload
 
@@ -29,44 +25,6 @@ LOGGER = logging.getLogger(__name__)
 class ProviderService:
     repositories: ProviderConnectionsRepository
     secret_store: LocalSecretStore
-    model_factory: Callable[[DirectModelConfig], Any] | None = None
-
-    def _probe_provider_connection(
-        self,
-        *,
-        runtime_provider: str,
-        base_url: str,
-        api_key: str,
-        model_id: str,
-    ) -> None:
-        config = DirectModelConfig(
-            provider=runtime_provider,
-            base_url=base_url,
-            api_key=api_key,
-            model_id=model_id,
-            timeout_seconds=10.0,
-        )
-        model = (
-            self.model_factory(config)
-            if self.model_factory is not None
-            else DirectModel(config)
-        )
-
-        if hasattr(model, "generate_stream"):
-            stream = model.generate_stream(
-                messages=[{"role": "user", "content": "Reply with OK only."}]
-            )
-            for _ in stream:
-                break
-            return
-
-        if hasattr(model, "generate"):
-            model.generate(
-                messages=[{"role": "user", "content": "Reply with OK only."}]
-            )
-            return
-
-        raise RuntimeError("Model client does not support validation probes")
 
     def catalog_payload(self) -> dict[str, Any]:
         providers = list_providers()
@@ -91,11 +49,7 @@ class ProviderService:
             self.repositories.list_bundles()
         ):
             connection = bundle.connection
-            if (
-                not connection.is_enabled
-                or not connection.api_key_configured
-                or connection.health_status != "connected"
-            ):
+            if not connection.is_enabled or not connection.api_key_configured:
                 continue
 
             provider_id = (
@@ -203,109 +157,16 @@ class ProviderService:
         try:
             self.repositories.delete_by_id(provider_id)
         except sqlite3.IntegrityError as exc:
-            # Keep historical session/run foreign keys intact; deleting an in-use
+            # Keep historical session foreign keys intact; deleting an in-use
             # provider should be surfaced as a user-facing conflict, not a 500.
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=(
-                    "Provider is still referenced by sessions or runs. "
+                    "Provider is still referenced by sessions. "
                     "Please migrate or delete related sessions before removing it."
                 ),
             ) from exc
         self.secret_store.delete_provider_secret(bundle.connection.secret_ref)
-
-    def validate_provider(
-        self, provider_id: str, payload: dict[str, Any] | None = None
-    ) -> dict[str, Any]:
-        bundle = self.repositories.get_bundle_by_id(provider_id)
-        if bundle is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND, detail="Provider not found"
-            )
-
-        model_id = self._resolve_validation_model_id(bundle, payload or {})
-        secret_payload = self.secret_store.load_provider_secret(
-            bundle.connection.secret_ref
-        )
-        api_key = secret_payload.api_key if secret_payload is not None else None
-        if api_key is None or api_key.strip() == "":
-            return self._persist_validation_result(
-                bundle,
-                {
-                    "ok": False,
-                    "providerId": provider_id,
-                    "modelId": model_id,
-                    "errorCode": "missing_api_key",
-                    "errorMessage": "Provider connection is missing an API key",
-                },
-                health_status="invalid_config",
-                health_message="Missing API key",
-            )
-
-        base_url = bundle.connection.base_url or ""
-        if (
-            bundle.connection.runtime_provider not in BUILTIN_PROVIDERS
-            and base_url.strip() == ""
-        ):
-            return self._persist_validation_result(
-                bundle,
-                {
-                    "ok": False,
-                    "providerId": provider_id,
-                    "modelId": model_id,
-                    "errorCode": "missing_base_url",
-                    "errorMessage": "Provider connection is missing a base URL",
-                },
-                health_status="invalid_config",
-                health_message="Missing base URL",
-            )
-
-        try:
-            self._probe_provider_connection(
-                runtime_provider=bundle.connection.runtime_provider,
-                base_url=base_url,
-                api_key=api_key,
-                model_id=model_id,
-            )
-        except DirectModelError as exc:
-            return self._persist_validation_result(
-                bundle,
-                {
-                    "ok": False,
-                    "providerId": provider_id,
-                    "modelId": model_id,
-                    "errorCode": exc.code,
-                    "errorMessage": exc.message,
-                },
-                health_status=_health_status_from_error_code(exc.code),
-                health_message=exc.message,
-            )
-        except Exception as exc:  # noqa: BLE001
-            return self._persist_validation_result(
-                bundle,
-                {
-                    "ok": False,
-                    "providerId": provider_id,
-                    "modelId": model_id,
-                    "errorCode": "validation_failed",
-                    "errorMessage": str(exc),
-                },
-                health_status="invalid_config",
-                health_message=str(exc),
-            )
-
-        return self._persist_validation_result(
-            bundle,
-            {
-                "ok": True,
-                "providerId": provider_id,
-                "modelId": model_id,
-                "runtimeProvider": bundle.connection.runtime_provider,
-                "baseUrl": bundle.connection.base_url,
-            },
-            health_status="connected",
-            health_message="Validation succeeded",
-        )
 
     def _upsert_provider(
         self,
@@ -314,15 +175,12 @@ class ProviderService:
         existing: ProviderConnectionBundle | None,
     ) -> ProviderConnectionBundle:
         normalized = normalize_provider_payload(payload, existing)
-        for header in normalized["headers"]:
-            if header.get("id") in {None, ""}:
-                header["id"] = create_id("hdr")
 
         existing_secret = (
             self.secret_store.load_provider_secret(existing.connection.secret_ref)
             if existing is not None
             else None
-        ) or ProviderSecretPayload(version=1, api_key=None, secret_headers={})
+        ) or ProviderSecretPayload(version=1, api_key=None)
 
         secret_ref = (
             existing.connection.secret_ref
@@ -335,7 +193,6 @@ class ProviderService:
             {
                 "connection_data": normalized,
                 "models": normalized["models"],
-                "headers": normalized["headers"],
             }
         )
         if sensitive_issues:
@@ -348,7 +205,6 @@ class ProviderService:
                         "display_name": normalized.get("display_name"),
                         "base_url": normalized.get("base_url"),
                         "models": normalized.get("models"),
-                        "headers": normalized.get("headers"),
                     }
                 ),
             )
@@ -368,108 +224,16 @@ class ProviderService:
                 "base_url": normalized.get("base_url"),
                 "secret_ref": secret_ref,
                 "api_key_configured": normalized["api_key_configured"],
-                "health_status": normalized.get("health_status"),
-                "health_message": normalized.get("health_message"),
-                "last_validated_at": normalized.get("last_validated_at"),
                 "model_policy": normalized["model_policy"],
                 "preferred_model_id": normalized.get("preferred_model_id"),
                 "is_enabled": normalized["is_enabled"],
             },
             models=normalized["models"],
-            headers=normalized["headers"],
         )
         self.secret_store.save_provider_secret(
             bundle.connection.secret_ref, secret_payload
         )
         return bundle
-
-    def _resolve_validation_model_id(
-        self, bundle: ProviderConnectionBundle, payload: dict[str, Any]
-    ) -> str:
-        requested_model_id = _normalize_optional_string(
-            payload.get("modelId", payload.get("model_id"))
-        )
-        if requested_model_id is not None:
-            return requested_model_id
-
-        preferred_model_id = _normalize_optional_string(
-            bundle.connection.preferred_model_id
-        )
-        if preferred_model_id is not None:
-            return preferred_model_id
-
-        if bundle.connection.kind == "custom":
-            for model in bundle.models:
-                if model.source == "custom" and model.enabled:
-                    return model.model_id
-        else:
-            catalog_by_id = {provider["id"]: provider for provider in list_providers()}
-            catalog_provider_id = bundle.connection.catalog_provider_id or ""
-            catalog_entry = catalog_by_id.get(catalog_provider_id)
-            if catalog_entry is not None:
-                models = catalog_entry.get("models") or []
-                if models:
-                    first_model_id = _normalize_optional_string(models[0].get("id"))
-                    if first_model_id is not None:
-                        return first_model_id
-
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Provider connection has no model available for validation",
-        )
-
-    def _persist_validation_result(
-        self,
-        bundle: ProviderConnectionBundle,
-        payload: dict[str, Any],
-        *,
-        health_status: str,
-        health_message: str,
-    ) -> dict[str, Any]:
-        persisted_bundle = self.repositories.save_bundle(
-            connection_data={
-                "id": bundle.connection.id,
-                "kind": bundle.connection.kind,
-                "runtime_provider": bundle.connection.runtime_provider,
-                "catalog_provider_id": bundle.connection.catalog_provider_id,
-                "custom_slug": bundle.connection.custom_slug,
-                "display_name": bundle.connection.display_name,
-                "base_url": bundle.connection.base_url,
-                "secret_ref": bundle.connection.secret_ref,
-                "api_key_configured": bundle.connection.api_key_configured,
-                "health_status": health_status,
-                "health_message": health_message,
-                "last_validated_at": now_iso_timestamp(),
-                "model_policy": bundle.connection.model_policy,
-                "preferred_model_id": bundle.connection.preferred_model_id,
-                "is_enabled": bundle.connection.is_enabled,
-            },
-            models=[
-                {
-                    "id": model.id,
-                    "source": model.source,
-                    "model_id": model.model_id,
-                    "display_name": model.display_name,
-                    "enabled": model.enabled,
-                    "sort_order": model.sort_order,
-                }
-                for model in bundle.models
-            ],
-            headers=[
-                {
-                    "id": header.id,
-                    "name": header.name,
-                    "value_kind": header.value_kind,
-                    "plain_value": header.plain_value,
-                    "sort_order": header.sort_order,
-                }
-                for header in bundle.headers
-            ],
-        )
-        payload["healthStatus"] = persisted_bundle.connection.health_status
-        payload["healthMessage"] = persisted_bundle.connection.health_message
-        payload["lastValidatedAt"] = persisted_bundle.connection.last_validated_at
-        return payload
 
     def _reconcile_catalog_preferences(
         self, bundles: list[ProviderConnectionBundle]
@@ -523,9 +287,6 @@ class ProviderService:
                     "base_url": bundle.connection.base_url,
                     "secret_ref": bundle.connection.secret_ref,
                     "api_key_configured": bundle.connection.api_key_configured,
-                    "health_status": bundle.connection.health_status,
-                    "health_message": bundle.connection.health_message,
-                    "last_validated_at": bundle.connection.last_validated_at,
                     "model_policy": bundle.connection.model_policy,
                     "preferred_model_id": next_preferred_model_id,
                     "is_enabled": bundle.connection.is_enabled,
@@ -540,16 +301,6 @@ class ProviderService:
                         "sort_order": model.sort_order,
                     }
                     for model in bundle.models
-                ],
-                headers=[
-                    {
-                        "id": header.id,
-                        "name": header.name,
-                        "value_kind": header.value_kind,
-                        "plain_value": header.plain_value,
-                        "sort_order": header.sort_order,
-                    }
-                    for header in bundle.headers
                 ],
             )
             reconciled.append(updated_bundle)
@@ -647,7 +398,6 @@ def normalize_provider_payload(
             }
             for index, model_id in enumerate(enabled_model_ids)
         ]
-        headers = normalize_headers(payload.get("headers"), existing)
         preferred_model_id = _normalize_optional_string(
             payload.get("preferredModelId", payload.get("preferred_model_id"))
         )
@@ -669,25 +419,11 @@ def normalize_provider_payload(
                 "apiKey", payload.get("api_key", _API_KEY_SENTINEL)
             ),
             "api_key_configured": resolve_api_key_configured(payload, existing),
-            "health_status": payload.get("healthStatus", payload.get("health_status"))
-            if ("healthStatus" in payload or "health_status" in payload)
-            else (existing.connection.health_status if existing else "unknown"),
-            "health_message": payload.get(
-                "healthMessage", payload.get("health_message")
-            )
-            if ("healthMessage" in payload or "health_message" in payload)
-            else (existing.connection.health_message if existing else None),
-            "last_validated_at": payload.get(
-                "lastValidatedAt", payload.get("last_validated_at")
-            )
-            if ("lastValidatedAt" in payload or "last_validated_at" in payload)
-            else (existing.connection.last_validated_at if existing else None),
             "model_policy": model_policy,
             "preferred_model_id": preferred_model_id,
             "is_enabled": payload.get("isEnabled", payload.get("is_enabled", True))
             is not False,
             "models": models,
-            "headers": headers,
         }
 
     custom_slug = _normalize_optional_string(
@@ -735,7 +471,6 @@ def normalize_provider_payload(
             if model.source == "custom"
         ]
     models = normalize_custom_models(custom_models, existing)
-    headers = normalize_headers(payload.get("headers"), existing)
     preferred_model_id = _normalize_optional_string(
         payload.get("preferredModelId", payload.get("preferred_model_id"))
     )
@@ -757,23 +492,11 @@ def normalize_provider_payload(
             "apiKey", payload.get("api_key", _API_KEY_SENTINEL)
         ),
         "api_key_configured": resolve_api_key_configured(payload, existing),
-        "health_status": payload.get("healthStatus", payload.get("health_status"))
-        if ("healthStatus" in payload or "health_status" in payload)
-        else (existing.connection.health_status if existing else "unknown"),
-        "health_message": payload.get("healthMessage", payload.get("health_message"))
-        if ("healthMessage" in payload or "health_message" in payload)
-        else (existing.connection.health_message if existing else None),
-        "last_validated_at": payload.get(
-            "lastValidatedAt", payload.get("last_validated_at")
-        )
-        if ("lastValidatedAt" in payload or "last_validated_at" in payload)
-        else (existing.connection.last_validated_at if existing else None),
         "model_policy": "custom_only",
         "preferred_model_id": preferred_model_id,
         "is_enabled": payload.get("isEnabled", payload.get("is_enabled", True))
         is not False,
         "models": models,
-        "headers": headers,
     }
 
 
@@ -823,80 +546,6 @@ def normalize_custom_models(
     return result
 
 
-def normalize_headers(
-    headers_payload: Any, existing: ProviderConnectionBundle | None
-) -> list[dict[str, Any]]:
-    if headers_payload is None:
-        if existing is None:
-            return []
-        return [
-            {
-                "id": header.id,
-                "name": header.name,
-                "value_kind": header.value_kind,
-                "plain_value": header.plain_value,
-                "sort_order": header.sort_order,
-                "secret_value": _SECRET_VALUE_SENTINEL,
-            }
-            for header in existing.headers
-        ]
-
-    if not isinstance(headers_payload, list):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail="headers must be a list"
-        )
-
-    result: list[dict[str, Any]] = []
-    for index, header in enumerate(headers_payload):
-        if not isinstance(header, dict):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid header payload"
-            )
-
-        name = _normalize_optional_string(header.get("name"))
-        if name is None:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Header name is required",
-            )
-
-        value_kind = str(header.get("valueKind", header.get("value_kind")) or "plain")
-        if value_kind not in {"plain", "secret"}:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid header valueKind",
-            )
-
-        header_id = _normalize_optional_string(header.get("id"))
-        plain_value = None
-        secret_value = _SECRET_VALUE_SENTINEL
-        if value_kind == "plain":
-            plain_value = (
-                _normalize_optional_string(
-                    header.get("plainValue", header.get("plain_value"))
-                )
-                or ""
-            )
-        else:
-            secret_value = header.get(
-                "secretValue", header.get("secret_value", _SECRET_VALUE_SENTINEL)
-            )
-
-        result.append(
-            {
-                "id": header_id,
-                "name": name,
-                "value_kind": value_kind,
-                "plain_value": plain_value,
-                "sort_order": int(
-                    header.get("sortOrder", header.get("sort_order", index))
-                ),
-                "secret_value": secret_value,
-            }
-        )
-    return result
-
-
 def build_secret_payload(
     normalized: dict[str, Any], existing_secret: ProviderSecretPayload
 ) -> ProviderSecretPayload:
@@ -906,25 +555,7 @@ def build_secret_payload(
     else:
         api_key = _normalize_optional_string(raw_api_key)
 
-    secret_headers = dict(existing_secret.secret_headers)
-    next_secret_headers: dict[str, str] = {}
-    for header in normalized["headers"]:
-        header_id = str(header["id"] or "")
-        if header["value_kind"] != "secret":
-            continue
-        secret_value = header.get("secret_value", _SECRET_VALUE_SENTINEL)
-        if secret_value is _SECRET_VALUE_SENTINEL:
-            if header_id in secret_headers:
-                next_secret_headers[header_id] = secret_headers[header_id]
-            continue
-
-        normalized_secret = _normalize_optional_string(secret_value)
-        if normalized_secret is not None:
-            next_secret_headers[header_id] = normalized_secret
-
-    return ProviderSecretPayload(
-        version=1, api_key=api_key, secret_headers=next_secret_headers
-    )
+    return ProviderSecretPayload(version=1, api_key=api_key)
 
 
 def resolve_api_key_configured(
@@ -940,9 +571,6 @@ def resolve_api_key_configured(
 def serialize_bundle(
     bundle: ProviderConnectionBundle, secret_store: LocalSecretStore
 ) -> dict[str, Any]:
-    secret_payload = secret_store.load_provider_secret(bundle.connection.secret_ref)
-    secret_headers = secret_payload.secret_headers if secret_payload else {}
-
     return {
         "id": bundle.connection.id,
         "kind": bundle.connection.kind,
@@ -952,9 +580,6 @@ def serialize_bundle(
         "displayName": bundle.connection.display_name,
         "baseUrl": bundle.connection.base_url,
         "apiKeyConfigured": bundle.connection.api_key_configured,
-        "healthStatus": bundle.connection.health_status,
-        "healthMessage": bundle.connection.health_message,
-        "lastValidatedAt": bundle.connection.last_validated_at,
         "modelPolicy": bundle.connection.model_policy,
         "preferredModelId": bundle.connection.preferred_model_id,
         "enabledModelIds": [
@@ -967,21 +592,8 @@ def serialize_bundle(
             for model in bundle.models
             if model.source == "custom"
         ],
-        "headers": [
-            serialize_header(header, secret_headers) for header in bundle.headers
-        ],
         "updatedAt": bundle.connection.updated_at,
     }
-
-
-def _health_status_from_error_code(error_code: str) -> str:
-    if error_code in {"unauthorized", "missing_api_key"}:
-        return "invalid_key"
-    if error_code in {"timeout", "provider_timeout"}:
-        return "timeout"
-    if error_code in {"model_unavailable", "invalid_model"}:
-        return "model_unavailable"
-    return "invalid_config"
 
 
 def serialize_custom_model(model: ProviderModelRecord) -> dict[str, Any]:
@@ -1067,21 +679,6 @@ def select_default_model(
     return None
 
 
-def serialize_header(
-    header: ProviderHeaderRecord, secret_headers: dict[str, str]
-) -> dict[str, Any]:
-    payload: dict[str, Any] = {
-        "id": header.id,
-        "name": header.name,
-        "valueKind": header.value_kind,
-    }
-    if header.value_kind == "plain":
-        payload["valuePreview"] = header.plain_value or ""
-    else:
-        payload["hasStoredSecret"] = header.id in secret_headers
-    return payload
-
-
 def _find_existing_model(
     existing: ProviderConnectionBundle | None, source: str, model_id: str
 ) -> ProviderModelRecord | None:
@@ -1117,5 +714,4 @@ def _normalize_string_list(value: Any) -> list[str]:
 
 
 _API_KEY_SENTINEL = object()
-_SECRET_VALUE_SENTINEL = object()
 _VALUE_UNSET = object()

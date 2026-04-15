@@ -93,11 +93,15 @@ vi.mock("@/shared/api/sidecar", () => ({
       {
         connectionId: "prov_openai",
         providerLabel: "OpenAI",
+        providerId: "openai",
         models: [
           {
+            connectionId: "prov_openai",
+            providerLabel: "OpenAI",
+            providerId: "openai",
             modelId: "gpt-5.4",
             label: "gpt-5.4",
-            description: "",
+            supportsReasoningTokens: true,
             reasoningEffortValues: ["low", "medium"],
           },
         ],
@@ -139,7 +143,7 @@ vi.mock("@/shared/api/sidecar", () => ({
       id: String(event.eventId ?? `evt-${sessionId}`),
       eventId: String(event.eventId ?? `evt-${sessionId}`),
       sessionId,
-      runId: null,
+      turnId: null,
       sequenceNo: Number(event.sequenceNo ?? 0),
       entryKind: event.eventType === "agent_thought_chunk" ? "thinking" : String((event as { entryKind?: unknown }).entryKind ?? "user_input"),
       displayRole: String((event as { displayRole?: unknown }).displayRole ?? "user"),
@@ -151,7 +155,6 @@ vi.mock("@/shared/api/sidecar", () => ({
       createdAt: String(event.createdAt ?? "2026-01-01T00:00:00Z"),
     }))
   ),
-  validateProvider: vi.fn(),
   acpClient: {
     request: sidecarApiMocks.acpRequest,
     notify: sidecarApiMocks.acpNotify,
@@ -174,14 +177,123 @@ const baseSession = {
   activeModelId: "gpt-5.4",
 }
 
-beforeEach(() => {
+beforeEach(async () => {
+  const sidecarApi = await import("@/shared/api/sidecar")
+
   sidecarApiMocks.reset()
   vi.clearAllMocks()
   sidecarApiMocks.getSessionTimeline.mockReset()
+  vi.mocked(sidecarApi.getProviderCatalog).mockResolvedValue({ providers: [] })
+  vi.mocked(sidecarApi.getProviders).mockResolvedValue({ connections: [] })
+  vi.mocked(sidecarApi.getModelOptions).mockResolvedValue({
+    groups: [
+      {
+        connectionId: "prov_openai",
+        providerLabel: "OpenAI",
+        providerId: "openai",
+        models: [
+          {
+            connectionId: "prov_openai",
+            providerLabel: "OpenAI",
+            providerId: "openai",
+            modelId: "gpt-5.4",
+            label: "gpt-5.4",
+            supportsReasoningTokens: true,
+            reasoningEffortValues: ["low", "medium"],
+          },
+        ],
+      },
+    ],
+    defaultSelection: { connectionId: "prov_openai", modelId: "gpt-5.4" },
+  })
   ;(window as Window & { __TAURI__?: object }).__TAURI__ = {}
 })
 
 describe("Home page ACP bootstrap", () => {
+  it("saves providers without triggering post-save validation", async () => {
+    const sidecarApi = await import("@/shared/api/sidecar")
+    const providerCatalog = [
+      {
+        id: "openai",
+        label: "OpenAI / Compatible",
+        kind: "builtin" as const,
+        runtimeProvider: "openai" as const,
+        baseUrlPolicy: "optional" as const,
+        models: [{ id: "gpt-5.4", supportsReasoningTokens: true }],
+      },
+    ]
+    const savedConnection = {
+      id: "prov_openai",
+      kind: "builtin" as const,
+      runtimeProvider: "openai" as const,
+      catalogProviderId: "openai",
+      displayName: "OpenAI / Compatible",
+      baseUrl: null,
+      apiKeyConfigured: true,
+      preferredModelId: "gpt-5.4",
+      enabledModelIds: ["gpt-5.4"],
+      updatedAt: "2026-04-15T00:00:00Z",
+      modelPolicy: "all_catalog" as const,
+      customModels: [],
+    }
+
+    vi.mocked(sidecarApi.getProviderCatalog).mockResolvedValue({ providers: providerCatalog })
+    vi.mocked(sidecarApi.getProviders)
+      .mockResolvedValueOnce({ connections: [] })
+      .mockResolvedValueOnce({ connections: [savedConnection] })
+    vi.mocked(sidecarApi.getModelOptions)
+      .mockResolvedValueOnce({ groups: [], defaultSelection: null })
+      .mockResolvedValueOnce({
+        groups: [
+          {
+            connectionId: "prov_openai",
+            providerLabel: "OpenAI / Compatible",
+            providerId: "openai",
+            models: [
+              {
+                connectionId: "prov_openai",
+                providerLabel: "OpenAI / Compatible",
+                providerId: "openai",
+                modelId: "gpt-5.4",
+                label: "gpt-5.4",
+                supportsReasoningTokens: true,
+              },
+            ],
+          },
+        ],
+        defaultSelection: { connectionId: "prov_openai", modelId: "gpt-5.4" },
+      })
+    vi.mocked(sidecarApi.createProvider).mockResolvedValue(savedConnection)
+
+    sidecarApiMocks.getSessionTimeline.mockResolvedValueOnce({
+      events: [],
+      pagination: { hasMore: false, nextBeforeSequence: null },
+    })
+
+    render(<Home />)
+    await screen.findAllByText("Project 1")
+
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }))
+    await screen.findByText("Providers")
+
+    fireEvent.click(screen.getByRole("button", { name: "+ Connect" }))
+    await screen.findByText("OpenAI / Compatible Configuration")
+
+    fireEvent.change(screen.getByLabelText("OpenAI / Compatible API key"), {
+      target: { value: "sk-openai" },
+    })
+    fireEvent.click(screen.getByRole("button", { name: "Connect provider" }))
+
+    await waitFor(() => {
+      expect(sidecarApi.createProvider).toHaveBeenCalledWith(
+        expect.objectContaining({
+          kind: "builtin",
+          apiKey: "sk-openai",
+        })
+      )
+    })
+  })
+
   it("initializes ACP and renders workspace", async () => {
     sidecarApiMocks.getSessionTimeline.mockResolvedValueOnce({
       events: [],
@@ -210,7 +322,7 @@ describe("Home page ACP bootstrap", () => {
             id: "entry_user_1",
             eventId: "evt_stream_user_1",
             sessionId: "sess_existing",
-            runId: null,
+            turnId: null,
             sequenceNo: 1,
             entryKind: "user_input",
             displayRole: "user",
@@ -222,7 +334,7 @@ describe("Home page ACP bootstrap", () => {
           {
             id: "entry_answer_1",
             sessionId: "sess_existing",
-            runId: null,
+            turnId: null,
             sequenceNo: 2,
             entryKind: "final_answer",
             displayRole: "assistant",
@@ -455,7 +567,7 @@ describe("Home page ACP bootstrap", () => {
     })
   })
 
-  it("cancels the run and resolves permission as cancelled when the user chooses cancel run", async () => {
+  it("cancels the request and resolves permission as cancelled when the user chooses cancel request", async () => {
     sidecarApiMocks.getSessionTimeline.mockResolvedValueOnce({
       events: [],
       pagination: { hasMore: false, nextBeforeSequence: null },
@@ -487,7 +599,7 @@ describe("Home page ACP bootstrap", () => {
     })
 
     expect(await screen.findByText("Permission required")).toBeInTheDocument()
-    fireEvent.click(screen.getByRole("button", { name: "Cancel run" }))
+    fireEvent.click(screen.getByRole("button", { name: "Cancel request" }))
 
     await expect(requestPromise).resolves.toEqual({
       outcome: {
@@ -554,7 +666,7 @@ describe("Home page ACP bootstrap", () => {
             id: "entry_user_1",
             eventId: "evt_user_1",
             sessionId: "sess_existing",
-            runId: null,
+            turnId: null,
             sequenceNo: 1,
             entryKind: "user_input",
             displayRole: "user",
@@ -566,7 +678,7 @@ describe("Home page ACP bootstrap", () => {
           {
             id: "entry_answer_1",
             sessionId: "sess_existing",
-            runId: null,
+            turnId: null,
             sequenceNo: 2,
             entryKind: "final_answer",
             displayRole: "assistant",
@@ -584,7 +696,7 @@ describe("Home page ACP bootstrap", () => {
             id: "entry_user_2",
             eventId: "evt_user_2",
             sessionId: "sess_existing",
-            runId: null,
+            turnId: null,
             sequenceNo: 3,
             entryKind: "user_input",
             displayRole: "user",
@@ -596,7 +708,7 @@ describe("Home page ACP bootstrap", () => {
           {
             id: "entry_answer_2",
             sessionId: "sess_existing",
-            runId: null,
+            turnId: null,
             sequenceNo: 4,
             entryKind: "final_answer",
             displayRole: "assistant",

@@ -24,30 +24,6 @@ describe("sidecar-client ACP resource requests", () => {
     expect(requestMock).toHaveBeenCalledWith("provider/catalog")
   })
 
-  it("validates provider via ACP provider/validate", async () => {
-    requestMock.mockResolvedValueOnce({
-      ok: true,
-      providerId: "prov_openai",
-      modelId: "gpt-5.4",
-      healthStatus: "connected",
-      healthMessage: "Validation succeeded",
-      lastValidatedAt: "2026-03-27T10:00:00Z",
-    })
-
-    const { validateProvider } = await import("@/shared/api/sidecar")
-    const response = await validateProvider("prov_openai", { modelId: "gpt-5.4" })
-
-    expect(response).toMatchObject({
-      ok: true,
-      providerId: "prov_openai",
-      modelId: "gpt-5.4",
-    })
-    expect(requestMock).toHaveBeenCalledWith("provider/validate", {
-      providerId: "prov_openai",
-      modelId: "gpt-5.4",
-    })
-  })
-
   it("requests timeline through ACP timeline/list", async () => {
     requestMock.mockResolvedValueOnce({
       events: [

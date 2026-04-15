@@ -57,7 +57,7 @@ interface MainContentProps {
   liveTurn: LiveTurn | null
   isDraftSession: boolean
   onSendMessage: (text: string, options: { autoAllow: boolean }) => Promise<void>
-  onCancelRun?: () => Promise<void> | void
+  onCancelTurn?: () => Promise<void> | void
   modelOptionGroups: ModelOptionGroup[]
   selectedModel: SelectedModelRef | null
   selectedReasoningEffort: SelectedReasoningEffort
@@ -65,7 +65,7 @@ interface MainContentProps {
   onSelectedReasoningEffortChange: (value: SelectedReasoningEffort) => void
   isLoadingModels: boolean
   providerError: string | null
-  runError: string | null
+  turnError: string | null
   hasMoreHistory: boolean
   isLoadingHistory: boolean
   onLoadEarlierTimeline: () => Promise<void>
@@ -84,7 +84,7 @@ interface MainContentProps {
   onRejectPermissionRequest: () => void
   onCancelPermissionRequest: () => void
   onOpenSettings?: () => void
-  isSessionRunning?: boolean
+  isTurnPending?: boolean
 }
 
 export function MainContent({
@@ -94,7 +94,7 @@ export function MainContent({
   liveTurn,
   isDraftSession,
   onSendMessage,
-  onCancelRun,
+  onCancelTurn,
   modelOptionGroups,
   selectedModel,
   selectedReasoningEffort,
@@ -102,7 +102,7 @@ export function MainContent({
   onSelectedReasoningEffortChange,
   isLoadingModels,
   providerError,
-  runError,
+  turnError,
   hasMoreHistory,
   isLoadingHistory,
   onLoadEarlierTimeline,
@@ -117,7 +117,7 @@ export function MainContent({
   onRejectPermissionRequest,
   onCancelPermissionRequest,
   onOpenSettings,
-  isSessionRunning = false,
+  isTurnPending = false,
 }: MainContentProps) {
   const [permissionOpen, setPermissionOpen] = useState(false)
   const [permission, setPermission] = useState<PermissionMode>("auto_allow")
@@ -183,8 +183,8 @@ export function MainContent({
   )
   const hasLiveStepCard = (liveTurn?.planEntries.length ?? 0) > 0 || (liveTurn?.toolCalls.length ?? 0) > 0
   const hasLiveAssistantDraft = Boolean(liveTurn?.assistantDraft.trim())
-  const showPreStepLoading =
-    isSessionRunning &&
+  const showPreStepTurnLoading =
+    isTurnPending &&
     hasMessages &&
     lastUserMessageIndex >= 0 &&
     !hasCurrentTurnStepCard &&
@@ -376,9 +376,7 @@ export function MainContent({
           <ConversationEventView
             key={entry.id}
             entry={entry}
-            showRunningIndicator={
-              isSessionRunning && entry.entryKind === "action" && entry.id === latestCurrentTurnActionId
-            }
+            showRunningIndicator={isTurnPending && entry.entryKind === "action" && entry.id === latestCurrentTurnActionId}
             isEditing={editingEntryId === entry.id}
             editingValue={editingValue}
             isSubmittingEdit={isSubmittingEdit}
@@ -395,7 +393,7 @@ export function MainContent({
           />
         )}
         renderLivePlanningEntry={(entry) => <LivePlanningStepCard key={entry.id} entry={entry} />}
-        showPreStepLoading={showPreStepLoading}
+        showPreStepTurnLoading={showPreStepTurnLoading}
         showGenerating={isGenerating}
         generatingIndicator={
           <div className="flex gap-3 items-start">
@@ -497,7 +495,7 @@ export function MainContent({
             </div>
           )}
 
-          {runError && <div className="px-4 pb-2 text-xs text-[#b45b44]">{runError}</div>}
+          {turnError && <div className="px-4 pb-2 text-xs text-[#b45b44]">{turnError}</div>}
 
           <div className="flex items-center justify-between px-4 pb-3">
             <div className="flex items-center gap-4">
@@ -711,7 +709,7 @@ export function MainContent({
                 <button
                   onClick={() => {
                     setIsGenerating(false)
-                    void onCancelRun?.()
+                    void onCancelTurn?.()
                   }}
                   className="p-2 bg-foreground hover:bg-foreground/80 text-background rounded-full transition-colors"
                   aria-label="Stop"

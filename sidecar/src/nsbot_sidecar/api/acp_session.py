@@ -26,6 +26,7 @@ from nsbot_sidecar.runtime.runtime_service import (
 class _ClientRequestWaiter:
     future: Future
     session_id: str
+    turn_id: str | None = None
 
 
 class JsonRpcTransport(Protocol):
@@ -247,18 +248,6 @@ class AcpJsonRpcSession:
                     return
                 self.state.provider_service.delete_provider(provider_id)
                 await self._send_result(req_id, {})
-                return
-            if method == "provider/validate":
-                provider_id = str(
-                    params.get("providerId") or params.get("provider_id") or ""
-                )
-                if not provider_id:
-                    await self._send_error(req_id, -32000, "providerId is required")
-                    return
-                await self._send_result(
-                    req_id,
-                    self.state.provider_service.validate_provider(provider_id, params),
-                )
                 return
             if method == "session/load":
                 await self._send_result(req_id, await self._handle_session_load(params))
@@ -972,6 +961,8 @@ class AcpJsonRpcSession:
             )
             cancel_event.clear()
 
+            turn_id = create_id("acpturn")
+
             self.state.session_service.timeline_service.refresh_session_summary(
                 session_id,
                 active_connection_id=session.active_connection_id,
@@ -984,6 +975,7 @@ class AcpJsonRpcSession:
                     "sessionUpdate": "user_message_chunk",
                     "content": {"type": "text", "text": user_text},
                 },
+                turn_id=turn_id,
             )
 
             bundle = self.state.repositories.providers.get_bundle_by_id_or_raise(
@@ -1019,15 +1011,19 @@ class AcpJsonRpcSession:
                 workspace_path=workspace.real_path, session_key=session_id
             )
 
-            run_id = create_id("acprun")
             engine = create_runtime_engine(config)
 
             def permission_requester(request: dict[str, Any]) -> str:
+                enriched_request = {
+                    **request,
+                    "turn_id": turn_id,
+                    "turnId": turn_id,
+                }
                 if auto_allow:
                     return "allow"
                 if cancel_event.is_set():
                     return "cancelled"
-                return self._request_permission_sync(session_id, request)
+                return self._request_permission_sync(session_id, enriched_request)
 
             def event_callback(event: dict[str, Any]) -> None:
                 etype = str(event.get("type") or "")
@@ -1043,6 +1039,7 @@ class AcpJsonRpcSession:
                             "sessionUpdate": "agent_message_chunk",
                             "content": {"type": "text", "text": text},
                         },
+                        turn_id=turn_id,
                     )
                     return
 
@@ -1056,6 +1053,7 @@ class AcpJsonRpcSession:
                             "sessionUpdate": "agent_thought_chunk",
                             "content": {"type": "text", "text": text},
                         },
+                        turn_id=turn_id,
                         record_event=True,
                     )
                     return
@@ -1070,6 +1068,7 @@ class AcpJsonRpcSession:
                             "sessionUpdate": "available_commands_update",
                             "availableCommands": commands,
                         },
+                        turn_id=turn_id,
                         record_event=False,
                     )
                     return
@@ -1094,6 +1093,7 @@ class AcpJsonRpcSession:
                                 }
                             ],
                         },
+                        turn_id=turn_id,
                     )
                     return
 
@@ -1136,6 +1136,7 @@ class AcpJsonRpcSession:
                                 "kind": kind,
                                 "status": "pending",
                             },
+                            turn_id=turn_id,
                         )
                         self._emit_session_update_threadsafe(
                             session_id,
@@ -1144,11 +1145,12 @@ class AcpJsonRpcSession:
                                 "toolCallId": tool_call_id,
                                 "status": status,
                             },
+                            turn_id=turn_id,
                         )
 
             result = await asyncio.to_thread(
                 engine.process,
-                run_id,
+                turn_id,
                 user_text,
                 {"uid": "acp-user", "tid": "acp-team", "exp_epoch": 0},
                 metadata,
@@ -1174,6 +1176,7 @@ class AcpJsonRpcSession:
                             "text": final_answer,
                         },
                     },
+                    turn_id=turn_id,
                 )
 
         except RuntimeCancelledError:
@@ -1195,10 +1198,12 @@ class AcpJsonRpcSession:
 
         rpc_id = self._next_client_rpc_id()
         future: Future = Future()
+        turn_id = str(request.get("turn_id") or request.get("turnId") or "") or None
         with self._pending_lock:
             self._pending_client_calls[rpc_id] = _ClientRequestWaiter(
                 future=future,
                 session_id=session_id,
+                turn_id=turn_id,
             )
 
         tool_call_id = str(request.get("toolCallId") or create_id("tool"))
@@ -1248,6 +1253,7 @@ class AcpJsonRpcSession:
                 session_id,
                 tool_call_id,
                 "cancelled",
+                turn_id,
             )
             return "cancelled"
 
@@ -1256,6 +1262,7 @@ class AcpJsonRpcSession:
                 session_id,
                 tool_call_id,
                 "completed",
+                turn_id,
             )
             return "allow"
 
@@ -1263,6 +1270,7 @@ class AcpJsonRpcSession:
             session_id,
             tool_call_id,
             "failed",
+            turn_id,
         )
         return "reject"
 
@@ -1315,6 +1323,7 @@ class AcpJsonRpcSession:
         session_id: str,
         tool_call_id: str,
         status: str,
+        turn_id: str | None = None,
     ) -> None:
         self._emit_session_update_threadsafe(
             session_id,
@@ -1323,6 +1332,7 @@ class AcpJsonRpcSession:
                 "toolCallId": tool_call_id,
                 "status": status,
             },
+            turn_id=turn_id,
             record_event=True,
         )
 
@@ -1393,11 +1403,12 @@ class AcpJsonRpcSession:
         session_id: str,
         update: dict[str, Any],
         *,
+        turn_id: str | None = None,
         record_event: bool = True,
     ) -> None:
         payload = {"sessionId": session_id, "update": update}
         if record_event:
-            self._persist_session_update_event(payload)
+            self._persist_session_update_event(payload, turn_id=turn_id)
         await self._send_notification("session/update", payload)
 
     def _emit_session_update_threadsafe(
@@ -1405,14 +1416,17 @@ class AcpJsonRpcSession:
         session_id: str,
         update: dict[str, Any],
         *,
+        turn_id: str | None = None,
         record_event: bool = True,
     ) -> None:
         payload = {"sessionId": session_id, "update": update}
         if record_event:
-            self._persist_session_update_event(payload)
+            self._persist_session_update_event(payload, turn_id=turn_id)
         self._send_notification_threadsafe("session/update", payload)
 
-    def _persist_session_update_event(self, params: dict[str, Any]) -> None:
+    def _persist_session_update_event(
+        self, params: dict[str, Any], *, turn_id: str | None = None
+    ) -> None:
         session_id = str(params.get("sessionId") or "")
         if not session_id:
             return
@@ -1430,6 +1444,7 @@ class AcpJsonRpcSession:
             session_id=session_id,
             event_type=event_type,
             event_json=json.dumps(payload, ensure_ascii=False),
+            turn_id=turn_id,
         )
 
     def _serialize_event_log(self, event: Any) -> dict[str, Any]:

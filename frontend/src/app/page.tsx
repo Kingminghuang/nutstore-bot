@@ -13,7 +13,7 @@ import {
   upsertSession,
 } from "@/app/live-turn-state"
 import { usePermissionRequests } from "@/app/use-permission-requests"
-import { MainContent } from "@/features/runs"
+import { MainContent } from "@/features/conversation"
 import { SettingsModal } from "@/features/settings"
 import { Sidebar } from "@/features/workspaces"
 import {
@@ -38,7 +38,6 @@ import {
   projectConversationEvents,
   updateProvider,
   updateWorkspace,
-  validateProvider,
   workspaceSidecarIndexStatus,
   acpClient,
 } from "@/shared/api/sidecar"
@@ -144,7 +143,7 @@ export default function Home() {
   const [isLoadingProviders, setIsLoadingProviders] = useState(true)
   const [providerError, setProviderError] = useState<string | null>(null)
   const [workspaceError, setWorkspaceError] = useState<string | null>(null)
-  const [runError, setRunError] = useState<string | null>(null)
+  const [turnError, setTurnError] = useState<string | null>(null)
   const [pendingSessionId, setPendingSessionId] = useState<string | null>(null)
   const [liveTurnBySession, setLiveTurnBySession] = useState<LiveTurnStateBySession>({})
   const [attachmentsBySession, setAttachmentsBySession] = useState<Record<string, ComposerAttachment[]>>({})
@@ -281,7 +280,7 @@ export default function Home() {
     []
   )
 
-  const hydrateSessionAfterRun = useCallback(async (workspaceId: string, sessionId: string) => {
+  const hydrateSessionAfterTurn = useCallback(async (workspaceId: string, sessionId: string) => {
     const [refreshedTimeline, sessionsPayload] = await Promise.all([
       getSessionTimeline(sessionId, { limit: TIMELINE_PAGE_SIZE }),
       listWorkspaceSessions(workspaceId) as Promise<{ sessions: ServerSession[] }>,
@@ -604,7 +603,7 @@ export default function Home() {
     () => mergeTimelineEventsWithLiveTurn(activeSession?.timelineEvents ?? [], activeLiveTurn),
     [activeLiveTurn, activeSession?.timelineEvents]
   )
-  const isActiveSessionRunning = activeSessionId != null && pendingSessionId === activeSessionId
+  const isActiveTurnPending = activeSessionId != null && pendingSessionId === activeSessionId
 
   const isDraftSessionActive =
     activeWorkspaceId != null &&
@@ -841,7 +840,7 @@ export default function Home() {
       if (!activeWorkspaceId || !selectedModel) return
       const isDraftMode = activeSessionId == null && activeDraftWorkspaceId === activeWorkspaceId
 
-      setRunError(null)
+      setTurnError(null)
       let targetSessionId = activeSessionId
 
       try {
@@ -899,7 +898,7 @@ export default function Home() {
           },
         })
 
-        await hydrateSessionAfterRun(activeWorkspaceId, targetSessionId)
+        await hydrateSessionAfterTurn(activeWorkspaceId, targetSessionId)
 
         setAttachmentsBySession((prev) => ({
           ...prev,
@@ -915,7 +914,7 @@ export default function Home() {
         setActiveSessionId(targetSessionId)
         setPendingSessionId(null)
       } catch (error) {
-        setRunError(error instanceof Error ? error.message : "Failed to run request")
+        setTurnError(error instanceof Error ? error.message : "Failed to run request")
         setPendingSessionId(null)
         throw error
       }
@@ -924,14 +923,14 @@ export default function Home() {
       activeDraftWorkspaceId,
       activeSessionId,
       activeWorkspaceId,
-      hydrateSessionAfterRun,
+      hydrateSessionAfterTurn,
       selectedModel,
       selectedReasoningEffort,
       startLiveTurn,
     ]
   )
 
-  const cancelSessionRun = useCallback(
+  const cancelSessionTurn = useCallback(
     async (sessionId: string) => {
       resolvePermissionRequest({ outcome: { outcome: "cancelled" } }, sessionId)
       await acpClient.notify("session/cancel", { sessionId })
@@ -940,12 +939,12 @@ export default function Home() {
     [resolvePermissionRequest]
   )
 
-  const handleCancelActiveRun = useCallback(async () => {
+  const handleCancelActiveTurn = useCallback(async () => {
     if (!activeSessionId || pendingSessionId !== activeSessionId) {
       return
     }
-    await cancelSessionRun(activeSessionId)
-  }, [activeSessionId, cancelSessionRun, pendingSessionId])
+    await cancelSessionTurn(activeSessionId)
+  }, [activeSessionId, cancelSessionTurn, pendingSessionId])
 
   const handleAttachFiles = useCallback(
     async (files: File[]) => {
@@ -1047,7 +1046,7 @@ export default function Home() {
         throw new Error("Message event anchor is missing")
       }
 
-      setRunError(null)
+      setTurnError(null)
       setPendingSessionId(activeSessionId)
       startLiveTurn(activeSessionId, nextContent, {
         truncatedAfterSequence: editedEntry.sequenceNo,
@@ -1071,9 +1070,9 @@ export default function Home() {
             selectedReasoningEffort: selectedReasoningEffort ?? null,
           },
         })
-        await hydrateSessionAfterRun(activeWorkspaceId, activeSessionId)
+        await hydrateSessionAfterTurn(activeWorkspaceId, activeSessionId)
       } catch (error) {
-        setRunError(error instanceof Error ? error.message : "Failed to edit and rerun")
+        setTurnError(error instanceof Error ? error.message : "Failed to edit and rerun")
         throw error
       } finally {
         setPendingSessionId(null)
@@ -1083,7 +1082,7 @@ export default function Home() {
       activeSessionId,
       activeSession,
       activeWorkspaceId,
-      hydrateSessionAfterRun,
+      hydrateSessionAfterTurn,
       selectedModel,
       selectedReasoningEffort,
       startLiveTurn,
@@ -1185,34 +1184,9 @@ export default function Home() {
 
   const handleSaveProvider = useCallback(
     async (payload: SaveProviderPayload, providerId?: string) => {
-      const savedProvider = providerId
-        ? await updateProvider(providerId, payload)
-        : await createProvider(payload)
-
-      const validationModelId = payload.preferredModelId ?? undefined
-      let validationError: Error | null = null
-
-      try {
-        const validationResult = await validateProvider(savedProvider.id, {
-          modelId: validationModelId,
-        })
-
-        if (!validationResult.ok) {
-          validationError = new Error(
-            validationResult.errorMessage ??
-              validationResult.healthMessage ??
-              "Provider validation failed"
-          )
-        }
-      } catch (error) {
-        validationError = error instanceof Error ? error : new Error("Provider validation failed")
-      }
+      await (providerId ? updateProvider(providerId, payload) : createProvider(payload))
 
       await refreshProviderState()
-
-      if (validationError) {
-        throw validationError
-      }
     },
     [refreshProviderState]
   )
@@ -1232,9 +1206,7 @@ export default function Home() {
         activeProjectId={activeWorkspaceId}
         activeSessionId={activeSessionId}
         width={sidebarWidth}
-        onAddProject={(name, path) => {
-          void handleAddProject(name, path)
-        }}
+        onAddProject={(name, path) => handleAddProject(name, path)}
         onNewSession={(projectId) => {
           void handleNewSession(projectId)
         }}
@@ -1263,7 +1235,7 @@ export default function Home() {
         liveTurn={activeLiveTurn}
         isDraftSession={isDraftSessionActive}
         onSendMessage={handleSendMessage}
-        onCancelRun={handleCancelActiveRun}
+        onCancelTurn={handleCancelActiveTurn}
         modelOptionGroups={modelOptionGroups}
         selectedModel={selectedModel}
         selectedReasoningEffort={selectedReasoningEffort}
@@ -1271,7 +1243,7 @@ export default function Home() {
         onSelectedReasoningEffortChange={setSelectedReasoningEffort}
         isLoadingModels={isLoadingProviders}
         providerError={providerError ?? workspaceError}
-        runError={runError}
+        turnError={turnError}
         hasMoreHistory={activeSession?.hasMoreHistory ?? false}
         isLoadingHistory={activeSession?.isLoadingHistory ?? false}
         onLoadEarlierTimeline={handleLoadEarlierTimeline}
@@ -1335,7 +1307,7 @@ export default function Home() {
             hasPendingPermissionRequestForSession(activeSessionId) &&
             pendingPermissionRequest?.sessionId === activeSessionId
           ) {
-            void cancelSessionRun(pendingPermissionRequest.sessionId)
+            void cancelSessionTurn(pendingPermissionRequest.sessionId)
             return
           }
           resolvePermissionRequest(
@@ -1344,7 +1316,7 @@ export default function Home() {
           )
         }}
         onOpenSettings={() => setSettingsOpen(true)}
-        isSessionRunning={isActiveSessionRunning}
+        isTurnPending={isActiveTurnPending}
       />
       <SettingsModal
         isOpen={settingsOpen}

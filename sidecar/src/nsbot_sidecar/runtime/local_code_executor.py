@@ -9,7 +9,7 @@ from smolagents.local_python_executor import CodeOutput, LocalPythonExecutor
 
 @dataclass
 class LocalCodeExecutor:
-    run_id: str
+    turn_id: str
     workspace_path: str
     timeout_seconds: int = 30
     permission_requester: Any | None = None
@@ -38,7 +38,7 @@ class LocalCodeExecutor:
                 self.permission_requester(
                     {
                         "kind": "python_exec_agent",
-                        "toolCallId": f"{self.run_id}:python_exec_agent",
+                        "toolCallId": f"{self.turn_id}:python_exec_agent",
                         "title": "Execute python code",
                     }
                 )

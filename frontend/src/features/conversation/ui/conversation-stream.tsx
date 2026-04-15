@@ -19,7 +19,7 @@ export function ConversationStream({
   onCancelPermissionRequest,
   renderConversationEvent,
   renderLivePlanningEntry,
-  showPreStepLoading,
+  showPreStepTurnLoading,
   showGenerating,
   generatingIndicator,
 }: {
@@ -35,7 +35,7 @@ export function ConversationStream({
   onCancelPermissionRequest: () => void
   renderConversationEvent: (entry: ConversationEvent) => React.ReactNode
   renderLivePlanningEntry: (entry: { id: string; content: string; priority: "high" | "medium" | "low" | null; status: "pending" | "completed" | "failed" }) => React.ReactNode
-  showPreStepLoading: boolean
+  showPreStepTurnLoading: boolean
   showGenerating: boolean
   generatingIndicator: React.ReactNode
 }) {
@@ -133,7 +133,7 @@ export function ConversationStream({
             onCancelPermissionRequest={onCancelPermissionRequest}
           />
 
-          {showPreStepLoading ? <PreStepRunLoading /> : null}
+          {showPreStepTurnLoading ? <PreStepTurnLoading /> : null}
           {showGenerating ? generatingIndicator : null}
         </div>
       )}
@@ -189,9 +189,9 @@ function ThinkingDots() {
   )
 }
 
-function PreStepRunLoading() {
+function PreStepTurnLoading() {
   return (
-    <div className="flex gap-3 items-start" data-testid="pre-step-run-loading">
+    <div className="flex gap-3 items-start" data-testid="pre-step-turn-loading">
       <div className="w-7 h-7 rounded-full bg-gradient-to-br from-[#e87b5f] to-[#8bc28f] flex-shrink-0 mt-0.5" />
       <div className="bg-[#faf8f6] border border-[#e8e4e0] rounded-2xl px-4 py-3">
         <ThinkingDots />

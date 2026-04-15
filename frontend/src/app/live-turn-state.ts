@@ -50,7 +50,7 @@ export function createOptimisticUserEntry(sessionId: string, text: string): Conv
   return {
     id: `live-user-${sessionId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     sessionId,
-    runId: null,
+    turnId: null,
     sequenceNo: Number.MAX_SAFE_INTEGER,
     entryKind: "user_input",
     displayRole: "user",

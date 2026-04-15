@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 
-import { MainContent } from "@/features/runs"
+import { MainContent } from "@/features/conversation"
 import type { LiveTurn, PendingPermissionRequest } from "@/features/session"
 import type { ConversationEvent } from "@/shared/api/sidecar"
 import type { ModelOptionGroup, SelectedModelRef } from "@/features/providers"
@@ -64,7 +64,7 @@ function renderMainContent(
   selection: SelectedModelRef | null,
   timelineEvents: ConversationEvent[] = [],
   options?: {
-    isSessionRunning?: boolean
+    isTurnPending?: boolean
     liveTurn?: LiveTurn | null
     pendingPermissionRequest?: PendingPermissionRequest | null
     onAllowPermissionRequest?: () => void
@@ -91,7 +91,7 @@ function renderMainContent(
       onSelectedReasoningEffortChange={onSelectedReasoningEffortChange}
       isLoadingModels={false}
       providerError={null}
-      runError={null}
+      turnError={null}
       hasMoreHistory={false}
       isLoadingHistory={false}
       onLoadEarlierTimeline={vi.fn(async () => undefined)}
@@ -105,7 +105,7 @@ function renderMainContent(
       onAllowAlwaysPermissionRequest={options?.onAllowAlwaysPermissionRequest ?? vi.fn()}
       onRejectPermissionRequest={options?.onRejectPermissionRequest ?? vi.fn()}
       onCancelPermissionRequest={options?.onCancelPermissionRequest ?? vi.fn()}
-      isSessionRunning={options?.isSessionRunning ?? false}
+      isTurnPending={options?.isTurnPending ?? false}
     />
   )
 
@@ -162,7 +162,7 @@ describe("MainContent model selector", () => {
         onSelectedReasoningEffortChange={vi.fn()}
         isLoadingModels={false}
         providerError={null}
-        runError={null}
+        turnError={null}
         hasMoreHistory={false}
         isLoadingHistory={false}
         onLoadEarlierTimeline={vi.fn(async () => undefined)}
@@ -201,7 +201,7 @@ describe("MainContent model selector", () => {
         onSelectedReasoningEffortChange={vi.fn()}
         isLoadingModels={false}
         providerError={null}
-        runError={null}
+        turnError={null}
         hasMoreHistory={false}
         isLoadingHistory={false}
         onLoadEarlierTimeline={vi.fn(async () => undefined)}
@@ -260,7 +260,7 @@ describe("MainContent model selector", () => {
         {
           id: "entry_user",
           sessionId: "sess_1",
-          runId: "run_1",
+          turnId: "turn_1",
           sequenceNo: 1,
           entryKind: "user_input",
           displayRole: "user",
@@ -272,7 +272,7 @@ describe("MainContent model selector", () => {
         {
           id: "entry_plan",
           sessionId: "sess_1",
-          runId: "run_1",
+          turnId: "turn_1",
           sequenceNo: 2,
           entryKind: "planning",
           displayRole: "assistant",
@@ -284,7 +284,7 @@ describe("MainContent model selector", () => {
         {
           id: "entry_action",
           sessionId: "sess_1",
-          runId: "run_1",
+          turnId: "turn_1",
           sequenceNo: 3,
           entryKind: "action",
           displayRole: "assistant",
@@ -340,7 +340,7 @@ describe("MainContent model selector", () => {
         {
           id: "entry_user_1",
           sessionId: "sess_1",
-          runId: "run_1",
+          turnId: "turn_1",
           sequenceNo: 0,
           entryKind: "user_input",
           displayRole: "user",
@@ -352,7 +352,7 @@ describe("MainContent model selector", () => {
         {
           id: "entry_action_1",
           sessionId: "sess_1",
-          runId: "run_1",
+          turnId: "turn_1",
           sequenceNo: 1,
           entryKind: "action",
           displayRole: "assistant",
@@ -374,7 +374,7 @@ describe("MainContent model selector", () => {
         {
           id: "entry_action_2",
           sessionId: "sess_1",
-          runId: "run_1",
+          turnId: "turn_1",
           sequenceNo: 2,
           entryKind: "action",
           displayRole: "assistant",
@@ -394,7 +394,7 @@ describe("MainContent model selector", () => {
           },
         },
       ],
-      { isSessionRunning: true }
+      { isTurnPending: true }
     )
 
     expect(screen.getByText("Running...")).toBeInTheDocument()
@@ -410,7 +410,7 @@ describe("MainContent model selector", () => {
         {
           id: "entry_action_1",
           sessionId: "sess_1",
-          runId: "run_1",
+          turnId: "turn_1",
           sequenceNo: 1,
           entryKind: "action",
           displayRole: "assistant",
@@ -430,7 +430,7 @@ describe("MainContent model selector", () => {
           },
         },
       ],
-      { isSessionRunning: false }
+      { isTurnPending: false }
     )
 
     expect(screen.queryByText("Running...")).not.toBeInTheDocument()
@@ -443,7 +443,7 @@ describe("MainContent model selector", () => {
         {
           id: "entry_action_old_run",
           sessionId: "sess_1",
-          runId: "run_1",
+          turnId: "turn_1",
           sequenceNo: 1,
           entryKind: "action",
           displayRole: "assistant",
@@ -465,7 +465,7 @@ describe("MainContent model selector", () => {
         {
           id: "entry_user_new_run",
           sessionId: "sess_1",
-          runId: "run_2",
+          turnId: "turn_2",
           sequenceNo: 2,
           entryKind: "user_input",
           displayRole: "user",
@@ -475,11 +475,11 @@ describe("MainContent model selector", () => {
           createdAt: "2026-03-24T12:00:03Z",
         },
       ],
-      { isSessionRunning: true }
+      { isTurnPending: true }
     )
 
     expect(screen.queryByText("Running...")).not.toBeInTheDocument()
-    expect(screen.getByTestId("pre-step-run-loading")).toBeInTheDocument()
+    expect(screen.getByTestId("pre-step-turn-loading")).toBeInTheDocument()
   })
 
   it("shows pre-step loading while session is running before first step card", () => {
@@ -489,7 +489,7 @@ describe("MainContent model selector", () => {
         {
           id: "entry_user_1",
           sessionId: "sess_1",
-          runId: "run_1",
+          turnId: "turn_1",
           sequenceNo: 1,
           entryKind: "user_input",
           displayRole: "user",
@@ -499,10 +499,10 @@ describe("MainContent model selector", () => {
           createdAt: "2026-03-24T12:00:00Z",
         },
       ],
-      { isSessionRunning: true }
+      { isTurnPending: true }
     )
 
-    expect(screen.getByTestId("pre-step-run-loading")).toBeInTheDocument()
+    expect(screen.getByTestId("pre-step-turn-loading")).toBeInTheDocument()
   })
 
   it("hides pre-step loading once first step card appears", () => {
@@ -512,7 +512,7 @@ describe("MainContent model selector", () => {
         {
           id: "entry_user_1",
           sessionId: "sess_1",
-          runId: "run_1",
+          turnId: "turn_1",
           sequenceNo: 1,
           entryKind: "user_input",
           displayRole: "user",
@@ -524,7 +524,7 @@ describe("MainContent model selector", () => {
         {
           id: "entry_plan_1",
           sessionId: "sess_1",
-          runId: "run_1",
+          turnId: "turn_1",
           sequenceNo: 2,
           entryKind: "planning",
           displayRole: "assistant",
@@ -534,10 +534,10 @@ describe("MainContent model selector", () => {
           createdAt: "2026-03-24T12:00:01Z",
         },
       ],
-      { isSessionRunning: true }
+      { isTurnPending: true }
     )
 
-    expect(screen.queryByTestId("pre-step-run-loading")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("pre-step-turn-loading")).not.toBeInTheDocument()
   })
 
   it("renders live plan, tool call, and assistant draft overlays", () => {
@@ -547,7 +547,7 @@ describe("MainContent model selector", () => {
         {
           id: "entry_user_1",
           sessionId: "sess_1",
-          runId: "run_1",
+          turnId: "turn_1",
           sequenceNo: 1,
           entryKind: "user_input",
           displayRole: "user",
@@ -558,7 +558,7 @@ describe("MainContent model selector", () => {
         },
       ],
       {
-        isSessionRunning: true,
+        isTurnPending: true,
         liveTurn: {
           optimisticEvents: [],
           truncatedAfterSequence: null,
@@ -633,7 +633,7 @@ describe("MainContent model selector", () => {
           {
             id: "entry_user_1",
             sessionId: "sess_1",
-            runId: "run_1",
+            turnId: "turn_1",
             sequenceNo: 1,
             entryKind: "user_input",
             displayRole: "user",
@@ -647,7 +647,7 @@ describe("MainContent model selector", () => {
           {
             id: "entry_user_1",
             sessionId: "sess_1",
-            runId: "run_1",
+            turnId: "turn_1",
             sequenceNo: 1,
             entryKind: "user_input",
             displayRole: "user",
@@ -667,7 +667,7 @@ describe("MainContent model selector", () => {
         onSelectedReasoningEffortChange={vi.fn()}
         isLoadingModels={false}
         providerError={null}
-        runError={null}
+        turnError={null}
         hasMoreHistory={false}
         isLoadingHistory={false}
         onLoadEarlierTimeline={vi.fn(async () => undefined)}
@@ -681,7 +681,7 @@ describe("MainContent model selector", () => {
         onAllowAlwaysPermissionRequest={vi.fn()}
         onRejectPermissionRequest={vi.fn()}
         onCancelPermissionRequest={vi.fn()}
-        isSessionRunning={true}
+        isTurnPending={true}
       />
     )
 
@@ -693,7 +693,7 @@ describe("MainContent model selector", () => {
     await waitFor(() => {
       expect(onSendMessage).toHaveBeenCalledWith("go", { autoAllow: true })
     })
-    expect(screen.queryByTestId("pre-step-run-loading")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("pre-step-turn-loading")).not.toBeInTheDocument()
 
     await act(async () => {
       resolveSend?.()
@@ -716,7 +716,7 @@ describe("MainContent model selector", () => {
           {
             id: "msg_user",
             sessionId: "sess_1",
-            runId: "run_1",
+            turnId: "turn_1",
             sequenceNo: 1,
             entryKind: "user_input",
             displayRole: "user",
@@ -728,7 +728,7 @@ describe("MainContent model selector", () => {
           {
             id: "msg_assistant",
             sessionId: "sess_1",
-            runId: "run_1",
+            turnId: "turn_1",
             sequenceNo: 2,
             entryKind: "final_answer",
             displayRole: "assistant",
@@ -742,7 +742,7 @@ describe("MainContent model selector", () => {
           {
             id: "msg_user",
             sessionId: "sess_1",
-            runId: "run_1",
+            turnId: "turn_1",
             sequenceNo: 1,
             entryKind: "user_input",
             displayRole: "user",
@@ -754,7 +754,7 @@ describe("MainContent model selector", () => {
           {
             id: "msg_assistant",
             sessionId: "sess_1",
-            runId: "run_1",
+            turnId: "turn_1",
             sequenceNo: 2,
             entryKind: "final_answer",
             displayRole: "assistant",
@@ -774,7 +774,7 @@ describe("MainContent model selector", () => {
         onSelectedReasoningEffortChange={vi.fn()}
         isLoadingModels={false}
         providerError={null}
-        runError={null}
+        turnError={null}
         hasMoreHistory={false}
         isLoadingHistory={false}
         onLoadEarlierTimeline={vi.fn(async () => undefined)}
@@ -824,7 +824,7 @@ describe("MainContent model selector", () => {
         {
           id: "msg_user",
           sessionId: "sess_1",
-          runId: "run_1",
+          turnId: "turn_1",
           sequenceNo: 1,
           entryKind: "user_input",
           displayRole: "user",
@@ -869,7 +869,7 @@ describe("MainContent model selector", () => {
         {
           id: "msg_user",
           sessionId: "sess_1",
-          runId: "run_1",
+          turnId: "turn_1",
           sequenceNo: 1,
           entryKind: "user_input",
           displayRole: "user",
@@ -881,7 +881,7 @@ describe("MainContent model selector", () => {
         {
           id: "msg_assistant",
           sessionId: "sess_1",
-          runId: "run_1",
+          turnId: "turn_1",
           sequenceNo: 2,
           entryKind: "final_answer",
           displayRole: "assistant",
@@ -939,7 +939,7 @@ describe("MainContent model selector", () => {
         {
           id: "msg_assistant",
           sessionId: "sess_1",
-          runId: "run_1",
+          turnId: "turn_1",
           sequenceNo: 1,
           entryKind: "final_answer",
           displayRole: "assistant",
@@ -990,7 +990,7 @@ describe("MainContent model selector", () => {
         {
           id: "entry_final",
           sessionId: "sess_1",
-          runId: "run_1",
+          turnId: "turn_1",
           sequenceNo: 1,
           entryKind: "final_answer",
           displayRole: "assistant",
@@ -1027,7 +1027,7 @@ describe("MainContent model selector", () => {
         {
           id: "entry_plan",
           sessionId: "sess_1",
-          runId: "run_1",
+          turnId: "turn_1",
           sequenceNo: 1,
           entryKind: "planning",
           displayRole: "assistant",

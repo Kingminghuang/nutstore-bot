@@ -6,21 +6,20 @@ import { ArrowLeft, Plus, Trash2, X } from "lucide-react"
 import { Button } from "@/shared/ui/button"
 import { Spinner } from "@/shared/ui/spinner"
 import {
-  cloneProviderConnectionForm,
   createEmptyProviderConnectionForm,
   createLocalId,
   formFromConnection,
+  STORED_API_KEY_MASK,
   type ProviderCatalogEntry,
   type ProviderConnectionDetail,
   type ProviderConnectionForm,
-  type ProviderHeaderDraft,
   type ProviderModelDraft,
   type SaveProviderPayload,
 } from "@/features/providers"
 import { detectSensitiveWriteIssues } from "@/shared/lib"
 import { cn } from "@/shared/lib"
 
-type SettingsPage = "providers" | "custom-provider" | "provider-config" | "connect-provider"
+type SettingsPage = "providers" | "provider-config"
 type FieldErrorKey = "providerId" | "displayName" | "baseUrl" | "apiKey" | "models"
 type FieldErrors = Partial<Record<FieldErrorKey, string>>
 
@@ -47,24 +46,6 @@ const PROVIDER_DESCRIPTIONS: Record<string, string> = {
   gemini: "Google Gemini models for multimodal and reasoning tasks",
   openai: "GPT models for fast, capable general AI tasks",
   custom: "Configure any OpenAI-compatible provider with your own base URL",
-}
-
-const PROVIDER_STATUS_LABELS: Record<string, string> = {
-  unknown: "Not validated",
-  connected: "Connected",
-  invalid_key: "Invalid key",
-  timeout: "Timeout",
-  model_unavailable: "Model unavailable",
-  invalid_config: "Invalid config",
-}
-
-const PROVIDER_STATUS_STYLES: Record<string, string> = {
-  unknown: "bg-background text-foreground/60",
-  connected: "bg-[#e7f4ea] text-[#2f6b41]",
-  invalid_key: "bg-[#f8e7e4] text-[#b45b44]",
-  timeout: "bg-[#f8ead7] text-[#9c6a1a]",
-  model_unavailable: "bg-[#f7efe2] text-[#8f6431]",
-  invalid_config: "bg-[#f8e7e4] text-[#b45b44]",
 }
 
 const inputClassName = (hasError: boolean) =>
@@ -175,6 +156,7 @@ export function SettingsModal({
     displayName: currentConfig.displayName.trim() || selectedCatalog?.label || "",
     baseUrl: currentConfig.baseUrl.trim(),
     apiKey: currentConfig.apiKey.trim(),
+    hasStoredApiKey: currentConfig.hasStoredApiKey,
     modelPolicy: currentConfig.modelPolicy,
     preferredModelId: currentConfig.preferredModelId.trim(),
     models: currentConfig.models.map((model) => ({
@@ -182,20 +164,10 @@ export function SettingsModal({
       modelId: model.modelId.trim(),
       displayName: model.displayName.trim(),
     })),
-    headers: currentConfig.headers.map((header) => ({
-      ...header,
-      name: header.name.trim(),
-      plainValue: header.plainValue.trim(),
-      secretValueInput: header.secretValueInput.trim(),
-    })),
   })
 
   const handleBackClick = () => {
-    if (
-      currentPage === "custom-provider" ||
-      currentPage === "provider-config" ||
-      currentPage === "connect-provider"
-    ) {
+    if (currentPage === "provider-config") {
       clearErrors()
       setIsSubmitting(false)
       setCurrentPage("providers")
@@ -214,7 +186,7 @@ export function SettingsModal({
         ...createEmptyProviderConnectionForm(),
         modelPolicy: "custom_only",
       })
-      setCurrentPage("custom-provider")
+      setCurrentPage("provider-config")
       return
     }
 
@@ -245,7 +217,7 @@ export function SettingsModal({
         })) ?? [],
       preferredModelId: selectedCatalogProvider?.models[0]?.id ?? "",
     })
-    setCurrentPage("connect-provider")
+    setCurrentPage("provider-config")
   }
 
   const handleConnectedProviderClick = (provider: ProviderConnectionDetail) => {
@@ -287,12 +259,25 @@ export function SettingsModal({
     field: keyof Pick<ProviderConnectionForm, "providerId" | "displayName" | "baseUrl" | "apiKey" | "preferredModelId">,
     value: string
   ) => {
-    setConfig((prev) => ({ ...prev, [field]: value }))
+    setConfig((prev) => ({
+      ...prev,
+      [field]: value,
+      ...(field === "apiKey" ? { hasStoredApiKey: false } : {}),
+    }))
     if (field === "providerId" || field === "displayName" || field === "baseUrl" || field === "apiKey") {
       clearErrors(field)
     } else {
       setSubmitError(null)
     }
+  }
+
+  const startApiKeyReplacement = () => {
+    clearErrors("apiKey")
+    setConfig((prev) => ({
+      ...prev,
+      apiKey: "",
+      hasStoredApiKey: false,
+    }))
   }
 
   const updateModelPolicy = (value: "all_catalog" | "restricted" | "custom_only") => {
@@ -325,32 +310,6 @@ export function SettingsModal({
     }))
   }
 
-  const handleAddHeader = () => {
-    setSubmitError(null)
-    setConfig((prev) => ({
-      ...prev,
-      headers: [
-        ...prev.headers,
-        {
-          id: createLocalId("header"),
-          name: "",
-          valueKind: "plain",
-          plainValue: "",
-          secretValueInput: "",
-          hasStoredSecret: false,
-        },
-      ],
-    }))
-  }
-
-  const handleRemoveHeader = (id: string) => {
-    setSubmitError(null)
-    setConfig((prev) => ({
-      ...prev,
-      headers: prev.headers.filter((header) => header.id !== id),
-    }))
-  }
-
   const updateModel = (id: string, field: keyof ProviderModelDraft, value: string | boolean) => {
     clearErrors("models")
     setConfig((prev) => ({
@@ -361,47 +320,17 @@ export function SettingsModal({
     }))
   }
 
-  const updateHeader = (
-    id: string,
-    field: keyof ProviderHeaderDraft,
-    value: string | boolean
-  ) => {
-    setSubmitError(null)
-    setConfig((prev) => ({
-      ...prev,
-      headers: prev.headers.map((header) =>
-        header.id === id ? { ...header, [field]: value } : header
-      ),
-    }))
-  }
-
   const validateCurrentPage = (): FieldErrors => {
     const nextErrors: FieldErrors = {}
     const normalizedConfig = normalizeProviderConfig(config, selectedProviderData)
     const hasModelId = normalizedConfig.models.some((model) => model.modelId.trim())
 
-    if (currentPage === "custom-provider") {
-      if (!normalizedConfig.providerId) {
-        nextErrors.providerId = "Provider ID is required."
-      }
-      if (!normalizedConfig.displayName) {
-        nextErrors.displayName = "Display name is required."
-      }
-      if (!normalizedConfig.baseUrl) {
-        nextErrors.baseUrl = "Base URL is required."
-      }
-      if (!hasModelId) {
-        nextErrors.models = "Add at least one model ID before continuing."
-      }
-    }
-
-    if (currentPage === "connect-provider" && !normalizedConfig.apiKey) {
-      nextErrors.apiKey = `${getSelectedProviderLabel()} API key is required.`
-    }
-
     if (currentPage === "provider-config" && isCustomProvider()) {
       if (!normalizedConfig.providerId) {
         nextErrors.providerId = "Provider ID is required."
+      }
+      if (!config.displayName.trim()) {
+        nextErrors.displayName = "Display name is required."
       }
       if (!normalizedConfig.baseUrl) {
         nextErrors.baseUrl = "Base URL is required."
@@ -409,6 +338,16 @@ export function SettingsModal({
       if (!hasModelId) {
         nextErrors.models = "Add at least one model ID before saving."
       }
+    }
+
+    if (
+      currentPage === "provider-config" &&
+      !isCustomProvider() &&
+      editingProviderId == null &&
+      !normalizedConfig.hasStoredApiKey &&
+      !normalizedConfig.apiKey
+    ) {
+      nextErrors.apiKey = `${selectedProviderData?.label ?? getSelectedProviderLabel()} API key is required.`
     }
 
     if (
@@ -433,27 +372,18 @@ export function SettingsModal({
         modelId: model.modelId,
         displayName: model.displayName,
       })),
-      headers: normalizedConfig.headers
-        .filter((header) => header.valueKind === "plain")
-        .map((header) => ({
-          name: header.name,
-          plainValue: header.plainValue,
-        })),
     })
 
     if (issues.length === 0) {
       return null
     }
 
-    return "Sensitive data detected in non-secret fields. Move keys/tokens to API key or secret headers."
+    return "Sensitive data detected in non-secret fields. Move keys/tokens to the API key field."
   }
 
   const getSubmitLabels = () => {
-    if (currentPage === "custom-provider") {
-      return { label: "Save and continue", loadingLabel: "Saving..." }
-    }
-    if (currentPage === "connect-provider") {
-      return { label: "Connect and continue", loadingLabel: "Connecting..." }
+    if (editingProviderId == null && !isCustomProvider()) {
+      return { label: "Connect provider", loadingLabel: "Connecting..." }
     }
     return { label: "Save provider", loadingLabel: "Saving..." }
   }
@@ -465,7 +395,7 @@ export function SettingsModal({
         customSlug: normalizedConfig.providerId,
         displayName: normalizedConfig.displayName,
         baseUrl: normalizedConfig.baseUrl,
-        apiKey: normalizedConfig.apiKey || undefined,
+        apiKey: normalizedConfig.hasStoredApiKey ? undefined : normalizedConfig.apiKey || undefined,
         preferredModelId: normalizedConfig.preferredModelId || normalizedConfig.models.find((model) => model.enabled && model.modelId)?.modelId || null,
         customModels: normalizedConfig.models
           .filter((model) => model.modelId)
@@ -474,18 +404,6 @@ export function SettingsModal({
             modelId: model.modelId,
             displayName: model.displayName || undefined,
             enabled: model.enabled,
-          })),
-        headers: normalizedConfig.headers
-          .filter((header) => header.name)
-          .map((header) => ({
-            id: header.id,
-            name: header.name,
-            valueKind: header.valueKind,
-            plainValue: header.valueKind === "plain" ? header.plainValue : undefined,
-            secretValue:
-              header.valueKind === "secret"
-                ? header.secretValueInput || undefined
-                : undefined,
           })),
       }
     }
@@ -502,7 +420,7 @@ export function SettingsModal({
       catalogProviderId: selectedProviderData?.id ?? normalizedConfig.providerId,
       displayName: normalizedConfig.displayName,
       baseUrl: selectedProviderData?.baseUrlPolicy === "hidden" ? null : normalizedConfig.baseUrl || null,
-      apiKey: normalizedConfig.apiKey || undefined,
+      apiKey: normalizedConfig.hasStoredApiKey ? undefined : normalizedConfig.apiKey || undefined,
       modelPolicy: normalizedConfig.modelPolicy === "custom_only" ? "all_catalog" : normalizedConfig.modelPolicy,
       preferredModelId:
         normalizedConfig.preferredModelId ||
@@ -534,19 +452,6 @@ export function SettingsModal({
     setSubmitError(null)
 
     try {
-      if (currentPage === "custom-provider") {
-        setSelectedProvider(config.providerId.trim())
-        setConfig((prev) => normalizeProviderConfig(prev, selectedProviderData))
-        setCurrentPage("provider-config")
-        return
-      }
-
-      if (currentPage === "connect-provider") {
-        setConfig((prev) => normalizeProviderConfig(prev, selectedProviderData))
-        setCurrentPage("provider-config")
-        return
-      }
-
       const payload = buildSavePayload(normalizedConfig)
       await onSaveProvider(payload, editingProviderId ?? undefined)
       handleModalClose()
@@ -590,11 +495,9 @@ export function SettingsModal({
             <div />
           )}
           {currentPage === "providers" && <h2 className="text-lg font-medium">Providers</h2>}
-          {currentPage === "custom-provider" && <h2 className="text-lg font-medium">Custom provider</h2>}
           {currentPage === "provider-config" && (
             <h2 className="text-lg font-medium">{getSelectedProviderLabel()} Configuration</h2>
           )}
-          {currentPage === "connect-provider" && <h2 className="text-lg font-medium">Connect provider</h2>}
           <button
             onClick={handleModalClose}
             className="p-1 hover:bg-[#efe9e4] rounded transition-colors"
@@ -632,22 +535,6 @@ export function SettingsModal({
                             <div>
                               <h4 className="text-sm font-medium">{provider.displayName}</h4>
                               <p className="text-xs text-foreground/60">{description}</p>
-                              <div className="mt-1 flex items-center gap-2">
-                                <span
-                                  className={cn(
-                                    "rounded-full px-2 py-0.5 text-[11px] font-medium",
-                                    PROVIDER_STATUS_STYLES[provider.healthStatus] ??
-                                      PROVIDER_STATUS_STYLES.unknown
-                                  )}
-                                >
-                                  {PROVIDER_STATUS_LABELS[provider.healthStatus] ?? "Not validated"}
-                                </span>
-                                {provider.healthMessage && (
-                                  <span className="text-[11px] text-foreground/50">
-                                    {provider.healthMessage}
-                                  </span>
-                                )}
-                              </div>
                             </div>
                           </div>
                           <span className="rounded-full bg-background px-2.5 py-1 text-xs font-medium text-foreground/70">
@@ -725,99 +612,28 @@ export function SettingsModal({
             </div>
           )}
 
-          {currentPage === "custom-provider" && (
-            <div className="space-y-6">
-              <div>
-                <p className="text-sm text-foreground/70 mb-4">
-                  Configure an OpenAI-compatible provider. See the <a href="#" className="underline">provider config docs</a>.
-                </p>
-              </div>
-
-              <ProviderIdField
-                value={config.providerId}
-                error={fieldErrors.providerId}
-                onChange={(value) => updateConfigField("providerId", value)}
-              />
-
-              <TextField
-                label="Display name"
-                placeholder="My AI Provider"
-                value={config.displayName}
-                error={fieldErrors.displayName}
-                onChange={(value) => updateConfigField("displayName", value)}
-              />
-
-              <TextField
-                label="Base URL"
-                placeholder="https://api.myprovider.com/v1"
-                value={config.baseUrl}
-                error={fieldErrors.baseUrl}
-                onChange={(value) => updateConfigField("baseUrl", value)}
-              />
-
-              <PasswordField
-                label="API key"
-                placeholder="API key"
-                value={config.apiKey}
-                error={fieldErrors.apiKey}
-                helpText="Optional. Leave empty if you manage auth via headers."
-                onChange={(value) => updateConfigField("apiKey", value)}
-              />
-
-              <ModelsEditor
-                config={config}
-                fieldError={fieldErrors.models}
-                isCustomProvider={true}
-                onAddModel={handleAddModel}
-                onRemoveModel={handleRemoveModel}
-                onUpdateModel={updateModel}
-              />
-
-              <SubmitButton
-                label={submitLabels.label}
-                loadingLabel={submitLabels.loadingLabel}
-                isSubmitting={isSubmitting}
-                disabled={isSubmitting}
-                error={submitError}
-                onClick={() => void handleSubmit()}
-              />
-            </div>
-          )}
-
-          {currentPage === "connect-provider" && (
-            <div className="space-y-6">
-              <div className="flex items-center gap-3">
-                <span className="text-xl font-bold">
-                  {PROVIDER_ICONS[selectedProviderData?.id ?? "custom"] ?? "C"}
-                </span>
-                <h3 className="text-lg font-medium">Connect {selectedProviderData?.label}</h3>
-              </div>
-
-              <p className="text-sm text-foreground/70">
-                Enter your {selectedProviderData?.label} API key to connect your account and use {selectedProviderData?.label} models in OpenCode.
-              </p>
-
-              <PasswordField
-                label={`${selectedProviderData?.label} API key`}
-                placeholder="API key"
-                value={config.apiKey}
-                error={fieldErrors.apiKey}
-                onChange={(value) => updateConfigField("apiKey", value)}
-              />
-
-              <SubmitButton
-                label={submitLabels.label}
-                loadingLabel={submitLabels.loadingLabel}
-                isSubmitting={isSubmitting}
-                disabled={isSubmitting}
-                error={submitError}
-                onClick={() => void handleSubmit()}
-              />
-            </div>
-          )}
-
           {currentPage === "provider-config" && (
             <div className="space-y-6">
+              {!editingProviderId && isCustomProvider() && (
+                <p className="text-sm text-foreground/70">
+                  Configure an OpenAI-compatible provider and save it from this screen.
+                </p>
+              )}
+
+              {!editingProviderId && !isCustomProvider() && selectedProviderData && (
+                <div className="space-y-3 rounded-lg border border-[#efe9e4] bg-[#f8f5f2] p-4">
+                  <div className="flex items-center gap-3">
+                    <span className="text-xl font-bold">
+                      {PROVIDER_ICONS[selectedProviderData.id] ?? selectedProviderData.label.charAt(0).toUpperCase()}
+                    </span>
+                    <h3 className="text-lg font-medium">Connect {selectedProviderData.label}</h3>
+                  </div>
+                  <p className="text-sm text-foreground/70">
+                    Enter your {selectedProviderData.label} API key and any model preferences before saving.
+                  </p>
+                </div>
+              )}
+
               <ProviderIdField
                 value={config.providerId}
                 error={fieldErrors.providerId}
@@ -832,7 +648,7 @@ export function SettingsModal({
 
               <TextField
                 label="Display name"
-                placeholder="Provider display name"
+                placeholder={isCustomProvider() ? "My AI Provider" : "Provider display name"}
                 value={config.displayName}
                 error={fieldErrors.displayName}
                 onChange={(value) => updateConfigField("displayName", value)}
@@ -854,10 +670,23 @@ export function SettingsModal({
               )}
 
               <PasswordField
-                label="API key"
+                label={
+                  !editingProviderId && !isCustomProvider() && selectedProviderData
+                    ? `${selectedProviderData.label} API key`
+                    : "API key"
+                }
                 placeholder="API key"
                 value={config.apiKey}
-                helpText="Leave empty to keep the existing key unchanged."
+                error={fieldErrors.apiKey}
+                maskedValue={config.hasStoredApiKey ? STORED_API_KEY_MASK : undefined}
+                helpText={
+                  config.hasStoredApiKey
+                    ? "Stored API key is masked. Replace it only if you want to update the key."
+                    : !editingProviderId && !isCustomProvider()
+                      ? `Required to connect ${selectedProviderData?.label ?? "this provider"}.`
+                    : "Leave empty to keep the existing key unchanged."
+                }
+                onReplaceMaskedValue={config.hasStoredApiKey ? startApiKeyReplacement : undefined}
                 onChange={(value) => updateConfigField("apiKey", value)}
               />
 
@@ -903,13 +732,6 @@ export function SettingsModal({
                 />
               )}
 
-              <HeadersEditor
-                headers={config.headers}
-                onAddHeader={handleAddHeader}
-                onRemoveHeader={handleRemoveHeader}
-                onUpdateHeader={updateHeader}
-              />
-
               <SubmitButton
                 label={submitLabels.label}
                 loadingLabel={submitLabels.loadingLabel}
@@ -947,6 +769,7 @@ function ProviderIdField({
         placeholder="provider-id"
         value={value}
         autoComplete="off"
+        aria-label="Provider ID"
         onChange={(e) => onChange(e.target.value)}
         aria-invalid={Boolean(error)}
         disabled={disabled}
@@ -984,6 +807,7 @@ function TextField({
         placeholder={placeholder}
         value={value}
         autoComplete="off"
+        aria-label={label}
         onChange={(e) => onChange(e.target.value)}
         aria-invalid={Boolean(error)}
         className={inputClassName(Boolean(error))}
@@ -1000,6 +824,8 @@ function PasswordField({
   value,
   error,
   helpText,
+  maskedValue,
+  onReplaceMaskedValue,
   onChange,
 }: {
   label: string
@@ -1007,22 +833,37 @@ function PasswordField({
   value: string
   error?: string
   helpText?: string
+  maskedValue?: string
+  onReplaceMaskedValue?: () => void
   onChange: (value: string) => void
 }) {
+  const displayValue = maskedValue ?? value
+
   return (
     <div>
       <label className="block text-sm font-medium mb-2">{label}</label>
       <input
         type="password"
         placeholder={placeholder}
-        value={value}
+        value={displayValue}
         autoComplete="new-password"
+        aria-label={label}
+        readOnly={Boolean(maskedValue)}
         onChange={(e) => onChange(e.target.value)}
         aria-invalid={Boolean(error)}
         className={inputClassName(Boolean(error))}
       />
       {error && <p className="mt-1 text-xs text-destructive">{error}</p>}
       {helpText && <p className="text-xs text-foreground/60 mt-1">{helpText}</p>}
+      {maskedValue && onReplaceMaskedValue && (
+        <button
+          type="button"
+          onClick={onReplaceMaskedValue}
+          className="mt-2 text-xs font-medium text-foreground/70 transition-colors hover:text-foreground"
+        >
+          Replace API key
+        </button>
+      )}
     </div>
   )
 }
@@ -1098,93 +939,6 @@ function ModelsEditor({
       >
         <Plus className="w-4 h-4" />
         Add model
-      </button>
-    </div>
-  )
-}
-
-function HeadersEditor({
-  headers,
-  onAddHeader,
-  onRemoveHeader,
-  onUpdateHeader,
-}: {
-  headers: ProviderHeaderDraft[]
-  onAddHeader: () => void
-  onRemoveHeader: (id: string) => void
-  onUpdateHeader: (
-    id: string,
-    field: keyof ProviderHeaderDraft,
-    value: string | boolean
-  ) => void
-}) {
-  return (
-    <div>
-      <div className="flex items-center justify-between mb-3">
-        <label className="block text-sm font-medium">Headers (optional)</label>
-      </div>
-      <div className="space-y-2">
-        {headers.map((header) => (
-          <div key={header.id} className="rounded-lg border border-[#efe9e4] p-3 space-y-2">
-            <div className="flex gap-2 items-end">
-              <div className="flex-1">
-                <input
-                  type="text"
-                  placeholder="Header-Name"
-                  value={header.name}
-                  autoComplete="off"
-                  onChange={(e) => onUpdateHeader(header.id, "name", e.target.value)}
-                  className={inputClassName(false)}
-                />
-              </div>
-              <select
-                value={header.valueKind}
-                onChange={(e) => onUpdateHeader(header.id, "valueKind", e.target.value)}
-                className="px-3 py-2 border border-[#e8e4e0] rounded-lg text-sm"
-              >
-                <option value="plain">Plain</option>
-                <option value="secret">Secret</option>
-              </select>
-              <button
-                onClick={() => onRemoveHeader(header.id)}
-                className="p-2 hover:bg-[#efe9e4] rounded transition-colors"
-              >
-                <Trash2 className="w-4 h-4 text-foreground/70" />
-              </button>
-            </div>
-            {header.valueKind === "plain" ? (
-              <input
-                type="text"
-                placeholder="value"
-                value={header.plainValue}
-                autoComplete="off"
-                onChange={(e) => onUpdateHeader(header.id, "plainValue", e.target.value)}
-                className={inputClassName(false)}
-              />
-            ) : (
-              <div className="space-y-1">
-                <input
-                  type="password"
-                  placeholder={header.hasStoredSecret ? "Leave blank to keep existing secret" : "secret value"}
-                  value={header.secretValueInput}
-                  autoComplete="new-password"
-                  onChange={(e) => onUpdateHeader(header.id, "secretValueInput", e.target.value)}
-                  className={inputClassName(false)}
-                />
-                {header.hasStoredSecret && (
-                  <p className="text-xs text-foreground/60">Stored secret exists for this header.</p>
-                )}
-              </div>
-            )}
-          </div>
-        ))}
-      </div>
-      <button
-        onClick={onAddHeader}
-        className="mt-3 flex items-center gap-1 text-sm text-foreground/70 hover:text-foreground transition-colors"
-      >
-        <Plus className="w-4 h-4" />
-        Add header
       </button>
     </div>
   )

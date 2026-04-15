@@ -6,19 +6,19 @@ from nsbot_sidecar.runtime.engine import create_runtime_engine
 from nsbot_sidecar.runtime.runtime_service import RunMetadata, RuntimeWorkerConfig
 
 
-def execute_runtime_run(
+def execute_runtime_turn(
     config: RuntimeWorkerConfig,
-    run_id: str,
+    turn_id: str,
     user_input: str,
     auth_context: dict[str, Any],
     metadata: RunMetadata,
     event_callback: Callable[[dict[str, Any]], None] | None = None,
     is_cancelled: Callable[[], bool] | None = None,
 ) -> dict[str, Any]:
-    """Compatibility shim: forward runtime execution through RuntimeEngine."""
+    """Forward runtime execution through RuntimeEngine."""
     engine = create_runtime_engine(config)
     return engine.process(
-        run_id=run_id,
+        turn_id=turn_id,
         user_input=user_input,
         auth_context=auth_context,
         metadata=metadata,

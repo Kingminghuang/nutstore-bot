@@ -7,13 +7,13 @@ export function MessageAcpPermission({
   onAllowOnce,
   onAllowAlways,
   onReject,
-  onCancelRun,
+  onCancelRequest,
 }: {
   request: PendingPermissionRequest
   onAllowOnce: () => void
   onAllowAlways: () => void
   onReject: () => void
-  onCancelRun: () => void
+  onCancelRequest: () => void
 }) {
   const [selectedOptionId, setSelectedOptionId] = useState<string | null>(null)
   const [hasResponded, setHasResponded] = useState(false)
@@ -42,7 +42,7 @@ export function MessageAcpPermission({
     <div className="rounded-2xl border border-[#ddd4cb] bg-[#f8f4ef] px-4 py-4 space-y-4">
       <div className="space-y-1">
         <h3 className="text-sm font-semibold text-foreground">Permission required</h3>
-        <p className="text-xs text-foreground/62">This run is paused before a sensitive action.</p>
+        <p className="text-xs text-foreground/62">This request is paused before a sensitive action.</p>
       </div>
 
       <div className="rounded-xl border border-[#ddd4cb] bg-white/70 px-4 py-3">
@@ -74,10 +74,10 @@ export function MessageAcpPermission({
       <div className="flex flex-wrap items-center justify-between gap-2 border-t border-[#e6ddd4] pt-3">
         <button
           type="button"
-          onClick={onCancelRun}
+          onClick={onCancelRequest}
           className="rounded-xl px-3 py-1.5 text-sm text-foreground/60 hover:bg-[#ede4da] transition-colors"
         >
-          Cancel run
+          Cancel request
         </button>
         <div className="flex flex-wrap gap-2">
           <button

@@ -58,7 +58,7 @@ export function MessageList({
                 onAllowOnce={onAllowPermissionRequest}
                 onAllowAlways={onAllowAlwaysPermissionRequest}
                 onReject={onRejectPermissionRequest}
-                onCancelRun={onCancelPermissionRequest}
+                onCancelRequest={onCancelPermissionRequest}
               />
             )
           default:

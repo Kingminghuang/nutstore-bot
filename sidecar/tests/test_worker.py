@@ -14,7 +14,7 @@ class WorkerRequestParsingTests(unittest.TestCase):
     def test_parse_request_accepts_snake_case(self) -> None:
         raw = json.dumps(
             {
-                "run_id": "run-1",
+                "turn_id": "turn-1",
                 "user_input": "hello",
                 "auth_context": {},
                 "metadata": {"workspace_path": "/tmp/ws", "session_key": "s1"},
@@ -31,7 +31,7 @@ class WorkerRequestParsingTests(unittest.TestCase):
         )
 
         req = parse_request(raw)
-        self.assertEqual(req.run_id, "run-1")
+        self.assertEqual(req.turn_id, "turn-1")
         self.assertEqual(req.user_input, "hello")
         self.assertEqual(req.metadata.workspace_path, "/tmp/ws")
         self.assertEqual(req.metadata.session_key, "s1")
@@ -43,7 +43,7 @@ class WorkerRequestParsingTests(unittest.TestCase):
     def test_parse_request_accepts_camel_case(self) -> None:
         raw = json.dumps(
             {
-                "runId": "run-2",
+                "turnId": "turn-2",
                 "userInput": "world",
                 "authContext": {"expEpoch": 123},
                 "metadata": {"workspacePath": "/tmp/ws2", "sessionKey": "s2"},
@@ -60,7 +60,7 @@ class WorkerRequestParsingTests(unittest.TestCase):
         )
 
         req = parse_request(raw)
-        self.assertEqual(req.run_id, "run-2")
+        self.assertEqual(req.turn_id, "turn-2")
         self.assertEqual(req.user_input, "world")
         self.assertEqual(req.auth_context["exp_epoch"], 123)
         self.assertEqual(req.metadata.workspace_path, "/tmp/ws2")
@@ -73,7 +73,7 @@ class WorkerRequestParsingTests(unittest.TestCase):
     def test_parse_request_parses_direct_mode_fields(self) -> None:
         raw = json.dumps(
             {
-                "runId": "run-3",
+                "turnId": "turn-3",
                 "userInput": "world",
                 "authContext": {},
                 "metadata": {"workspacePath": "/tmp/ws3", "sessionKey": "s3"},
@@ -101,7 +101,7 @@ class WorkerRequestParsingTests(unittest.TestCase):
     def test_parse_request_uses_platform_nsbot_home_default(self) -> None:
         raw = json.dumps(
             {
-                "runId": "run-4",
+                "turnId": "turn-4",
                 "userInput": "default-home",
                 "authContext": {},
                 "metadata": {},
@@ -124,7 +124,7 @@ class WorkerRequestParsingTests(unittest.TestCase):
 
     def test_main_uses_runtime_engine_and_prints_json_response(self) -> None:
         request_payload = {
-            "runId": "run-main",
+            "turnId": "turn-main",
             "userInput": "hello",
             "authContext": {"uid": "u1"},
             "metadata": {"workspacePath": "/tmp/ws", "sessionKey": "s-main"},

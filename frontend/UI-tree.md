@@ -30,14 +30,11 @@ Home (app/page.tsx)
 │   ├── Footer
 │   │   └── SettingsButton
 │   ├── ResizeHandle
-│   ├── AddDirectoryDialog
+│   ├── AddDirectoryDialog [fallback-only: picker unavailable / unusable path / create failure]
 │   │   ├── DialogHeader
-│   │   ├── NativeDirectoryPickerFlow
-│   │   │   ├── SelectDirectoryButton
-│   │   │   └── SelectedDirectoryPreview
-│   │   ├── ManualDirectoryEntryFlow
-│   │   │   ├── DirectoryNameInput
-│   │   │   └── DirectoryPathInput
+│   │   ├── FallbackGuidance
+│   │   ├── DirectoryNameInput
+│   │   ├── DirectoryPathInput
 │   │   ├── ValidationError
 │   │   └── DialogFooter
 │   │       ├── CancelButton
@@ -184,42 +181,26 @@ Home (app/page.tsx)
           │   │       │   ├── ProviderIcon
           │   │       │   ├── ProviderName
           │   │       │   ├── ProviderDescription
-          │   │       │   ├── HealthBadge
-          │   │       │   ├── HealthMessage
           │   │       │   └── ModelCountBadge
           │   │       └── DisconnectProviderButton
           │   ├── PopularProvidersSection
           │   │   └── BuiltinProviderRow[]
           │   │       ├── ProviderIcon
           │   │       ├── ProviderMeta
-          │   │       └── ConnectOrEditButton
+          │   │       └── ConnectOrEditButton ("Edit" | "+ Connect")
           │   └── CustomProviderEntry
-          │       └── ConfigureCustomProviderButton
-          ├── page: custom-provider
-          │   ├── IntroCopy
-          │   ├── ProviderIdField
-          │   ├── DisplayNameField
-          │   ├── BaseUrlField
-          │   ├── ApiKeyField
-          │   ├── ModelsEditor
-          │   │   ├── ModelDraftRow[]
-          │   │   │   ├── ModelIdInput
-          │   │   │   ├── DisplayNameInput
-          │   │   │   ├── EnabledCheckbox
-          │   │   │   └── RemoveModelButton
-          │   │   └── AddModelButton
-          │   └── SubmitButton
-          ├── page: connect-provider
-          │   ├── ProviderIcon
-          │   ├── ConnectHeadline
-          │   ├── IntroCopy
-          │   ├── ApiKeyField
-          │   └── SubmitButton
+          │       └── ConfigureCustomProviderButton ("Configure custom provider")
           └── page: provider-config
+               ├── IntroCopy (custom create only)
+               ├── ConnectSummaryCard (builtin create only)
+               │   ├── ProviderIcon
+               │   ├── ConnectHeadline
+               │   └── IntroCopy
                ├── ProviderIdField
                ├── DisplayNameField
                ├── BaseUrlField (if not hidden)
-               ├── ApiKeyField
+               ├── ApiKeyField (provider-labeled for builtin create, masked when stored on edit)
+               ├── ReplaceApiKeyButton ("Replace API key", shown when stored key exists)
                ├── BuiltinModelPolicyEditor (builtin only)
                │   ├── ModelPolicySelect
                │   ├── EnabledModelsChecklist (restricted only)
@@ -227,20 +208,13 @@ Home (app/page.tsx)
                ├── ModelsEditor (custom only)
                │   ├── ModelDraftRow[]
                │   └── AddModelButton
-               ├── HeadersEditor
-               │   ├── HeaderDraftCard[]
-               │   │   ├── HeaderNameInput
-               │   │   ├── ValueKindSelect
-               │   │   ├── PlainOrSecretValueInput
-               │   │   └── RemoveHeaderButton
-               │   └── AddHeaderButton
-               └── SubmitButton
+               └── SubmitButton ("Connect provider" for builtin create, "Save provider" otherwise)
 ```
 
 说明：
 
-1. `SettingsModal` 不是单一路由页面，而是由 `currentPage` 在一个 modal 内切换 `providers / custom-provider / connect-provider / provider-config` 四种视图。
-2. `Sidebar` 内的重命名、删除工作区、删除 session、添加目录都各自挂载对话框或确认弹窗，因此完整 UI tree 需要把这些 overlay 一并记入。
+1. `SettingsModal` 不是单一路由页面，而是由 `currentPage` 在一个 modal 内切换 `providers / provider-config` 两种视图；新建 builtin 与 custom provider 都直接进入 `provider-config`，在单页内完成首保存。
+2. `Sidebar` 内的重命名、删除工作区、删除 session 都以对话框或确认弹窗承载；添加目录在支持原生 picker 时优先走“点击加号 -> 系统目录选择框 -> 直接创建”的一步流，只有 picker 不可用、返回不可用路径或创建失败时才回退到 `AddDirectoryDialog`，因此完整 UI tree 仍需把该 fallback overlay 记入。
 3. `MainContent` 的树除了 `ConversationStream` 外，还包含完整 composer 区域；此前文档主要遗漏的是这一层和 `SettingsModal`/`Sidebar` 的细节。
 4. 根据 `git diff` 中保留的旧版设计树，`RightSidePanels`、`FileTabsPanel`、`FileTreePanel`、`MentionAwareInputField`、`FileMentionPopover`、`MentionAssistText` 已作为“设计预留，未实现”补回文档，但它们当前不在 `frontend/src` 的实际渲染路径中。
 
@@ -306,13 +280,13 @@ session/request_permission                  pendingPermissionRequest           a
 
 补充说明：
 
-1. run 完成后，`hydrateSessionAfterRun(...)` 会重新拉取 timeline，并清空该 session 的 `liveTurn`。
+1. 当前 turn 完成后，`hydrateSessionAfterRun(...)` 会重新拉取 timeline，并清空该 session 的 `liveTurn`。
 2. 因此很多运行态卡片会在 hydration 后“落盘”为 `timeline_entry`，但 `available_commands` 和 `acp_permission` 仍然只存在于 live UI。
 3. 当前前端还会在没有任何步骤卡片但 session 已进入运行态时显示 `PreStepRunLoading`，这不是 ACP message type，而是 `ConversationStream` 的额外过渡 UI。
 
 ## 5. 当前实现约束
 
-1. UI 状态仍然是 `session/turn` 语义，未引入 `activeRunId` 或独立 run timeline。
+1. UI 状态仍然是 `session/turn` 语义，未引入独立的 turn timeline 标识。
 2. 历史加载是分页式的，`ConversationStream` 顶部通过 `Load earlier messages` 触发更早 timeline 拉取，并保持滚动位置。
 3. 用户消息支持在 `ConversationEventView` 中直接编辑并触发 `session/edit_and_prompt` 重跑。
 4. `SettingsModal` 只负责 provider 配置；会话页主体的模型、reasoning、permission 选择都位于 `MainContent` 的 composer 区域。

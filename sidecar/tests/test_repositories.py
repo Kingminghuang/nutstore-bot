@@ -41,13 +41,6 @@ class RepositoriesTests(unittest.TestCase):
                     "model_id": "gpt-5.4",
                 }
             ],
-            headers=[
-                {
-                    "name": "X-Org",
-                    "value_kind": "plain",
-                    "plain_value": "team-a",
-                }
-            ],
         )
 
         session = self.repositories.sessions.create(
@@ -74,20 +67,6 @@ class RepositoriesTests(unittest.TestCase):
             title_source="heuristic",
         )
 
-        run = self.repositories.runs.create(
-            session_id=session.id,
-            workspace_id=workspace.id,
-            connection_id=provider.connection.id,
-            model_id="gpt-5.4",
-            input_text="Help me wire frontend and sidecar",
-        )
-        updated_run = self.repositories.runs.update(
-            run.id,
-            status="completed",
-            final_answer="Done",
-            completed_at=event.created_at,
-        )
-
         self.assertEqual(len(self.repositories.workspaces.list()), 1)
         self.assertEqual(len(self.repositories.providers.list_bundles()), 1)
         self.assertEqual(
@@ -97,8 +76,12 @@ class RepositoriesTests(unittest.TestCase):
             len(self.repositories.acp_event_log.list_by_session_id(session.id)), 1
         )
         self.assertTrue(provider.connection.secret_ref.startswith("sec_"))
-        self.assertEqual(updated_run.status, "completed")
-        self.assertEqual(updated_run.final_answer, "Done")
+        persisted_session = self.repositories.sessions.get_by_id(session.id)
+        self.assertEqual(persisted_session.message_count, 1)
+        self.assertEqual(
+            persisted_session.last_message_preview,
+            "Help me wire frontend and sidecar",
+        )
 
     def test_session_list_survives_reopening_database(self) -> None:
         workspace = self.repositories.workspaces.create(
@@ -129,7 +112,7 @@ class RepositoriesTests(unittest.TestCase):
         self.assertEqual(sessions[0].title, "Persisted session title")
         self.assertEqual(sessions[0].title_source, "manual")
 
-    def test_provider_health_fields_survive_reopening_database(self) -> None:
+    def test_provider_fields_survive_reopening_database(self) -> None:
         provider = self.repositories.providers.save_bundle(
             connection_data={
                 "kind": "builtin",
@@ -137,9 +120,7 @@ class RepositoriesTests(unittest.TestCase):
                 "catalog_provider_id": "openai",
                 "display_name": "OpenAI",
                 "api_key_configured": True,
-                "health_status": "connected",
-                "health_message": "Validation succeeded",
-                "last_validated_at": "2026-03-24T12:00:00Z",
+                "model_policy": "restricted",
                 "preferred_model_id": "gpt-5.4",
             },
             models=[{"source": "catalog", "model_id": "gpt-5.4"}],
@@ -153,10 +134,6 @@ class RepositoriesTests(unittest.TestCase):
         reopened_provider = reopened.providers.get_bundle_by_id_or_raise(
             provider.connection.id
         )
-        self.assertEqual(reopened_provider.connection.health_status, "connected")
-        self.assertEqual(
-            reopened_provider.connection.health_message, "Validation succeeded"
-        )
-        self.assertEqual(
-            reopened_provider.connection.last_validated_at, "2026-03-24T12:00:00Z"
-        )
+        self.assertEqual(reopened_provider.connection.model_policy, "restricted")
+        self.assertEqual(reopened_provider.connection.preferred_model_id, "gpt-5.4")
+        self.assertEqual(reopened_provider.connection.api_key_configured, True)

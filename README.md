@@ -211,6 +211,8 @@ cd frontend
 npm run tauri dev
 ```
 
+首次运行如果桌面 runtime 产物缺失，脚本会自动准备 `src-tauri/runtime` 和 `src-tauri/binaries`，因此启动可能会比平时更久。
+
 2. 检查 sidecar 健康状态（新开终端）
 
 ```bash

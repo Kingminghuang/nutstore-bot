@@ -8,7 +8,7 @@ from nsbot_sidecar.runtime.local_code_executor import LocalCodeExecutor
 class LocalCodeExecutorTests(unittest.TestCase):
     def test_executor_preserves_state_within_run(self) -> None:
         executor = LocalCodeExecutor(
-            run_id="run-1",
+            turn_id="turn-1",
             workspace_path="/tmp",
             timeout_seconds=5,
         )

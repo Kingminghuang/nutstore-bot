@@ -63,7 +63,7 @@ def extract_action_thought(model_output: Any) -> str | None:
 def project_chat_message_to_session_message(
     message: ChatMessage,
     *,
-    run_id: str,
+    turn_id: str,
     step_id: str | None,
     source_kind: str,
     internal: bool = False,
@@ -71,7 +71,7 @@ def project_chat_message_to_session_message(
     payload: dict[str, Any] = {
         "role": _message_role_to_text(message.role),
         "content": _message_content_to_text(message.content),
-        "run_id": run_id,
+        "turn_id": turn_id,
         "step_id": step_id,
         "source_kind": source_kind,
         "internal": internal,
@@ -84,7 +84,7 @@ def project_chat_message_to_session_message(
 
 
 def project_agent_memory_to_session_messages(
-    agent_memory, *, run_id: str
+    agent_memory, *, turn_id: str
 ) -> list[dict[str, Any]]:
     projected: list[dict[str, Any]] = []
     for step in agent_memory.steps:
@@ -103,7 +103,7 @@ def project_agent_memory_to_session_messages(
             projected.append(
                 project_chat_message_to_session_message(
                     message,
-                    run_id=run_id,
+                    turn_id=turn_id,
                     step_id=step_id,
                     source_kind=source_kind,
                     internal=False,
@@ -113,12 +113,12 @@ def project_agent_memory_to_session_messages(
 
 
 def project_final_answer_to_session_message(
-    final_answer: str, *, run_id: str
+    final_answer: str, *, turn_id: str
 ) -> dict[str, Any]:
     return {
         "role": "assistant",
         "content": final_answer,
-        "run_id": run_id,
+        "turn_id": turn_id,
         "step_id": None,
         "source_kind": "final_answer",
         "internal": False,

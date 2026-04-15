@@ -87,9 +87,6 @@ CREATE TABLE IF NOT EXISTS provider_connections (
   base_url TEXT,
   secret_ref TEXT NOT NULL,
   api_key_configured INTEGER NOT NULL DEFAULT 0,
-  health_status TEXT NOT NULL DEFAULT 'unknown',
-  health_message TEXT,
-  last_validated_at TEXT,
   model_policy TEXT NOT NULL DEFAULT 'all_catalog' CHECK (
     model_policy IN ('all_catalog', 'restricted', 'custom_only')
   ),
@@ -119,18 +116,6 @@ CREATE TABLE IF NOT EXISTS provider_models (
 CREATE INDEX IF NOT EXISTS idx_provider_models_connection
 ON provider_models(connection_id, sort_order, model_id);
 
-CREATE TABLE IF NOT EXISTS provider_headers (
-  id TEXT PRIMARY KEY,
-  connection_id TEXT NOT NULL,
-  name TEXT NOT NULL,
-  value_kind TEXT NOT NULL CHECK (value_kind IN ('plain', 'secret')),
-  plain_value TEXT,
-  sort_order INTEGER NOT NULL DEFAULT 0,
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL,
-  FOREIGN KEY (connection_id) REFERENCES provider_connections(id) ON DELETE CASCADE
-);
-
 CREATE TABLE IF NOT EXISTS sessions (
   id TEXT PRIMARY KEY,
   workspace_id TEXT NOT NULL,
@@ -156,28 +141,6 @@ CREATE TABLE IF NOT EXISTS sessions (
 
 CREATE INDEX IF NOT EXISTS idx_sessions_workspace_updated
 ON sessions(workspace_id, updated_at DESC);
-
-CREATE TABLE IF NOT EXISTS runs (
-  id TEXT PRIMARY KEY,
-  session_id TEXT NOT NULL,
-  workspace_id TEXT NOT NULL,
-  connection_id TEXT NOT NULL,
-  model_id TEXT NOT NULL,
-  status TEXT NOT NULL CHECK (
-    status IN ('queued', 'running', 'completed', 'failed', 'cancelled')
-  ),
-  input_text TEXT NOT NULL,
-  final_answer TEXT,
-  error_code TEXT,
-  error_message TEXT,
-  created_at TEXT NOT NULL,
-  started_at TEXT,
-  completed_at TEXT,
-  updated_at TEXT NOT NULL,
-  FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE,
-  FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE,
-  FOREIGN KEY (connection_id) REFERENCES provider_connections(id)
-);
 
 CREATE TABLE IF NOT EXISTS acp_event_log (
   id TEXT PRIMARY KEY,

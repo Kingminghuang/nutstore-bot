@@ -11,7 +11,6 @@ from nsbot_sidecar.infrastructure.local_paths import ensure_secret_dir, secrets_
 class ProviderSecretPayload:
     version: int
     api_key: str | None
-    secret_headers: dict[str, str]
 
 
 class LocalSecretStore:
@@ -33,7 +32,6 @@ class LocalSecretStore:
             {
                 "version": payload.version,
                 "apiKey": payload.api_key,
-                "secretHeaders": payload.secret_headers,
             },
             ensure_ascii=True,
         )
@@ -54,7 +52,6 @@ class LocalSecretStore:
         return ProviderSecretPayload(
             version=int(payload.get("version", 1)),
             api_key=str(payload["apiKey"]) if payload.get("apiKey") is not None else None,
-            secret_headers=_normalize_secret_headers(payload.get("secretHeaders")),
         )
 
     def delete_provider_secret(self, secret_ref: str) -> None:
@@ -67,14 +64,3 @@ class LocalSecretStore:
         if safe_ref == "":
             raise ValueError("Secret ref cannot be empty")
         return secrets_dir_path(self._ns_bot_home) / f"{safe_ref}.enc"
-
-
-def _normalize_secret_headers(value: object) -> dict[str, str]:
-    if not isinstance(value, dict):
-        return {}
-
-    result: dict[str, str] = {}
-    for key, item in value.items():
-        if isinstance(key, str) and isinstance(item, str):
-            result[key] = item
-    return result

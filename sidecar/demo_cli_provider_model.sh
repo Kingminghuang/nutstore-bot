@@ -50,9 +50,6 @@ repos.providers.save_bundle(
         "base_url": None,
         "secret_ref": "sec_prov_openai_demo",
         "api_key_configured": True,
-        "health_status": "connected",
-        "health_message": "Validation succeeded",
-        "last_validated_at": None,
         "model_policy": "restricted",
         "preferred_model_id": openai_models[1],
         "is_enabled": True,
@@ -75,7 +72,6 @@ repos.providers.save_bundle(
             "sort_order": 1,
         },
     ],
-    headers=[],
 )
 
 repos.providers.save_bundle(
@@ -89,9 +85,6 @@ repos.providers.save_bundle(
         "base_url": "https://llm.example.com/v1",
         "secret_ref": "sec_prov_custom_demo",
         "api_key_configured": True,
-        "health_status": "connected",
-        "health_message": "Validation succeeded",
-        "last_validated_at": None,
         "model_policy": "custom_only",
         "preferred_model_id": "demo-model-alpha",
         "is_enabled": True,
@@ -114,16 +107,15 @@ repos.providers.save_bundle(
             "sort_order": 1,
         },
     ],
-    headers=[],
 )
 
 store.save_provider_secret(
     "sec_prov_openai_demo",
-    ProviderSecretPayload(version=1, api_key="sk-openai-demo", secret_headers={}),
+    ProviderSecretPayload(version=1, api_key="sk-openai-demo"),
 )
 store.save_provider_secret(
     "sec_prov_custom_demo",
-    ProviderSecretPayload(version=1, api_key="sk-custom-demo", secret_headers={}),
+    ProviderSecretPayload(version=1, api_key="sk-custom-demo"),
 )
 
 db.close()

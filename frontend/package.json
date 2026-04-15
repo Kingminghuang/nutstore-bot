@@ -5,7 +5,7 @@
   "scripts": {
     "predev": "node ./scripts/generate-sidecar-config.mjs",
     "dev": "vite",
-    "tauri": "tauri",
+    "tauri": "node ./scripts/tauri.mjs",
     "prebuild": "node ./scripts/generate-sidecar-config.mjs",
     "build": "vite build",
     "build:pkg-sidecar": "node ./scripts/build-next-pkg-sidecar.mjs",

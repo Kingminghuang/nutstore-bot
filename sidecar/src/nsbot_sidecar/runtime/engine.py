@@ -18,7 +18,7 @@ class RuntimeResult(TypedDict):
 
 @dataclass(frozen=True)
 class RuntimeRequestContext:
-    run_id: str
+    turn_id: str
     user_input: str
     auth_context: dict[str, Any]
     metadata: RunMetadata
@@ -27,7 +27,7 @@ class RuntimeRequestContext:
 class RuntimeEngine(Protocol):
     def process(
         self,
-        run_id: str,
+        turn_id: str,
         user_input: str,
         auth_context: dict[str, Any],
         metadata: RunMetadata,
@@ -56,7 +56,7 @@ class SmolagentsRuntimeEngine:
 
     def process(
         self,
-        run_id: str,
+        turn_id: str,
         user_input: str,
         auth_context: dict[str, Any],
         metadata: RunMetadata,
@@ -65,7 +65,7 @@ class SmolagentsRuntimeEngine:
         permission_requester: Callable[[dict[str, Any]], str] | None = None,
     ) -> RuntimeResult:
         return self._runtime_service.process(
-            run_id=run_id,
+            turn_id=turn_id,
             user_input=user_input,
             auth_context=auth_context,
             metadata=metadata,

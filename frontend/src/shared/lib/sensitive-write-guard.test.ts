@@ -17,7 +17,7 @@ describe("detectSensitiveWriteIssues", () => {
       displayName: "MiniMax",
       baseUrl: "https://api.minimaxi.com/v1",
       models: [{ modelId: "MiniMax-M2.7-highspeed", displayName: "M2.7" }],
-      headers: [{ name: "X-Tenant", plainValue: "team-a" }],
+      preferredModelId: "MiniMax-M2.7-highspeed",
     })
 
     expect(issues).toEqual([])

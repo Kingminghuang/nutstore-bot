@@ -80,34 +80,55 @@ export function Sidebar({
   const [workspaceDialogOpen, setWorkspaceDialogOpen] = useState(false)
   const [workspaceDialogError, setWorkspaceDialogError] = useState<string | null>(null)
   const [workspaceDialogSubmitting, setWorkspaceDialogSubmitting] = useState(false)
-  const [forceManualWorkspaceEntry, setForceManualWorkspaceEntry] = useState(false)
   const [workspaceDraft, setWorkspaceDraft] = useState<WorkspaceDraft>({ name: "", path: "" })
 
   const hasNativeDirectoryPicker = canUseTauriDirectoryPicker()
-  const canUseDirectoryPicker = hasNativeDirectoryPicker && !forceManualWorkspaceEntry
-  const isManualWorkspaceEntry = !canUseDirectoryPicker
   const manualEntryHint =
     !hasNativeDirectoryPicker
       ? "This environment doesn't support direct folder selection. Please enter the directory name and path manually."
       : "Please enter the directory name and path manually."
 
-  const handleAddProjectClick = () => {
-    setForceManualWorkspaceEntry(false)
-    setWorkspaceDraft({ name: "", path: "" })
-    setWorkspaceDialogError(null)
+  const openManualWorkspaceDialog = (options?: {
+    draft?: WorkspaceDraft
+    error?: string | null
+  }) => {
+    setWorkspaceDraft(options?.draft ?? { name: "", path: "" })
+    setWorkspaceDialogError(options?.error ?? null)
     setWorkspaceDialogOpen(true)
   }
 
-  const handleDirectoryPicker = async () => {
+  const createWorkspaceFromDraft = async (draft: WorkspaceDraft) => {
+    setWorkspaceDialogSubmitting(true)
+    setWorkspaceDialogError(null)
+    try {
+      await onAddProject(draft.name.trim(), draft.path.trim())
+      setWorkspaceDraft({ name: "", path: "" })
+      setWorkspaceDialogOpen(false)
+    } catch (error) {
+      openManualWorkspaceDialog({
+        draft,
+        error: error instanceof Error ? error.message : "Failed to add directory",
+      })
+    } finally {
+      setWorkspaceDialogSubmitting(false)
+    }
+  }
+
+  const handleAddProjectClick = async () => {
+    if (workspaceDialogSubmitting) {
+      return
+    }
+
+    setWorkspaceDraft({ name: "", path: "" })
+    setWorkspaceDialogError(null)
     if (!hasNativeDirectoryPicker) {
-      setWorkspaceDialogError("Your current environment can't open a folder picker.")
+      openManualWorkspaceDialog()
       return
     }
 
     const result = await pickDirectoryWithTauriDialog()
     if (result.status === "selected") {
-      setWorkspaceDialogError(null)
-      setWorkspaceDraft(result.selection)
+      await createWorkspaceFromDraft(result.selection)
       return
     }
 
@@ -115,38 +136,21 @@ export function Sidebar({
       return
     }
 
-    setForceManualWorkspaceEntry(true)
-    setWorkspaceDialogError(
-      result.status === "error"
-        ? result.message
-        : "Unable to open the native folder picker; please manually enter the directory name and path."
-    )
+    openManualWorkspaceDialog({
+      error:
+        result.status === "error"
+          ? result.message
+          : "Unable to open the native folder picker; please manually enter the directory name and path.",
+    })
   }
 
   const submitWorkspace = async () => {
-    if (isManualWorkspaceEntry && (!workspaceDraft.name.trim() || !workspaceDraft.path.trim())) {
+    if (!workspaceDraft.name.trim() || !workspaceDraft.path.trim()) {
       setWorkspaceDialogError("Please enter both directory name and directory path.")
       return
     }
 
-    if (!isManualWorkspaceEntry && (!workspaceDraft.name.trim() || !workspaceDraft.path.trim())) {
-      setWorkspaceDialogError("Please choose a directory first.")
-      return
-    }
-
-    setWorkspaceDialogSubmitting(true)
-    setWorkspaceDialogError(null)
-    try {
-      await onAddProject(workspaceDraft.name.trim(), workspaceDraft.path.trim())
-      setWorkspaceDraft({ name: "", path: "" })
-      setWorkspaceDialogOpen(false)
-    } catch (error) {
-      setWorkspaceDialogError(
-        error instanceof Error ? error.message : "Failed to Add directory"
-      )
-    } finally {
-      setWorkspaceDialogSubmitting(false)
-    }
+    await createWorkspaceFromDraft(workspaceDraft)
   }
 
   return (
@@ -173,9 +177,10 @@ export function Sidebar({
             <Tooltip>
               <TooltipTrigger asChild>
                 <button
-                  className="p-1 hover:bg-[#efe9e4] rounded"
-                  onClick={handleAddProjectClick}
+                  className="p-1 hover:bg-[#efe9e4] rounded disabled:cursor-not-allowed disabled:opacity-60"
+                  onClick={() => void handleAddProjectClick()}
                   aria-label="Add a new directory"
+                  disabled={workspaceDialogSubmitting}
                 >
                   <FolderPlus className="w-3.5 h-3.5 text-muted-foreground" />
                 </button>
@@ -238,58 +243,36 @@ export function Sidebar({
           <DialogHeader>
             <DialogTitle>Add directory</DialogTitle>
             <DialogDescription>
-              Register a trusted local directory for sessions and runs.
+              Register a trusted local directory for sessions and local sidecar data.
             </DialogDescription>
           </DialogHeader>
 
           <div className="space-y-4">
-            {isManualWorkspaceEntry ? (
-              <>
-                <p className="text-xs text-muted-foreground">
-                  {manualEntryHint}
-                </p>
-                <div className="space-y-2">
-                  <label className="text-sm font-medium" htmlFor="workspace-name-input">Directory name</label>
-                  <input
-                    id="workspace-name-input"
-                    value={workspaceDraft.name}
-                    onChange={(event) =>
-                      setWorkspaceDraft((prev) => ({ ...prev, name: event.target.value }))
-                    }
-                    className="w-full rounded-lg border border-[#e8e4e0] bg-background px-3 py-2 text-sm"
-                    placeholder="nutstore-bot"
-                  />
-                </div>
-                <div className="space-y-2">
-                  <label className="text-sm font-medium" htmlFor="workspace-path-input">Directory path</label>
-                  <input
-                    id="workspace-path-input"
-                    value={workspaceDraft.path}
-                    onChange={(event) =>
-                      setWorkspaceDraft((prev) => ({ ...prev, path: event.target.value }))
-                    }
-                    className="w-full rounded-lg border border-[#e8e4e0] bg-background px-3 py-2 text-sm"
-                    placeholder="/path/to/workspace"
-                  />
-                </div>
-              </>
-            ) : (
-              <>
-              <Button type="button" variant="outline" onClick={() => void handleDirectoryPicker()}>
-                Select directory
-              </Button>
-                {workspaceDraft.path ? (
-                  <div className="rounded-lg border border-[#e8e4e0] bg-background px-3 py-2 text-sm">
-                    <p className="font-medium text-foreground">{workspaceDraft.name}</p>
-                    <p className="text-xs text-muted-foreground break-all">{workspaceDraft.path}</p>
-                  </div>
-                ) : (
-                  <p className="text-xs text-muted-foreground">
-                    Choose a local directory to create a workspace.
-                  </p>
-                )}
-              </>
-            )}
+            <p className="text-xs text-muted-foreground">{manualEntryHint}</p>
+            <div className="space-y-2">
+              <label className="text-sm font-medium" htmlFor="workspace-name-input">Directory name</label>
+              <input
+                id="workspace-name-input"
+                value={workspaceDraft.name}
+                onChange={(event) =>
+                  setWorkspaceDraft((prev) => ({ ...prev, name: event.target.value }))
+                }
+                className="w-full rounded-lg border border-[#e8e4e0] bg-background px-3 py-2 text-sm"
+                placeholder="nutstore-bot"
+              />
+            </div>
+            <div className="space-y-2">
+              <label className="text-sm font-medium" htmlFor="workspace-path-input">Directory path</label>
+              <input
+                id="workspace-path-input"
+                value={workspaceDraft.path}
+                onChange={(event) =>
+                  setWorkspaceDraft((prev) => ({ ...prev, path: event.target.value }))
+                }
+                className="w-full rounded-lg border border-[#e8e4e0] bg-background px-3 py-2 text-sm"
+                placeholder="/path/to/workspace"
+              />
+            </div>
             {workspaceDialogError && (
               <p className="text-sm text-destructive">{workspaceDialogError}</p>
             )}
@@ -306,11 +289,7 @@ export function Sidebar({
             </Button>
             <Button
               type="button"
-              disabled={
-                workspaceDialogSubmitting ||
-                (!isManualWorkspaceEntry &&
-                  (!workspaceDraft.name.trim() || !workspaceDraft.path.trim()))
-              }
+              disabled={workspaceDialogSubmitting}
               onClick={() => void submitWorkspace()}
             >
               {workspaceDialogSubmitting ? "Adding..." : "Add directory"}
@@ -668,7 +647,7 @@ function SessionItem({ session, isActive, onClick, onRemove }: SessionItemProps)
           <AlertDialogHeader>
             <AlertDialogTitle>Remove session?</AlertDialogTitle>
             <AlertDialogDescription>
-              This removes the session and all persisted messages, runs, and attachments from the local sidecar database.
+              This removes the session and all persisted messages and attachments from the local sidecar database.
             </AlertDialogDescription>
           </AlertDialogHeader>
           {actionError && <p className="text-sm text-destructive">{actionError}</p>}

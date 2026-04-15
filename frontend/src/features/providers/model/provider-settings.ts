@@ -15,15 +15,6 @@ export type ProviderCatalogEntry = {
   models: ProviderCatalogModel[]
 }
 
-export type ProviderHeaderDraft = {
-  id: string
-  name: string
-  valueKind: "plain" | "secret"
-  plainValue: string
-  secretValueInput: string
-  hasStoredSecret: boolean
-}
-
 export type ProviderModelDraft = {
   id: string
   modelId: string
@@ -40,15 +31,6 @@ export type ProviderConnectionSummary = {
   displayName: string
   baseUrl: string | null
   apiKeyConfigured: boolean
-  healthStatus:
-    | "unknown"
-    | "connected"
-    | "invalid_key"
-    | "timeout"
-    | "model_unavailable"
-    | "invalid_config"
-  healthMessage: string | null
-  lastValidatedAt: string | null
   preferredModelId: string | null
   enabledModelIds: string[]
   updatedAt: string
@@ -58,7 +40,6 @@ export type ProviderConnectionDetail = ProviderConnectionSummary & {
   customSlug?: string
   modelPolicy: "all_catalog" | "restricted" | "custom_only"
   customModels: ProviderModelDraft[]
-  headers: ProviderHeaderDraft[]
 }
 
 export type ModelOption = {
@@ -98,14 +79,6 @@ export type ModelOptionsResponse = {
   defaultSelection: SelectedModelRef | null
 }
 
-export type ProviderHeaderInput = {
-  id?: string
-  name: string
-  valueKind: "plain" | "secret"
-  plainValue?: string
-  secretValue?: string | null
-}
-
 export type ProviderModelInput = {
   id?: string
   modelId: string
@@ -132,7 +105,6 @@ export type CustomProviderPayload = {
   apiKey?: string | null
   preferredModelId: string | null
   customModels: ProviderModelInput[]
-  headers: ProviderHeaderInput[]
 }
 
 export type SaveProviderPayload = BuiltinProviderPayload | CustomProviderPayload
@@ -142,21 +114,23 @@ export type ProviderConnectionForm = {
   displayName: string
   baseUrl: string
   apiKey: string
+  hasStoredApiKey: boolean
   modelPolicy: "all_catalog" | "restricted" | "custom_only"
   preferredModelId: string
   models: ProviderModelDraft[]
-  headers: ProviderHeaderDraft[]
 }
+
+export const STORED_API_KEY_MASK = "************"
 
 export const createEmptyProviderConnectionForm = (): ProviderConnectionForm => ({
   providerId: "",
   displayName: "",
   baseUrl: "",
   apiKey: "",
+  hasStoredApiKey: false,
   modelPolicy: "custom_only",
   preferredModelId: "",
   models: [{ id: createLocalId("model"), modelId: "", displayName: "", source: "custom", enabled: true }],
-  headers: [],
 })
 
 export const cloneProviderConnectionForm = (
@@ -166,10 +140,10 @@ export const cloneProviderConnectionForm = (
   displayName: config.displayName,
   baseUrl: config.baseUrl,
   apiKey: config.apiKey,
+  hasStoredApiKey: config.hasStoredApiKey,
   modelPolicy: config.modelPolicy,
   preferredModelId: config.preferredModelId,
   models: config.models.map((model) => ({ ...model })),
-  headers: config.headers.map((header) => ({ ...header })),
 })
 
 export const formFromConnection = (
@@ -179,6 +153,7 @@ export const formFromConnection = (
   displayName: connection.displayName,
   baseUrl: connection.baseUrl ?? "",
   apiKey: "",
+  hasStoredApiKey: connection.apiKeyConfigured,
   modelPolicy: connection.modelPolicy,
   preferredModelId: connection.preferredModelId ?? "",
   models:
@@ -191,7 +166,6 @@ export const formFromConnection = (
           source: "catalog",
           enabled: true,
         })),
-  headers: connection.headers.map((header) => ({ ...header, plainValue: header.plainValue ?? "", secretValueInput: "" })),
 })
 
 export const isSelectedModelAvailable = (
