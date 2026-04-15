@@ -5,7 +5,7 @@
   "scripts": {
     "predev": "node ./scripts/generate-sidecar-config.mjs",
     "dev": "vite",
-    "dev:with-sidecar": "node ./scripts/dev-with-sidecar.mjs",
+    "tauri": "tauri",
     "prebuild": "node ./scripts/generate-sidecar-config.mjs",
     "build": "vite build",
     "build:pkg-sidecar": "node ./scripts/build-next-pkg-sidecar.mjs",
@@ -79,6 +79,7 @@
     "@types/node": "^22",
     "@types/react": "19.2.14",
     "@types/react-dom": "19.2.3",
+    "@tauri-apps/cli": "^2.0.0",
     "@vitejs/plugin-react": "^5.1.0",
     "@yao-pkg/pkg": "^5.14.0",
     "eslint": "^9.39.4",

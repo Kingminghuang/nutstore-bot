@@ -1,147 +1,38 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
 
-describe("sidecar-client direct requests", () => {
+const requestMock = vi.fn()
+
+vi.mock("@/shared/api/sidecar/acp-client", () => ({
+  acpClient: {
+    request: requestMock,
+  },
+}))
+
+describe("sidecar-client ACP resource requests", () => {
   afterEach(() => {
-    vi.restoreAllMocks()
+    requestMock.mockReset()
     vi.resetModules()
   })
 
-  it("requests provider catalog through sidecar transport", async () => {
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValueOnce(
-        new Response(JSON.stringify({ providers: [] }), {
-          status: 200,
-          headers: { "content-type": "application/json" },
-        })
-      )
-
-    vi.stubGlobal("fetch", fetchMock)
+  it("loads provider catalog via ACP provider/catalog", async () => {
+    requestMock.mockResolvedValueOnce({ providers: [] })
 
     const { getProviderCatalog } = await import("@/shared/api/sidecar")
     const response = await getProviderCatalog()
 
     expect(response).toEqual({ providers: [] })
-    expect(fetchMock).toHaveBeenCalledWith(
-      "http://127.0.0.1:18765/provider-catalog",
-      expect.objectContaining({
-        headers: expect.any(Headers),
-        cache: "no-store",
-      })
-    )
-    const [, options] = fetchMock.mock.calls[0] as [string, RequestInit]
-    const headers = options.headers as Headers
-    expect(headers.get("Content-Type")).toBe("application/json")
-    expect(headers.get("Authorization")).toMatch(/^Bearer\s+.+$/)
+    expect(requestMock).toHaveBeenCalledWith("provider/catalog")
   })
 
-  it("throws NSBotClientError for non-ok responses", async () => {
-    const fetchMock = vi.fn().mockResolvedValueOnce(
-      new Response(JSON.stringify({ detail: "Unauthorized" }), {
-        status: 401,
-        headers: { "content-type": "application/json" },
-      })
-    )
-
-    vi.stubGlobal("fetch", fetchMock)
-
-    const { getProviders } = await import("@/shared/api/sidecar")
-    await expect(getProviders()).rejects.toMatchObject({
-      name: "NSBotClientError",
-      status: 401,
-      message: "Unauthorized",
+  it("validates provider via ACP provider/validate", async () => {
+    requestMock.mockResolvedValueOnce({
+      ok: true,
+      providerId: "prov_openai",
+      modelId: "gpt-5.4",
+      healthStatus: "connected",
+      healthMessage: "Validation succeeded",
+      lastValidatedAt: "2026-03-27T10:00:00Z",
     })
-  })
-
-  it("formats validation error arrays into readable messages", async () => {
-    const fetchMock = vi.fn().mockResolvedValueOnce(
-      new Response(
-        JSON.stringify({
-          detail: [
-            {
-              type: "dict_type",
-              loc: ["body"],
-              msg: "Input should be a valid dictionary",
-              input: "{...}",
-            },
-          ],
-        }),
-        {
-          status: 422,
-          headers: { "content-type": "application/json" },
-        }
-      )
-    )
-
-    vi.stubGlobal("fetch", fetchMock)
-
-    const { createProvider } = await import("@/shared/api/sidecar")
-    await expect(
-      createProvider({
-        kind: "custom",
-        customSlug: "minimax",
-        displayName: "MiniMax",
-        baseUrl: "https://api.minimaxi.com/v1",
-        apiKey: "sk-test",
-        preferredModelId: "MiniMax-M2.7-highspeed",
-        customModels: [
-          {
-            modelId: "MiniMax-M2.7-highspeed",
-            displayName: "MiniMax-M2.7-highspeed",
-            enabled: true,
-          },
-        ],
-        headers: [],
-      })
-    ).rejects.toMatchObject({
-      name: "NSBotClientError",
-      status: 422,
-      message: "body: Input should be a valid dictionary",
-    })
-  })
-
-  it("redacts sensitive fields in detail string responses", async () => {
-    const fetchMock = vi.fn().mockResolvedValueOnce(
-      new Response(
-        JSON.stringify({
-          detail: 'invalid payload: {"apiKey":"sk-secret-123"}',
-        }),
-        {
-          status: 400,
-          headers: { "content-type": "application/json" },
-        }
-      )
-    )
-
-    vi.stubGlobal("fetch", fetchMock)
-
-    const { getProviders } = await import("@/shared/api/sidecar")
-    await expect(getProviders()).rejects.toMatchObject({
-      name: "NSBotClientError",
-      status: 400,
-      message: 'invalid payload: {"apiKey":"[REDACTED]"}',
-    })
-  })
-
-  it("posts provider validation through sidecar transport", async () => {
-    const fetchMock = vi.fn().mockResolvedValueOnce(
-      new Response(
-        JSON.stringify({
-          ok: true,
-          providerId: "prov_openai",
-          modelId: "gpt-5.4",
-          healthStatus: "connected",
-          healthMessage: "Validation succeeded",
-          lastValidatedAt: "2026-03-27T10:00:00Z",
-        }),
-        {
-          status: 200,
-          headers: { "content-type": "application/json" },
-        }
-      )
-    )
-
-    vi.stubGlobal("fetch", fetchMock)
 
     const { validateProvider } = await import("@/shared/api/sidecar")
     const response = await validateProvider("prov_openai", { modelId: "gpt-5.4" })
@@ -150,16 +41,48 @@ describe("sidecar-client direct requests", () => {
       ok: true,
       providerId: "prov_openai",
       modelId: "gpt-5.4",
-      healthStatus: "connected",
     })
-    expect(fetchMock).toHaveBeenCalledWith(
-      "http://127.0.0.1:18765/providers/prov_openai/validate",
-      expect.objectContaining({
-        method: "POST",
-        body: JSON.stringify({ modelId: "gpt-5.4" }),
-        headers: expect.any(Headers),
-        cache: "no-store",
-      })
-    )
+    expect(requestMock).toHaveBeenCalledWith("provider/validate", {
+      providerId: "prov_openai",
+      modelId: "gpt-5.4",
+    })
+  })
+
+  it("requests timeline through ACP timeline/list", async () => {
+    requestMock.mockResolvedValueOnce({
+      events: [
+        {
+          eventId: "acpevt_1",
+          sequenceNo: 1,
+          createdAt: "2026-04-14T10:00:00Z",
+          payload: {
+            params: {
+              update: {
+                sessionUpdate: "user_message_chunk",
+                content: {
+                  type: "text",
+                  text: "hello",
+                },
+              },
+            },
+          },
+        },
+      ],
+      pagination: { hasMore: false, nextBeforeSequence: null },
+    })
+
+    const { getSessionTimeline } = await import("@/shared/api/sidecar")
+    const response = await getSessionTimeline("sess_1", { limit: 20, beforeSequence: 100 })
+
+    expect(response.events).toHaveLength(1)
+    expect(response.events[0]).toMatchObject({
+      eventId: "acpevt_1",
+      sequenceNo: 1,
+    })
+    expect(requestMock).toHaveBeenCalledWith("timeline/list", {
+      sessionId: "sess_1",
+      limit: 20,
+      beforeSequence: 100,
+    })
   })
 })

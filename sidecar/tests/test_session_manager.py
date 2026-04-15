@@ -119,32 +119,8 @@ class SessionManagerTests(unittest.TestCase):
         self.assertEqual(loaded.updated_at, "2026-03-12T00:00:00Z")
         self.assertEqual(loaded.last_consolidated, 0)
 
-    def test_load_migrates_legacy_session_on_demand(self) -> None:
-        legacy_path = self.manager.legacy_session_path("cli:legacy")
-        legacy_path.parent.mkdir(parents=True, exist_ok=True)
-        legacy_path.write_text(
-            json.dumps(
-                {
-                    "_type": "metadata",
-                    "key": "cli:legacy",
-                    "created_at": "2026-03-11T00:00:00Z",
-                    "updated_at": "2026-03-11T00:00:00Z",
-                    "metadata": {},
-                    "last_consolidated": 0,
-                }
-            )
-            + "\n"
-            + json.dumps({"role": "user", "content": "migrated"})
-            + "\n",
-            encoding="utf-8",
-        )
-
-        loaded = self.manager.load("cli:legacy")
-
-        self.assertIsNotNone(loaded)
-        self.assertEqual(loaded.messages[0]["content"], "migrated")
-        self.assertFalse(legacy_path.exists())
-        self.assertTrue(self.manager.session_path("cli:legacy").exists())
+    def test_load_returns_none_for_missing_session(self) -> None:
+        self.assertIsNone(self.manager.load("cli:legacy"))
 
     def test_corrupt_file_returns_none_and_list_sessions_skips_invalid_entries(self) -> None:
         corrupt_path = self.manager.session_path("cli:corrupt")

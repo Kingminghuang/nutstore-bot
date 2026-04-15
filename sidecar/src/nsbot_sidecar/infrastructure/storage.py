@@ -179,34 +179,22 @@ CREATE TABLE IF NOT EXISTS runs (
   FOREIGN KEY (connection_id) REFERENCES provider_connections(id)
 );
 
-CREATE TABLE IF NOT EXISTS timeline_entries (
+CREATE TABLE IF NOT EXISTS acp_event_log (
   id TEXT PRIMARY KEY,
   session_id TEXT NOT NULL,
-  run_id TEXT,
+  turn_id TEXT,
   sequence_no INTEGER NOT NULL,
-  entry_kind TEXT NOT NULL CHECK (
-    entry_kind IN ('user_input', 'planning', 'action', 'final_answer', 'system_notice')
-  ),
-  display_role TEXT NOT NULL CHECK (
-    display_role IN ('user', 'assistant', 'system')
-  ),
-  step_id TEXT,
-  step_number INTEGER,
-  content_text TEXT,
-  content_json TEXT,
+  event_type TEXT NOT NULL,
+  event_json TEXT NOT NULL,
   created_at TEXT NOT NULL,
-  FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE,
-  FOREIGN KEY (run_id) REFERENCES runs(id) ON DELETE CASCADE
+  FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS uq_timeline_entries_session_sequence
-ON timeline_entries(session_id, sequence_no);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_acp_event_log_session_sequence
+ON acp_event_log(session_id, sequence_no);
 
-CREATE INDEX IF NOT EXISTS idx_timeline_entries_session_created
-ON timeline_entries(session_id, created_at, sequence_no);
-
-CREATE INDEX IF NOT EXISTS idx_timeline_entries_run_sequence
-ON timeline_entries(run_id, sequence_no, created_at);
+CREATE INDEX IF NOT EXISTS idx_acp_event_log_session_created
+ON acp_event_log(session_id, created_at, sequence_no);
 
 CREATE TABLE IF NOT EXISTS attachments (
   id TEXT PRIMARY KEY,

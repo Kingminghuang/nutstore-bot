@@ -3,8 +3,6 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 import {
   AlertCircle,
-  AlertTriangle,
-  ArrowDown,
   ArrowUp,
   Check,
   ChevronDown,
@@ -29,7 +27,7 @@ import type {
   Project,
   Session,
 } from "@/features/session"
-import type { ActionEntry, PlanningEntry, TimelineEntry } from "@/shared/api/sidecar"
+import type { ActionEntry, PlanningEntry, ConversationEvent } from "@/shared/api/sidecar"
 import {
   getModelOptionLabel,
   getReasoningEffortOptions,
@@ -47,13 +45,15 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/shared/ui/dropdown-menu"
+import { ConversationStream } from "./conversation-stream"
+import { normalizeConversationMessages } from "./messages/normalize-messages"
 
-const EMPTY_ENTRIES: TimelineEntry[] = []
+const EMPTY_ENTRIES: ConversationEvent[] = []
 
 interface MainContentProps {
   activeProject: Project | null
   activeSession: Session | null
-  timelineEntries: TimelineEntry[]
+  timelineEvents: ConversationEvent[]
   liveTurn: LiveTurn | null
   isDraftSession: boolean
   onSendMessage: (text: string, options: { autoAllow: boolean }) => Promise<void>
@@ -73,7 +73,7 @@ interface MainContentProps {
   isUploadingAttachment: boolean
   onAttachFiles: (files: File[]) => Promise<void>
   onRemoveAttachment: (attachmentId: string) => Promise<void>
-  onEditTimelineEntryAndRerun: (
+  onEditConversationEventAndRerun: (
     entryId: string,
     nextContent: string,
     options: { autoAllow: boolean }
@@ -90,7 +90,7 @@ interface MainContentProps {
 export function MainContent({
   activeProject,
   activeSession,
-  timelineEntries,
+  timelineEvents,
   liveTurn,
   isDraftSession,
   onSendMessage,
@@ -110,7 +110,7 @@ export function MainContent({
   isUploadingAttachment,
   onAttachFiles,
   onRemoveAttachment,
-  onEditTimelineEntryAndRerun,
+  onEditConversationEventAndRerun,
   pendingPermissionRequest,
   onAllowPermissionRequest,
   onAllowAlwaysPermissionRequest,
@@ -125,22 +125,26 @@ export function MainContent({
   const [reasoningOpen, setReasoningOpen] = useState(false)
   const [inputValue, setInputValue] = useState("")
   const [isGenerating, setIsGenerating] = useState(false)
-  const [showScrollBtn, setShowScrollBtn] = useState(false)
   const [hasAnimatedProviderNotice, setHasAnimatedProviderNotice] = useState(false)
   const [editingEntryId, setEditingEntryId] = useState<string | null>(null)
   const [editingValue, setEditingValue] = useState("")
   const [isSubmittingEdit, setIsSubmittingEdit] = useState(false)
   const [copiedEntryId, setCopiedEntryId] = useState<string | null>(null)
 
-  const scrollRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const copyResetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const pendingHistoryScrollRestore = useRef<{ previousTop: number; previousHeight: number } | null>(null)
 
-  const messages = timelineEntries ?? EMPTY_ENTRIES
+  const messages = timelineEvents ?? EMPTY_ENTRIES
   const canCompose = activeSession != null || isDraftSession
-  const hasMessages = messages.length > 0
+  const hasMessages =
+    messages.length > 0 ||
+    (liveTurn?.planEntries.length ?? 0) > 0 ||
+    (liveTurn?.toolCalls.length ?? 0) > 0 ||
+    Boolean(liveTurn?.assistantDraft.trim()) ||
+    Boolean(liveTurn?.thinkingDraft.trim()) ||
+    (liveTurn?.availableCommands.length ?? 0) > 0 ||
+    pendingPermissionRequest != null
   const hasAvailableModels = modelOptionGroups.some((group) => group.models.length > 0)
   const reasoningEffortOptions = useMemo(
     () => getReasoningEffortOptions(selectedModel, modelOptionGroups),
@@ -227,49 +231,6 @@ export function MainContent({
     )
   }, [isLoadingModels, modelOptionGroups, providerError, selectedModel])
 
-  useEffect(() => {
-    const scrollElement = scrollRef.current
-    if (!scrollElement) {
-      return
-    }
-    const restore = pendingHistoryScrollRestore.current
-    if (restore) {
-      scrollElement.scrollTop = restore.previousTop + (scrollElement.scrollHeight - restore.previousHeight)
-      pendingHistoryScrollRestore.current = null
-      return
-    }
-    scrollElement.scrollTop = scrollElement.scrollHeight
-  }, [messages])
-
-  const handleLoadEarlierTimeline = async () => {
-    if (!hasMoreHistory || isLoadingHistory) {
-      return
-    }
-    const scrollElement = scrollRef.current
-    if (scrollElement) {
-      pendingHistoryScrollRestore.current = {
-        previousTop: scrollElement.scrollTop,
-        previousHeight: scrollElement.scrollHeight,
-      }
-    }
-    try {
-      await onLoadEarlierTimeline()
-    } catch {
-      pendingHistoryScrollRestore.current = null
-    }
-  }
-
-  const handleScroll = () => {
-    const el = scrollRef.current
-    if (!el) return
-    const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
-    setShowScrollBtn(distFromBottom > 80)
-  }
-
-  const scrollToBottom = () => {
-    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" })
-  }
-
   const handleSubmit = async () => {
     const text = inputValue.trim()
     if (!text || isGenerating || !canCompose || !selectedModel) return
@@ -329,7 +290,7 @@ export function MainContent({
     }
   }
 
-  const startEditTimelineEntry = (entryId: string, content: string) => {
+  const startEditConversationEvent = (entryId: string, content: string) => {
     if (isSubmittingEdit) {
       return
     }
@@ -337,7 +298,7 @@ export function MainContent({
     setEditingValue(content)
   }
 
-  const cancelEditTimelineEntry = () => {
+  const cancelEditConversationEvent = () => {
     if (isSubmittingEdit) {
       return
     }
@@ -345,7 +306,7 @@ export function MainContent({
     setEditingValue("")
   }
 
-  const submitEditedTimelineEntry = async () => {
+  const submitEditedConversationEvent = async () => {
     if (!editingEntryId || isSubmittingEdit) {
       return
     }
@@ -355,7 +316,7 @@ export function MainContent({
     }
     setIsSubmittingEdit(true)
     try {
-      await onEditTimelineEntryAndRerun(editingEntryId, nextContent, {
+      await onEditConversationEventAndRerun(editingEntryId, nextContent, {
         autoAllow: permission === "auto_allow",
       })
       setEditingEntryId(null)
@@ -374,7 +335,15 @@ export function MainContent({
 
   const activeSessionLabel = activeSession?.title ?? "New session"
   const activeProjectLabel = activeProject?.name ?? ""
-  const isPermissionOverlayVisible = pendingPermissionRequest != null
+  const normalizedMessages = useMemo(
+    () =>
+      normalizeConversationMessages({
+        timelineEvents: messages,
+        liveTurn,
+        pendingPermissionRequest,
+      }),
+    [liveTurn, messages, pendingPermissionRequest]
+  )
 
   return (
     <main
@@ -389,97 +358,54 @@ export function MainContent({
         <h1 className="text-sm font-medium">{activeSessionLabel}</h1>
       </header>
 
-      <div ref={scrollRef} onScroll={handleScroll} className="flex-1 overflow-y-auto relative">
-        {!hasMessages ? (
-          <div className="flex flex-col items-center justify-center h-full px-6 pb-8">
-            <div className="flex flex-col items-center">
-              <div className="mb-6">
-                <CodexLogo />
-              </div>
-              <h2 className="text-3xl font-medium text-foreground mb-2">Let&apos;s start</h2>
-              {activeProjectLabel ? (
-                <span className="text-2xl text-muted-foreground">{activeProjectLabel}</span>
-              ) : (
-                <span className="text-base text-muted-foreground">Select or add a project to begin</span>
-              )}
+      <ConversationStream
+        hasMessages={hasMessages}
+        activeProjectLabel={activeProjectLabel}
+        hasMoreHistory={hasMoreHistory}
+        isLoadingHistory={isLoadingHistory}
+        onLoadEarlierTimeline={onLoadEarlierTimeline}
+        messages={normalizedMessages}
+        onAllowPermissionRequest={onAllowPermissionRequest}
+        onAllowAlwaysPermissionRequest={() => {
+          setPermission("auto_allow")
+          onAllowAlwaysPermissionRequest()
+        }}
+        onRejectPermissionRequest={onRejectPermissionRequest}
+        onCancelPermissionRequest={onCancelPermissionRequest}
+        renderConversationEvent={(entry) => (
+          <ConversationEventView
+            key={entry.id}
+            entry={entry}
+            showRunningIndicator={
+              isSessionRunning && entry.entryKind === "action" && entry.id === latestCurrentTurnActionId
+            }
+            isEditing={editingEntryId === entry.id}
+            editingValue={editingValue}
+            isSubmittingEdit={isSubmittingEdit}
+            copied={copiedEntryId === entry.id}
+            onCopyMessage={(entryId, content) => {
+              void copyMessage(entryId, content)
+            }}
+            onEditValueChange={setEditingValue}
+            onStartEdit={startEditConversationEvent}
+            onCancelEdit={cancelEditConversationEvent}
+            onSubmitEdit={() => {
+              void submitEditedConversationEvent()
+            }}
+          />
+        )}
+        renderLivePlanningEntry={(entry) => <LivePlanningStepCard key={entry.id} entry={entry} />}
+        showPreStepLoading={showPreStepLoading}
+        showGenerating={isGenerating}
+        generatingIndicator={
+          <div className="flex gap-3 items-start">
+            <div className="w-7 h-7 rounded-full bg-gradient-to-br from-[#e87b5f] to-[#8bc28f] flex-shrink-0 mt-0.5" />
+            <div className="bg-[#faf8f6] border border-[#e8e4e0] rounded-2xl px-4 py-3">
+              <ThinkingDots />
             </div>
           </div>
-        ) : (
-          <div className="max-w-2xl mx-auto px-6 py-6 space-y-4">
-            {hasMoreHistory && (
-              <div className="flex justify-center">
-                <button
-                  onClick={() => {
-                    void handleLoadEarlierTimeline()
-                  }}
-                  disabled={isLoadingHistory}
-                  className={cn(
-                    "rounded-full border px-3 py-1.5 text-xs transition-colors",
-                    isLoadingHistory
-                      ? "cursor-not-allowed border-[#e8e4e0] text-muted-foreground/60"
-                      : "border-[#e0d9d2] text-muted-foreground hover:bg-[#efe9e4] hover:text-foreground"
-                  )}
-                >
-                  {isLoadingHistory ? "Loading..." : "Load earlier messages"}
-                </button>
-              </div>
-            )}
-            {messages.map((entry) => (
-              <TimelineEntryView
-                key={entry.id}
-                entry={entry}
-                showRunningIndicator={
-                  isSessionRunning &&
-                  entry.entryKind === "action" &&
-                  entry.id === latestCurrentTurnActionId
-                }
-                isEditing={editingEntryId === entry.id}
-                editingValue={editingValue}
-                isSubmittingEdit={isSubmittingEdit}
-                copied={copiedEntryId === entry.id}
-                onCopyMessage={(entryId, content) => {
-                  void copyMessage(entryId, content)
-                }}
-                onEditValueChange={setEditingValue}
-                onStartEdit={startEditTimelineEntry}
-                onCancelEdit={cancelEditTimelineEntry}
-                onSubmitEdit={() => {
-                  void submitEditedTimelineEntry()
-                }}
-              />
-            ))}
-            {liveTurn?.planEntries.map((entry) => (
-              <LivePlanningStepCard key={entry.id} entry={entry} />
-            ))}
-            {liveTurn?.toolCalls.length ? (
-              <LiveToolCallsCard
-                toolCalls={liveTurn.toolCalls}
-                waitingForPermission={liveTurn.waitingForPermission}
-              />
-            ) : null}
-            {hasLiveAssistantDraft ? <LiveAssistantDraftRow content={liveTurn?.assistantDraft ?? ""} /> : null}
-            {showPreStepLoading ? <PreStepRunLoading /> : null}
-            {isGenerating && (
-              <div className="flex gap-3 items-start">
-                <div className="w-7 h-7 rounded-full bg-gradient-to-br from-[#e87b5f] to-[#8bc28f] flex-shrink-0 mt-0.5" />
-                <div className="bg-[#faf8f6] border border-[#e8e4e0] rounded-2xl px-4 py-3">
-                  <ThinkingDots />
-                </div>
-              </div>
-            )}
-          </div>
-        )}
-
-        {showScrollBtn && (
-          <button
-            onClick={scrollToBottom}
-            className="absolute bottom-4 right-4 p-2 bg-background border border-[#e8e4e0] rounded-full shadow-md hover:bg-[#efe9e4] transition-colors z-10"
-            aria-label="Scroll to bottom"
-          >
-            <ArrowDown className="w-4 h-4 text-muted-foreground" />
-          </button>
-        )}
-      </div>
+        }
+      />
 
       <div className="px-6 pb-4 flex-shrink-0">
         <input
@@ -495,13 +421,6 @@ export function MainContent({
           className="bg-[#faf8f6] border border-[#e8e4e0] rounded-2xl relative overflow-hidden"
           onClick={(e) => e.stopPropagation()}
         >
-          <div
-            aria-hidden={isPermissionOverlayVisible}
-            className={cn(
-              "transition-opacity duration-150",
-              isPermissionOverlayVisible ? "pointer-events-none select-none opacity-25" : "opacity-100"
-            )}
-          >
           <div className="p-4">
             {composerAttachments.length > 0 && (
               <div className="flex flex-wrap gap-1.5 mb-3">
@@ -538,7 +457,7 @@ export function MainContent({
               onChange={(e) => setInputValue(e.target.value)}
               onKeyDown={handleKeyDown}
               placeholder={canCompose ? "Ask for follow-up changes" : "Select or create a session first"}
-              disabled={!canCompose || isPermissionOverlayVisible}
+              disabled={!canCompose}
               aria-keyshortcuts="Enter"
               className="w-full bg-transparent text-sm placeholder:text-muted-foreground focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed"
             />
@@ -828,113 +747,13 @@ export function MainContent({
               )}
             </div>
           </div>
-          </div>
-
-          {pendingPermissionRequest ? (
-            <ComposerPermissionOverlay
-              request={pendingPermissionRequest}
-              onAllowOnce={onAllowPermissionRequest}
-              onAllowAlways={() => {
-                setPermission("auto_allow")
-                onAllowAlwaysPermissionRequest()
-              }}
-              onReject={onRejectPermissionRequest}
-              onCancelRun={onCancelPermissionRequest}
-            />
-          ) : null}
         </div>
       </div>
     </main>
   )
 }
 
-function ComposerPermissionOverlay({
-  request,
-  onAllowOnce,
-  onAllowAlways,
-  onReject,
-  onCancelRun,
-}: {
-  request: PendingPermissionRequest
-  onAllowOnce: () => void
-  onAllowAlways: () => void
-  onReject: () => void
-  onCancelRun: () => void
-}) {
-  return (
-    <div
-      role="alertdialog"
-      aria-labelledby="composer-permission-title"
-      aria-describedby="composer-permission-description"
-      className="absolute inset-0 z-20 flex flex-col justify-between rounded-2xl border border-[#ddd4cb] bg-[#f8f4ef]/96 p-4 backdrop-blur-[2px] sm:p-5"
-    >
-      <div className="space-y-4">
-        <div className="flex items-start gap-3">
-          <div className="mt-0.5 flex h-8 w-8 items-center justify-center rounded-full border border-[#f2c07f] bg-[#fff4e8] text-[#d88922]">
-            <AlertTriangle className="h-4 w-4" aria-hidden="true" />
-          </div>
-          <div className="min-w-0 space-y-1">
-            <h2 id="composer-permission-title" className="text-[1.05rem] font-semibold text-foreground">
-              Permission required
-            </h2>
-            <p id="composer-permission-description" className="text-sm leading-6 text-foreground/62">
-              This run is paused before a sensitive action. Choose how to proceed from the composer.
-            </p>
-          </div>
-        </div>
-
-        <div className="rounded-[1.4rem] border border-[#ddd4cb] bg-white/70 px-5 py-4 shadow-[0_1px_2px_rgba(15,23,42,0.05)]">
-          <div className="text-[1.65rem] font-medium leading-tight text-foreground/72">{request.title}</div>
-          <div className="mt-4 flex flex-wrap gap-x-6 gap-y-2 text-sm text-foreground/58">
-            <span className="inline-flex items-center gap-2">
-              <span className="text-[11px] uppercase tracking-[0.14em] text-foreground/42">Kind</span>
-              <span className="font-medium text-foreground/72">{request.kind}</span>
-            </span>
-            <span className="inline-flex items-center gap-2">
-              <span className="text-[11px] uppercase tracking-[0.14em] text-foreground/42">Request</span>
-              <span className="font-medium text-foreground/72">{request.toolCallId}</span>
-            </span>
-          </div>
-        </div>
-      </div>
-
-      <div className="flex flex-wrap items-center justify-between gap-3 border-t border-[#e6ddd4] pt-4">
-        <button
-          type="button"
-          onClick={onCancelRun}
-          className="rounded-xl px-3 py-2 text-sm font-medium text-foreground/58 transition-colors hover:bg-[#ede4da] hover:text-foreground"
-        >
-          Cancel run
-        </button>
-        <div className="flex flex-wrap items-center justify-end gap-3">
-        <button
-          type="button"
-          onClick={onReject}
-          className="rounded-xl px-4 py-2 text-sm font-medium text-foreground/78 transition-colors hover:bg-[#ede4da] hover:text-foreground"
-        >
-          Deny
-        </button>
-        <button
-          type="button"
-          onClick={onAllowAlways}
-          className="rounded-xl border border-[#ddd4cb] bg-white/78 px-4 py-2 text-sm font-medium text-foreground shadow-sm transition-colors hover:bg-white"
-        >
-          Allow always
-        </button>
-        <button
-          type="button"
-          onClick={onAllowOnce}
-          className="rounded-xl bg-[#211c19] px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-[#3b342e]"
-        >
-          Allow once
-        </button>
-        </div>
-      </div>
-    </div>
-  )
-}
-
-function TimelineEntryView({
+function ConversationEventView({
   entry,
   showRunningIndicator,
   copied,
@@ -947,7 +766,7 @@ function TimelineEntryView({
   onCancelEdit,
   onSubmitEdit,
 }: {
-  entry: TimelineEntry
+  entry: ConversationEvent
   showRunningIndicator: boolean
   copied: boolean
   isEditing: boolean
@@ -1075,8 +894,7 @@ function TimelineEntryView({
 
 function PlanningStepCard({ step }: { step: PlanningEntry }) {
   return (
-    <div className="rounded-2xl border border-[#e8e4e0] bg-[#fcfaf8] px-4 py-3">
-      <div className="mb-2 text-xs uppercase tracking-[0.12em] text-foreground/45">Planning step</div>
+    <div className="pl-1">
       <AgentMessageContent content={step.contentText ?? ""} />
     </div>
   )
@@ -1084,9 +902,8 @@ function PlanningStepCard({ step }: { step: PlanningEntry }) {
 
 function LivePlanningStepCard({ entry }: { entry: LiveTurn["planEntries"][number] }) {
   return (
-    <div className="rounded-2xl border border-[#e8e4e0] bg-[#fcfaf8] px-4 py-3">
-      <div className="mb-2 flex items-center justify-between text-xs uppercase tracking-[0.12em] text-foreground/45">
-        <span>Planning step</span>
+    <div className="space-y-1 pl-1">
+      <div className="flex items-center gap-2 text-xs text-foreground/45">
         <span>{entry.status}</span>
       </div>
       <AgentMessageContent content={entry.content} />
@@ -1117,8 +934,8 @@ function ActionStepCard({
   const hasError = Boolean(payload?.error)
 
   return (
-    <div className="rounded-2xl border border-[#e8e4e0] bg-[#fcfaf8] px-4 py-3 space-y-3">
-      <div className="text-xs uppercase tracking-[0.12em] text-foreground/45">Step {step.stepNumber}</div>
+    <div className="space-y-2 pl-1">
+      <div className="text-xs text-foreground/45">Step {step.stepNumber}</div>
       {thoughtText ? (
         <CollapsiblePanel
           label="Thought"
@@ -1132,14 +949,20 @@ function ActionStepCard({
       ) : null}
       {hasToolCalls ? (
         <CollapsiblePanel
-          label="Tool calls"
+          label="View Steps"
           open={showToolCallsPanel}
           onToggle={() => setShowToolCallsPanel((current) => !current)}
         >
-          <div className="rounded-xl border border-[#e8e4e0] bg-background px-3 py-2 text-sm text-foreground/80 space-y-2">
+          <div className="space-y-1 text-sm text-foreground/70">
             {visibleToolCalls.map((toolCall, index) => (
-              <div key={`${toolCall.name}-${index}`} className="whitespace-pre-wrap">
-                {toolCall.name}({toolCall.argumentsText})
+              <div
+                key={`${toolCall.name}-${index}`}
+                className="flex items-center gap-2 whitespace-nowrap overflow-hidden"
+              >
+                <span className="h-1.5 w-1.5 rounded-full bg-[#5aa35a] flex-shrink-0" />
+                <span className="truncate">
+                  {toolCall.name} {toolCall.argumentsText}
+                </span>
               </div>
             ))}
           </div>
@@ -1199,9 +1022,10 @@ function CollapsiblePanel({
       <button
         type="button"
         onClick={onToggle}
-        className="text-xs uppercase tracking-[0.12em] text-foreground/45 hover:text-foreground/70 transition-colors"
+        className="inline-flex items-center gap-1 text-sm text-foreground/55 hover:text-foreground/75 transition-colors"
       >
-        {open ? `Hide ${label}` : `Show ${label}`}
+        <span>{open ? "v" : ">"}</span>
+        <span>{label}</span>
       </button>
       {open ? children : null}
     </div>
@@ -1349,82 +1173,5 @@ function StepRunningIndicator() {
       <ThinkingDots />
       <span className="text-xs text-foreground/60">Running...</span>
     </div>
-  )
-}
-
-function PreStepRunLoading() {
-  return (
-    <div className="flex gap-3 items-start" data-testid="pre-step-run-loading">
-      <div className="w-7 h-7 rounded-full bg-gradient-to-br from-[#e87b5f] to-[#8bc28f] flex-shrink-0 mt-0.5" />
-      <div className="bg-[#faf8f6] border border-[#e8e4e0] rounded-2xl px-4 py-3">
-        <ThinkingDots />
-      </div>
-    </div>
-  )
-}
-
-function LiveToolCallsCard({
-  toolCalls,
-  waitingForPermission,
-}: {
-  toolCalls: LiveTurn["toolCalls"]
-  waitingForPermission: boolean
-}) {
-  return (
-    <div className="rounded-2xl border border-[#e8e4e0] bg-[#fcfaf8] px-4 py-3 space-y-3">
-      <div className="flex items-center justify-between text-xs uppercase tracking-[0.12em] text-foreground/45">
-        <span>Tool calls</span>
-        {waitingForPermission ? <span>Waiting for permission</span> : null}
-      </div>
-      <div className="space-y-2">
-        {toolCalls.map((toolCall) => (
-          <div
-            key={toolCall.toolCallId}
-            className="flex items-center justify-between rounded-xl border border-[#e8e4e0] bg-background px-3 py-2 text-sm"
-          >
-            <div className="min-w-0">
-              <div className="font-medium text-foreground/85">{toolCall.title}</div>
-              <div className="text-xs text-foreground/50">{toolCall.kind}</div>
-            </div>
-            <div className="text-xs uppercase tracking-[0.08em] text-foreground/55">{toolCall.status}</div>
-          </div>
-        ))}
-      </div>
-    </div>
-  )
-}
-
-function LiveAssistantDraftRow({ content }: { content: string }) {
-  return (
-    <div className="flex gap-3 items-start" data-testid="live-assistant-draft">
-      <div className="w-7 h-7 rounded-full bg-gradient-to-br from-[#e87b5f] to-[#8bc28f] flex-shrink-0 mt-0.5" />
-      <div className="flex-1 min-w-0">
-        <AgentMessageContent content={content} />
-      </div>
-    </div>
-  )
-}
-
-function CodexLogo() {
-  return (
-    <svg width="64" height="64" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
-      <path
-        d="M32 8C18.745 8 8 18.745 8 32C8 45.255 18.745 56 32 56C45.255 56 56 45.255 56 32C56 18.745 45.255 8 32 8Z"
-        stroke="currentColor"
-        strokeWidth="2.5"
-        strokeLinecap="round"
-        fill="none"
-      />
-      <path
-        d="M20 28C20 28 24 32 32 32C40 32 44 28 44 28"
-        stroke="currentColor"
-        strokeWidth="2.5"
-        strokeLinecap="round"
-      />
-      <circle cx="22" cy="24" r="2" fill="currentColor" />
-      <circle cx="42" cy="24" r="2" fill="currentColor" />
-      <path d="M12 18C14 14 18 12 18 12" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-      <path d="M52 18C50 14 46 12 46 12" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-    </svg>
   )
 }

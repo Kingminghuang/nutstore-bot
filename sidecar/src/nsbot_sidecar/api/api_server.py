@@ -1,20 +1,14 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
-import importlib.util
 import os
 from dataclasses import dataclass
 from pathlib import Path
 
 from fastapi import (
-    BackgroundTasks,
     FastAPI,
-    File,
     HTTPException,
-    Query,
     Request,
-    UploadFile,
-    WebSocket,
 )
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
@@ -31,7 +25,6 @@ from nsbot_sidecar.infrastructure.secret_store import LocalSecretStore
 from nsbot_sidecar.infrastructure.storage import connect_database
 from nsbot_sidecar.application.timeline_service import TimelineService
 from nsbot_sidecar.runtime.workspace_sidecar_indexer import WorkspaceSidecarIndexer
-from nsbot_sidecar.api.acp_ws import AcpWebSocketSession
 
 
 DEFAULT_HOST = "127.0.0.1"
@@ -61,15 +54,6 @@ def ensure_local_host(host: str) -> None:
         raise ValueError("NSBot host must bind to localhost")
 
 
-def detect_websocket_backend() -> str:
-    for module_name, backend in (("websockets", "websockets"), ("wsproto", "wsproto")):
-        if importlib.util.find_spec(module_name) is not None:
-            return backend
-    raise RuntimeError(
-        'NSBot sidecar requires a WebSocket backend. Install "websockets" or "wsproto".'
-    )
-
-
 def create_app(config: ApiServerConfig | None = None) -> FastAPI:
     cfg = config or ApiServerConfig()
     ensure_local_host(cfg.host)
@@ -87,7 +71,7 @@ def create_app(config: ApiServerConfig | None = None) -> FastAPI:
         attachment_store=AttachmentStore(cfg.ns_bot_home),
         timeline_service=TimelineService(
             sessions=repositories.sessions,
-            timeline_entries=repositories.timeline_entries,
+            acp_event_log=repositories.acp_event_log,
         ),
         workspace_sidecar_indexer=WorkspaceSidecarIndexer(),
     )
@@ -116,11 +100,6 @@ def create_app(config: ApiServerConfig | None = None) -> FastAPI:
     app.state.session_service = session_service
     app.state.secret_store = LocalSecretStore(cfg.ns_bot_home)
     install_log_redaction_filter()
-
-    @app.websocket("/acp/ws")
-    async def acp_ws(websocket: WebSocket):
-        session = AcpWebSocketSession(websocket, app.state)
-        await session.run()
 
     @app.exception_handler(RequestValidationError)
     async def request_validation_exception_handler(
@@ -170,153 +149,6 @@ def create_app(config: ApiServerConfig | None = None) -> FastAPI:
             "version": cfg.version,
         }
 
-    @app.get("/provider-catalog")
-    def get_provider_catalog(request: Request) -> dict[str, object]:
-        return request.app.state.provider_service.catalog_payload()
-
-    @app.get("/providers")
-    def get_providers(request: Request) -> dict[str, list[dict[str, object]]]:
-        return request.app.state.provider_service.list_connections_payload()
-
-    @app.get("/model-options")
-    def get_model_options(request: Request) -> dict[str, object]:
-        return request.app.state.provider_service.model_options_payload()
-
-    @app.get("/workspaces")
-    def get_workspaces() -> dict[str, list[dict[str, object]]]:
-        return session_service.list_workspaces_payload()
-
-    @app.post("/workspaces")
-    def create_workspace(
-        payload: dict[str, object], background_tasks: BackgroundTasks
-    ) -> dict[str, object]:
-        return session_service.create_workspace(
-            payload, background_tasks=background_tasks
-        )
-
-    @app.patch("/workspaces/{workspace_id}")
-    def update_workspace(
-        workspace_id: str, payload: dict[str, object]
-    ) -> dict[str, object]:
-        return session_service.update_workspace(workspace_id, payload)
-
-    @app.delete("/workspaces/{workspace_id}", status_code=204)
-    def delete_workspace(workspace_id: str) -> None:
-        session_service.delete_workspace(workspace_id)
-
-    @app.get("/workspaces/{workspace_id}/sessions")
-    def get_workspace_sessions(workspace_id: str) -> dict[str, list[dict[str, object]]]:
-        return session_service.list_sessions_payload(workspace_id)
-
-    @app.get("/workspaces/{workspace_id}/sidecar-index/status")
-    def get_workspace_sidecar_index_status(
-        workspace_id: str,
-    ) -> dict[str, object]:
-        return session_service.workspace_sidecar_index_status_payload(workspace_id)
-
-    @app.post("/workspaces/{workspace_id}/sessions")
-    def create_workspace_session(
-        workspace_id: str, payload: dict[str, object]
-    ) -> dict[str, object]:
-        return session_service.create_session(workspace_id, payload)
-
-    @app.get("/workspaces/{workspace_id}/draft-attachments")
-    def get_workspace_draft_attachments(
-        workspace_id: str,
-    ) -> dict[str, list[dict[str, object]]]:
-        return session_service.list_draft_attachments_payload(workspace_id)
-
-    @app.post("/workspaces/{workspace_id}/draft-attachments")
-    async def create_workspace_draft_attachment(
-        workspace_id: str,
-        file: UploadFile = File(...),
-    ) -> dict[str, object]:
-        payload = await file.read()
-        return session_service.create_draft_attachment(
-            workspace_id,
-            file_name=file.filename or "attachment",
-            mime_type=file.content_type or "application/octet-stream",
-            payload=payload,
-        )
-
-    @app.delete(
-        "/workspaces/{workspace_id}/draft-attachments/{draft_attachment_id}",
-        status_code=204,
-    )
-    def delete_workspace_draft_attachment(
-        workspace_id: str, draft_attachment_id: str
-    ) -> None:
-        session_service.delete_draft_attachment(workspace_id, draft_attachment_id)
-
-    @app.patch("/sessions/{session_id}")
-    def update_session(
-        session_id: str, payload: dict[str, object]
-    ) -> dict[str, object]:
-        return session_service.update_session(session_id, payload)
-
-    @app.delete("/sessions/{session_id}", status_code=204)
-    def delete_session(session_id: str) -> None:
-        session_service.delete_session(session_id)
-
-    @app.get("/sessions/{session_id}/timeline")
-    def get_session_timeline(
-        session_id: str,
-        limit: int | None = Query(default=None, ge=1),
-        before_sequence: int | None = Query(default=None, alias="beforeSequence", ge=1),
-    ) -> dict[str, object]:
-        return session_service.list_timeline_payload(
-            session_id,
-            limit=limit,
-            before_sequence=before_sequence,
-        )
-
-    @app.get("/sessions/{session_id}/attachments")
-    def get_session_attachments(session_id: str) -> dict[str, list[dict[str, object]]]:
-        return session_service.list_attachments_payload(session_id)
-
-    @app.post("/sessions/{session_id}/attachments")
-    async def create_session_attachment(
-        session_id: str,
-        file: UploadFile = File(...),
-    ) -> dict[str, object]:
-        payload = await file.read()
-        return session_service.create_attachment(
-            session_id,
-            file_name=file.filename or "attachment",
-            mime_type=file.content_type or "application/octet-stream",
-            payload=payload,
-        )
-
-    @app.delete("/sessions/{session_id}/attachments/{attachment_id}", status_code=204)
-    def delete_session_attachment(session_id: str, attachment_id: str) -> None:
-        session_service.delete_attachment(session_id, attachment_id)
-
-    @app.post("/providers")
-    def create_provider(
-        payload: dict[str, object], request: Request
-    ) -> dict[str, object]:
-        return request.app.state.provider_service.create_provider(payload)
-
-    @app.patch("/providers/{provider_id}")
-    def update_provider(
-        provider_id: str, payload: dict[str, object], request: Request
-    ) -> dict[str, object]:
-        return request.app.state.provider_service.update_provider(provider_id, payload)
-
-    @app.delete("/providers/{provider_id}", status_code=204)
-    def delete_provider(provider_id: str, request: Request) -> None:
-        request.app.state.provider_service.delete_provider(provider_id)
-
-    @app.post("/providers/{provider_id}/validate")
-    def validate_provider(
-        provider_id: str,
-        request: Request,
-        payload: dict[str, object] | None = None,
-    ) -> dict[str, object]:
-        return request.app.state.provider_service.validate_provider(
-            provider_id, payload
-        )
-
     return app
 
 
@@ -339,6 +171,11 @@ def publish_service_discovery(
 
 
 def main() -> int:
+    if os.environ.get("NSBOT_ACP_TRANSPORT", "").strip().lower() == "stdio":
+        from nsbot_sidecar.api.acp_stdio import main as acp_stdio_main
+
+        return acp_stdio_main()
+
     import uvicorn
 
     host = os.environ.get("NS_BOT_HOST", DEFAULT_HOST)
@@ -364,7 +201,6 @@ def main() -> int:
         create_app(config),
         host=config.host,
         port=config.port,
-        ws=detect_websocket_backend(),
     )
     return 0
 

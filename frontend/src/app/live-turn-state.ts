@@ -1,6 +1,6 @@
 import type { SelectedModelRef } from "@/features/providers"
 import type { LiveTurn, Session } from "@/features/session"
-import type { TimelineEntry } from "@/shared/api/sidecar"
+import { projectConversationEvents, type ConversationEvent, type TimelineEvent } from "@/shared/api/sidecar"
 
 export type LiveTurnStateBySession = Record<string, LiveTurn>
 
@@ -17,11 +17,13 @@ export type PermissionRequestOutcome = {
 
 export function createEmptyLiveTurn(): LiveTurn {
   return {
-    optimisticEntries: [],
+    optimisticEvents: [],
     truncatedAfterSequence: null,
     assistantDraft: "",
+    thinkingDraft: "",
     planEntries: [],
     toolCalls: [],
+    availableCommands: [],
     waitingForPermission: false,
   }
 }
@@ -44,7 +46,7 @@ export function updateLiveTurnBySession(
   }
 }
 
-export function createOptimisticUserEntry(sessionId: string, text: string): TimelineEntry {
+export function createOptimisticUserEntry(sessionId: string, text: string): ConversationEvent {
   return {
     id: `live-user-${sessionId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     sessionId,
@@ -78,7 +80,7 @@ export function createLocalSession(
     lastMessagePreview: text,
     activeConnectionId: selectedModel.connectionId,
     activeModelId: selectedModel.modelId,
-    timelineEntries: [],
+    timelineEvents: [],
     hasMoreHistory: false,
     nextBeforeSequence: null,
     isLoadingHistory: false,
@@ -99,20 +101,24 @@ export function upsertSession(
   return sessions.map((session) => (session.id === nextSession.id ? nextSession : session))
 }
 
-export function mergeTimelineEntriesWithLiveTurn(
-  timelineEntries: TimelineEntry[],
+export function mergeTimelineEventsWithLiveTurn(
+  timelineEvents: TimelineEvent[],
   liveTurn: LiveTurn | null
-): TimelineEntry[] {
+): ConversationEvent[] {
+  const projectedEvents = projectConversationEvents(
+    timelineEvents[0]?.sessionId ?? liveTurn?.optimisticEvents[0]?.sessionId ?? "",
+    timelineEvents
+  )
   if (!liveTurn) {
-    return timelineEntries
+    return projectedEvents
   }
 
   const persistedEntries =
     liveTurn.truncatedAfterSequence == null
-      ? timelineEntries
-      : timelineEntries.filter((entry) => entry.sequenceNo < liveTurn.truncatedAfterSequence)
+      ? projectedEvents
+      : projectedEvents.filter((entry) => entry.sequenceNo < liveTurn.truncatedAfterSequence)
 
-  const optimisticEntries = liveTurn.optimisticEntries.filter((entry) => {
+  const optimisticEvents = liveTurn.optimisticEvents.filter((entry) => {
     return !persistedEntries.some(
       (persisted) =>
         persisted.entryKind === entry.entryKind &&
@@ -121,7 +127,7 @@ export function mergeTimelineEntriesWithLiveTurn(
     )
   })
 
-  return [...persistedEntries, ...optimisticEntries]
+  return [...persistedEntries, ...optimisticEvents]
 }
 
 export function applyAssistantDraftChunk(currentDraft: string, incomingText: string): string {

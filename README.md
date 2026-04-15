@@ -2,8 +2,8 @@
 
 本项目由两个子系统组成：
 
-- `frontend`：Vite + React 前端应用（直连本地 sidecar）
-- `sidecar`：Python FastAPI 本地服务（提供会话、运行、Provider 等能力）
+- `frontend`：Vite + React 前端应用（通过 Tauri IPC 与 ACP bridge 通信）
+- `sidecar`：Python 本地 agent 进程（ACP JSON-RPC 2.0，stdio 传输）
 
 ## 环境要求
 
@@ -35,48 +35,27 @@ uv sync
 
 ## 本地开发
 
-### 一键联调（推荐）
+### 桌面联调（唯一入口）
 
 在 `frontend` 目录执行：
 
 ```bash
-npm run dev:with-sidecar
+npm run tauri dev
 ```
 
-该命令会同时启动：
+当前仓库只支持桌面端 Tauri 联调。前端与 sidecar 的业务交互只通过 Tauri IPC 转发 ACP JSON-RPC；sidecar 对外 HTTP 仅保留 `/health`。
 
-- sidecar：`uv run python -m nsbot_sidecar.api.api_server`（默认 `127.0.0.1:18765`）
-- frontend：`vite`（默认 `localhost:13000`）
+补充说明：
 
-Windows 说明：
+- `npm run dev` 仅用于纯 UI 预览，不包含桌面 ACP bridge。
+- sidecar 生命周期由 Tauri 桌面壳托管（stdio 子进程），不再推荐手动并行启动前后端业务链路。
 
-- 在 Git Bash、PowerShell、cmd 中都可以直接运行 `npm run dev:with-sidecar`
-- 若 `uv` 未加入 `PATH`，请先确认 `uv --version` 可以正常执行
-- sidecar 的本地数据默认写入 `%APPDATA%\NutstoreBot`；如需自定义，可设置 `NS_BOT_HOME`
+### ACP 会话与历史语义（硬切后）
 
-### 分开启动（可选）
-
-先启动 sidecar：
-
-```bash
-cd sidecar
-uv run python -m nsbot_sidecar.api.api_server
-```
-
-Windows 补充：
-
-- 直接在 Git Bash、PowerShell、cmd 中运行上面的命令即可，不依赖 `run_cli.sh`
-- `sidecar/run_cli.sh` 是 Bash 辅助脚本，更适合类 Unix 环境
-- Windows 下如需读取 `sidecar/.env` 并一键调用 CLI，可运行 `powershell -ExecutionPolicy Bypass -File .\run_cli.ps1`
-- 如需指定其他 env 文件，可运行 `powershell -ExecutionPolicy Bypass -File .\run_cli.ps1 -EnvFile .\dev.env`
-- 也可以直接运行 `uv run python -m nsbot_sidecar.cli ...`
-
-再启动 frontend：
-
-```bash
-cd frontend
-npm run dev
-```
+- `session/load`：仅附着/建立会话上下文，不回放历史。
+- `timeline/list`：历史事件分页查询（event-native，`events + pagination`）。
+- `session/update`：唯一增量通知总线（streaming chunk / plan / tool_call / permission / available_commands）。
+- `session/edit_and_prompt`：锚点参数为 `eventId`（不再使用 `entryId`）。
 
 ### CLI 管理 workspace/session
 
@@ -223,51 +202,32 @@ cd sidecar
 uv run pytest
 ```
 
-桌面运行时冒烟测试（验证 Tauri 进程能拉起 Next/Python sidecar，macOS）：
+## Dev E2E Smoke Test（桌面联调冒烟）
 
-```bash
-bash ./scripts/smoke-test-tauri-standalone-next-macos.sh
-```
-
-## Dev E2E Smoke Test（本地联调冒烟）
-
-当前仓库没有内置 Playwright/Cypress 自动化 e2e 配置，`dev e2e test` 采用本地联调冒烟流程。
-
-1) 启动联调环境
+1. 启动桌面联调环境
 
 ```bash
 cd frontend
-npm run dev:with-sidecar
+npm run tauri dev
 ```
 
-2) 检查 sidecar 健康状态（新开终端）
+2. 检查 sidecar 健康状态（新开终端）
 
 ```bash
-curl http://127.0.0.1:8765/health
+curl http://127.0.0.1:18765/health
 ```
 
-预期返回包含：
+3. 在桌面窗口手工验证
 
-```json
-{"ok":true,"service":"sidecar"}
-```
+- workspace 列表可加载
+- session history 可加载
+- 发送一条消息可收到 stream / tool call / permission 卡片
+- edit rerun 正常工作
 
-3) 检查前端代理到 sidecar 的链路（新开终端）
-
-```bash
-curl "http://localhost:3000/api/sidecar/proxy?path=%2Fprovider-catalog"
-```
-
-预期返回 provider catalog 的 JSON（说明 Next API route -> sidecar 代理链路正常）。
-
-4) 浏览器手工验证
-
-- 打开 `http://localhost:3000`
-- 确认页面可加载、无阻断性报错
-- 执行一条核心业务路径（例如配置 Provider / 进入会话页面 / 发起一次请求）
+说明：前端不会直连 `ws://.../acp/ws`，也不会直连 sidecar 业务 REST。
 
 ## 常见问题
 
 - `uv: command not found`：请先安装 `uv`
-- 3000 或 8765 端口被占用：释放端口后重试
-- sidecar 未启动导致前端接口失败：优先检查 `dev:with-sidecar` 终端日志
+- 13000 端口被占用（Tauri devUrl）：释放端口后重试
+- 桌面 ACP bridge 未建立：优先检查 `npm run tauri dev` 控制台和 Tauri 窗口日志

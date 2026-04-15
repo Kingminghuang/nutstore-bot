@@ -1,6 +1,6 @@
 /** @type {import('next').NextConfig} */
 const lifecycleEvent = process.env.npm_lifecycle_event
-const enableDevIndicators = lifecycleEvent === "dev" || lifecycleEvent === "dev:with-sidecar"
+const enableDevIndicators = lifecycleEvent === "dev" || lifecycleEvent === "tauri"
 
 const nextConfig = {
   output: "standalone",

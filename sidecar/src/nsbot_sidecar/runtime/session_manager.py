@@ -123,14 +123,10 @@ class SessionManager:
         self.ns_bot_home = Path(ns_bot_home).expanduser().resolve()
         self.sessions_dir = self.ns_bot_home / "sessions"
         self.sessions_dir.mkdir(parents=True, exist_ok=True)
-        self.legacy_sessions_dir = Path.home() / ".nanobot" / "sessions"
         self.cache: dict[str, Session] = {}
 
     def session_path(self, key: str) -> Path:
         return self.sessions_dir / f"{safe_session_key(key)}.jsonl"
-
-    def legacy_session_path(self, key: str) -> Path:
-        return self.legacy_sessions_dir / f"{safe_session_key(key)}.jsonl"
 
     def get_or_create(self, key: str) -> Session:
         if key in self.cache:
@@ -145,17 +141,6 @@ class SessionManager:
 
     def load(self, key: str) -> Session | None:
         path = self.session_path(key)
-
-        if not path.exists():
-            legacy = self.legacy_session_path(key)
-            if legacy.exists():
-                try:
-                    path.parent.mkdir(parents=True, exist_ok=True)
-                    legacy.replace(path)
-                except Exception:
-                    LOGGER.exception(
-                        "Failed to migrate legacy session", extra={"session_key": key}
-                    )
 
         if not path.exists():
             return None

@@ -1,4 +1,6 @@
-import { sidecarRequest } from "./sidecar-transport"
+import { invoke } from "@tauri-apps/api/core"
+import { listen, type UnlistenFn } from "@tauri-apps/api/event"
+import { isTauriRuntime } from "./sidecar-transport"
 
 export type JsonRpcId = number
 
@@ -13,57 +15,63 @@ export type AcpServerNotification = {
   params?: Record<string, unknown>
 }
 
-type PendingCall = {
-  resolve: (value: unknown) => void
-  reject: (reason?: unknown) => void
-}
-
 type ServerRequestHandler = (request: AcpServerRequest) => Promise<unknown>
 type NotificationHandler = (notification: AcpServerNotification) => void
 
 class AcpClient {
-  private socket: WebSocket | null = null
-  private nextId = 1
-  private pending = new Map<JsonRpcId, PendingCall>()
   private requestHandler: ServerRequestHandler | null = null
   private notificationHandler: NotificationHandler | null = null
   private readyPromise: Promise<void> | null = null
+  private unlisten: UnlistenFn | null = null
+  private readonly subscriberId = "frontend-main"
 
   async connect(): Promise<void> {
     if (this.readyPromise) {
       return this.readyPromise
     }
-    this.readyPromise = this.openSocket()
+    this.readyPromise = this.connectIpc()
     return this.readyPromise
   }
 
-  private async openSocket(): Promise<void> {
-    const response = await sidecarRequest("/health", { method: "GET" })
-    if (!response.ok) {
-      throw new Error("sidecar unavailable")
+  private async connectIpc(): Promise<void> {
+    if (!isTauriRuntime()) {
+      throw new Error("ACP IPC bridge is only available in Tauri runtime")
     }
+    await invoke<boolean>("acp_connect")
+    await invoke<void>("acp_subscribe", { subscriberId: this.subscriberId })
 
-    const base = new URL(response.url)
-    base.protocol = base.protocol === "https:" ? "wss:" : "ws:"
-    base.pathname = "/acp/ws"
-    base.search = ""
-
-    await new Promise<void>((resolve, reject) => {
-      const ws = new WebSocket(base.toString())
-      this.socket = ws
-      ws.onopen = () => resolve()
-      ws.onerror = () => reject(new Error("failed to connect acp websocket"))
-      ws.onmessage = (event) => {
-        this.handleIncoming(String(event.data))
-      }
-      ws.onclose = () => {
-        for (const [, call] of this.pending) {
-          call.reject(new Error("acp websocket closed"))
+    this.unlisten = await listen<{ id?: unknown; method?: unknown; params?: unknown }>(
+      "acp-notification",
+      (event) => {
+        const payload = event.payload
+        const method = typeof payload?.method === "string" ? payload.method : ""
+        if (!method) {
+          return
         }
-        this.pending.clear()
-        this.socket = null
-        this.readyPromise = null
+        const requestId = typeof payload?.id === "number" ? payload.id : null
+        if (requestId != null) {
+          void this.handleServerRequest({
+            id: requestId,
+            method,
+            params: payload.params as Record<string, unknown> | undefined,
+          })
+          return
+        }
+        this.notificationHandler?.({
+          method,
+          params: payload.params as Record<string, unknown> | undefined,
+        })
       }
+    )
+  }
+
+  private async handleServerRequest(request: AcpServerRequest): Promise<void> {
+    const result = this.requestHandler
+      ? await this.requestHandler(request)
+      : { outcome: { outcome: "cancelled" } }
+    await invoke("acp_respond", {
+      requestId: request.id,
+      result,
     })
   }
 
@@ -77,97 +85,26 @@ class AcpClient {
 
   async request<T>(method: string, params?: Record<string, unknown>): Promise<T> {
     await this.connect()
-    const id = this.nextId++
-    const payload: Record<string, unknown> = {
-      jsonrpc: "2.0",
-      id,
-      method,
-    }
-    if (params) {
-      payload.params = params
-    }
-
-    const response = await new Promise<unknown>((resolve, reject) => {
-      this.pending.set(id, { resolve, reject })
-      this.socket?.send(JSON.stringify(payload))
-    })
-
-    return response as T
+    const result = await invoke<unknown>("acp_request", { method, params: params ?? null })
+    return result as T
   }
 
   async notify(method: string, params?: Record<string, unknown>): Promise<void> {
     await this.connect()
-    const payload: Record<string, unknown> = {
-      jsonrpc: "2.0",
-      method,
-    }
-    if (params) {
-      payload.params = params
-    }
-    this.socket?.send(JSON.stringify(payload))
+    await invoke("acp_request", { method, params: params ?? null })
   }
 
-  private handleIncoming(raw: string): void {
-    let payload: any
-    try {
-      payload = JSON.parse(raw)
-    } catch {
+  async disconnect(): Promise<void> {
+    if (!isTauriRuntime()) {
       return
     }
-
-    if (payload && payload.id != null && payload.method == null) {
-      const pending = this.pending.get(Number(payload.id))
-      if (!pending) {
-        return
-      }
-      this.pending.delete(Number(payload.id))
-      if (payload.error) {
-        pending.reject(new Error(String(payload.error.message || "rpc error")))
-      } else {
-        pending.resolve(payload.result)
-      }
-      return
+    if (this.unlisten) {
+      this.unlisten()
+      this.unlisten = null
     }
-
-    if (payload && payload.method && payload.id != null) {
-      if (!this.requestHandler) {
-        this.socket?.send(
-          JSON.stringify({
-            jsonrpc: "2.0",
-            id: payload.id,
-            result: { outcome: { outcome: "cancelled" } },
-          })
-        )
-        return
-      }
-      void this.requestHandler({ id: Number(payload.id), method: String(payload.method), params: payload.params })
-        .then((result) => {
-          this.socket?.send(
-            JSON.stringify({
-              jsonrpc: "2.0",
-              id: payload.id,
-              result,
-            })
-          )
-        })
-        .catch((error) => {
-          this.socket?.send(
-            JSON.stringify({
-              jsonrpc: "2.0",
-              id: payload.id,
-              error: {
-                code: -32000,
-                message: error instanceof Error ? error.message : "request handling failed",
-              },
-            })
-          )
-        })
-      return
-    }
-
-    if (payload && payload.method && payload.id == null) {
-      this.notificationHandler?.({ method: String(payload.method), params: payload.params })
-    }
+    await invoke<void>("acp_unsubscribe", { subscriberId: this.subscriberId })
+    await invoke<boolean>("acp_disconnect")
+    this.readyPromise = null
   }
 }
 

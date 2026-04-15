@@ -1,4 +1,4 @@
-import type { TimelineEntry } from "@/shared/api/sidecar"
+import type { ConversationEvent, TimelineEvent } from "@/shared/api/sidecar"
 
 export type Session = {
   id: string
@@ -12,7 +12,7 @@ export type Session = {
   lastMessagePreview: string | null
   activeConnectionId: string | null
   activeModelId: string | null
-  timelineEntries: TimelineEntry[]
+  timelineEvents: TimelineEvent[]
   hasMoreHistory: boolean
   nextBeforeSequence: number | null
   isLoadingHistory: boolean
@@ -32,15 +32,34 @@ export type LiveToolCall = {
   toolCallId: string
   title: string
   kind: string
-  status: "pending" | "completed" | "failed" | "cancelled"
+  status: "pending" | "in_progress" | "completed" | "failed" | "cancelled"
+  rawInput?: unknown
+  content?: Array<{
+    type: "content" | "diff"
+    content?: {
+      type: "text"
+      text: string
+    }
+    path?: string
+    oldText?: string | null
+    newText?: string
+  }>
+}
+
+export type AvailableCommand = {
+  name: string
+  description: string
+  hint?: string
 }
 
 export type LiveTurn = {
-  optimisticEntries: TimelineEntry[]
+  optimisticEvents: ConversationEvent[]
   truncatedAfterSequence: number | null
   assistantDraft: string
+  thinkingDraft: string
   planEntries: LivePlanEntry[]
   toolCalls: LiveToolCall[]
+  availableCommands: AvailableCommand[]
   waitingForPermission: boolean
 }
 

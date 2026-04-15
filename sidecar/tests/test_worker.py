@@ -134,7 +134,6 @@ class WorkerRequestParsingTests(unittest.TestCase):
         stdout = StringIO()
         fake_result = {
             "deltas": [],
-            "timeline_entries": [],
             "session_messages": [],
             "final_answer": "ok",
         }

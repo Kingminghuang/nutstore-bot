@@ -5,21 +5,35 @@ import {
   type ProviderConnectionDetail,
   type SaveProviderPayload,
 } from "@/features/providers"
-import { redactSensitive, redactText } from "@/shared/lib"
-import { sidecarRequest } from "./sidecar-transport"
+import { acpClient } from "./acp-client"
 
-export type TimelineEntryUsage = {
+export type ConversationEventUsage = {
   inputTokens: number
   outputTokens: number
   reasoningTokens: number
 }
 
-export type TimelineEntryBase = {
+export type TimelineEvent = {
+  eventId: string
+  sessionId: string
+  turnId: string | null
+  sequenceNo: number
+  eventType: string
+  payload: {
+    params?: {
+      update?: Record<string, unknown>
+    }
+  } | null
+  createdAt: string
+}
+
+export type ConversationEventBase = {
   id: string
+  eventId?: string
   sessionId: string
   runId: string | null
   sequenceNo: number
-  entryKind: "user_input" | "planning" | "action" | "final_answer" | "system_notice"
+  entryKind: "user_input" | "planning" | "action" | "final_answer" | "thinking" | "system_notice"
   displayRole: "user" | "assistant" | "system"
   stepId: string | null
   stepNumber: number | null
@@ -27,17 +41,17 @@ export type TimelineEntryBase = {
   createdAt: string
 }
 
-export type UserInputEntry = TimelineEntryBase & {
+export type UserInputEntry = ConversationEventBase & {
   entryKind: "user_input"
   displayRole: "user"
 }
 
-export type PlanningEntry = TimelineEntryBase & {
+export type PlanningEntry = ConversationEventBase & {
   entryKind: "planning"
   displayRole: "assistant"
 }
 
-export type ActionEntry = TimelineEntryBase & {
+export type ActionEntry = ConversationEventBase & {
   entryKind: "action"
   displayRole: "assistant"
   contentJson: {
@@ -51,17 +65,17 @@ export type ActionEntry = TimelineEntryBase & {
     codeAction: string | null
     actionOutput: unknown | null
     error: string | null
-    usage: TimelineEntryUsage
+    usage: ConversationEventUsage
     durationMs: number
   } | null
 }
 
-export type FinalAnswerEntry = TimelineEntryBase & {
+export type FinalAnswerEntry = ConversationEventBase & {
   entryKind: "final_answer"
   displayRole: "assistant"
 }
 
-export type SystemNoticeEntry = TimelineEntryBase & {
+export type SystemNoticeEntry = ConversationEventBase & {
   entryKind: "system_notice"
   displayRole: "system"
   contentJson: {
@@ -69,59 +83,279 @@ export type SystemNoticeEntry = TimelineEntryBase & {
   } | null
 }
 
-export type TimelineEntry =
+export type ThinkingEntry = ConversationEventBase & {
+  entryKind: "thinking"
+  displayRole: "assistant"
+}
+
+export type ConversationEvent =
   | UserInputEntry
   | PlanningEntry
   | ActionEntry
   | FinalAnswerEntry
+  | ThinkingEntry
   | SystemNoticeEntry
 
 export type TimelineResponse = {
-  entries: TimelineEntry[]
+  events: TimelineEvent[]
   pagination?: {
     hasMore?: boolean
     nextBeforeSequence?: number | null
   }
 }
 
-class NSBotClientError extends Error {
-  status: number
+function asString(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value : null
+}
 
-  constructor(message: string, status: number) {
-    super(message)
-    this.name = "NSBotClientError"
-    this.status = status
+function asNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null
+}
+
+export function projectConversationEvents(sessionId: string, events: TimelineEvent[]): ConversationEvent[] {
+  const normalized: ConversationEvent[] = []
+  const actionIndexByToolCallId = new Map<string, number>()
+  let fallbackSequence = 0
+
+  for (const event of events) {
+    fallbackSequence += 1
+    const eventId = asString(event.eventId) ?? `evt_${sessionId}_${fallbackSequence}`
+    const sequenceNo = asNumber(event.sequenceNo) ?? fallbackSequence
+    const createdAt = asString(event.createdAt) ?? new Date(0).toISOString()
+    const update = event.payload?.params?.update
+    if (!update || typeof update !== "object") {
+      continue
+    }
+    const sessionUpdate = asString((update as { sessionUpdate?: unknown }).sessionUpdate)
+    if (!sessionUpdate) {
+      continue
+    }
+
+    if (sessionUpdate === "user_message_chunk" || sessionUpdate === "agent_message_chunk") {
+      const content =
+        update && typeof update === "object"
+          ? (update as { content?: unknown }).content
+          : undefined
+      const text =
+        content && typeof content === "object"
+          ? asString((content as { text?: unknown }).text)
+          : null
+      if (!text) {
+        continue
+      }
+      normalized.push({
+        id: eventId,
+        eventId,
+        sessionId,
+        runId: null,
+        sequenceNo,
+        entryKind: sessionUpdate === "user_message_chunk" ? "user_input" : "final_answer",
+        displayRole: sessionUpdate === "user_message_chunk" ? "user" : "assistant",
+        stepId: null,
+        stepNumber: null,
+        contentText: text,
+        createdAt,
+      })
+      continue
+    }
+
+    if (sessionUpdate === "agent_thought_chunk") {
+      const content = (update as { content?: unknown }).content
+      const text =
+        content && typeof content === "object"
+          ? asString((content as { text?: unknown }).text)
+          : null
+      if (!text) {
+        continue
+      }
+      const previous = normalized[normalized.length - 1]
+      if (previous?.entryKind === "thinking") {
+        previous.contentText = `${previous.contentText ?? ""}${text}`
+        continue
+      }
+      normalized.push({
+        id: eventId,
+        eventId,
+        sessionId,
+        runId: null,
+        sequenceNo,
+        entryKind: "thinking",
+        displayRole: "assistant",
+        stepId: null,
+        stepNumber: null,
+        contentText: text,
+        createdAt,
+      })
+      continue
+    }
+
+    if (sessionUpdate === "plan") {
+      const entries =
+        update && typeof update === "object" ? (update as { entries?: unknown }).entries : null
+      if (!Array.isArray(entries)) {
+        continue
+      }
+      entries.forEach((entry, idx) => {
+        if (!entry || typeof entry !== "object") {
+          return
+        }
+        const content = asString((entry as { content?: unknown }).content)
+        if (!content) {
+          return
+        }
+        normalized.push({
+          id: `${eventId}:plan:${idx}`,
+          sessionId,
+          runId: null,
+          sequenceNo,
+          entryKind: "planning",
+          displayRole: "assistant",
+          stepId: null,
+          stepNumber: null,
+          contentText: content,
+          createdAt,
+        })
+      })
+      continue
+    }
+
+    if (sessionUpdate === "tool_call") {
+      const toolCallId = asString((update as { toolCallId?: unknown }).toolCallId) ?? eventId
+      const title = asString((update as { title?: unknown }).title) ?? "Tool call"
+      const rawInput = (update as { rawInput?: unknown }).rawInput
+      const rawInputText =
+        typeof rawInput === "string"
+          ? rawInput
+          : rawInput == null
+            ? null
+            : JSON.stringify(rawInput)
+      const entry: ActionEntry = {
+        id: `${eventId}:action`,
+        sessionId,
+        runId: null,
+        sequenceNo,
+        entryKind: "action",
+        displayRole: "assistant",
+        stepId: null,
+        stepNumber: null,
+        contentText: null,
+        createdAt,
+        contentJson: {
+          thought: null,
+          toolCalls: [
+            {
+              id: toolCallId,
+              name: title,
+              argumentsText: rawInputText ?? "",
+            },
+          ],
+          observations: [],
+          codeAction: null,
+          actionOutput: null,
+          error: null,
+          usage: {
+            inputTokens: 0,
+            outputTokens: 0,
+            reasoningTokens: 0,
+          },
+          durationMs: 0,
+        },
+      }
+      actionIndexByToolCallId.set(toolCallId, normalized.length)
+      normalized.push(entry)
+      continue
+    }
+
+    if (sessionUpdate === "tool_call_update") {
+      const toolCallId = asString((update as { toolCallId?: unknown }).toolCallId)
+      if (!toolCallId) {
+        continue
+      }
+      const content = (update as { content?: unknown }).content
+      const observations: string[] = []
+      if (Array.isArray(content)) {
+        for (const item of content) {
+          if (!item || typeof item !== "object") {
+            continue
+          }
+          const payload = (item as { content?: unknown }).content
+          const text =
+            payload && typeof payload === "object"
+              ? asString((payload as { text?: unknown }).text)
+              : null
+          if (text) {
+            observations.push(text)
+          }
+        }
+      }
+      const existingIndex = actionIndexByToolCallId.get(toolCallId)
+      if (existingIndex != null) {
+        const existing = normalized[existingIndex]
+        if (existing.entryKind === "action" && existing.contentJson) {
+          existing.contentJson.observations = [...existing.contentJson.observations, ...observations]
+        }
+        continue
+      }
+      normalized.push({
+        id: `${eventId}:action-update`,
+        sessionId,
+        runId: null,
+        sequenceNo,
+        entryKind: "action",
+        displayRole: "assistant",
+        stepId: null,
+        stepNumber: null,
+        contentText: null,
+        createdAt,
+        contentJson: {
+          thought: null,
+          toolCalls: [{ id: toolCallId, name: "Tool call", argumentsText: "" }],
+          observations,
+          codeAction: null,
+          actionOutput: null,
+          error: null,
+          usage: {
+            inputTokens: 0,
+            outputTokens: 0,
+            reasoningTokens: 0,
+          },
+          durationMs: 0,
+        },
+      })
+    }
   }
+
+  return normalized
 }
 
 export async function getProviderCatalog(): Promise<ProviderCatalogResponse> {
-  return sidecarFetch<ProviderCatalogResponse>("/provider-catalog")
+  return acpClient.request<ProviderCatalogResponse>("provider/catalog")
 }
 
 export async function getProviders(): Promise<ProviderConnectionsResponse> {
-  return sidecarFetch<ProviderConnectionsResponse>("/providers")
+  return acpClient.request<ProviderConnectionsResponse>("provider/list")
 }
 
 export async function getModelOptions(): Promise<ModelOptionsResponse> {
-  return sidecarFetch<ModelOptionsResponse>("/model-options")
+  return acpClient.request<ModelOptionsResponse>("provider/model_options")
 }
 
 export async function createProvider(
   payload: SaveProviderPayload
 ): Promise<ProviderConnectionDetail> {
-  return sidecarFetch<ProviderConnectionDetail>("/providers", {
-    method: "POST",
-    body: JSON.stringify(payload),
-  })
+  return acpClient.request<ProviderConnectionDetail>(
+    "provider/create",
+    payload as Record<string, unknown>
+  )
 }
 
 export async function updateProvider(
   providerId: string,
   payload: Partial<SaveProviderPayload>
 ): Promise<ProviderConnectionDetail> {
-  return sidecarFetch<ProviderConnectionDetail>(`/providers/${providerId}`, {
-    method: "PATCH",
-    body: JSON.stringify(payload),
+  return acpClient.request<ProviderConnectionDetail>("provider/update", {
+    providerId,
+    ...(payload as Record<string, unknown>),
   })
 }
 
@@ -140,82 +374,97 @@ export async function validateProvider(
   healthMessage: string | null
   lastValidatedAt: string | null
 }> {
-  return sidecarFetch(`/providers/${providerId}/validate`, {
-    method: "POST",
-    body: JSON.stringify(payload ?? {}),
+  return acpClient.request("provider/validate", {
+    providerId,
+    ...((payload ?? {}) as Record<string, unknown>),
   })
 }
 
 export async function deleteProvider(providerId: string): Promise<void> {
-  await sidecarFetch<void>(`/providers/${providerId}`, { method: "DELETE" })
+  await acpClient.request("provider/delete", { providerId })
 }
 
 export async function getSessionTimeline(
   sessionId: string,
   options?: { limit?: number; beforeSequence?: number | null }
 ): Promise<TimelineResponse> {
-  const params = new URLSearchParams()
-  if (options?.limit != null) {
-    params.set("limit", String(options.limit))
-  }
-  if (options?.beforeSequence != null) {
-    params.set("beforeSequence", String(options.beforeSequence))
-  }
-  const query = params.size > 0 ? `?${params.toString()}` : ""
-  return sidecarFetch<TimelineResponse>(`/sessions/${sessionId}/timeline${query}`)
-}
-
-async function sidecarFetch<T>(path: string, init?: RequestInit): Promise<T> {
-  const headers = new Headers(init?.headers)
-  if (!headers.has("Content-Type")) {
-    headers.set("Content-Type", "application/json")
-  }
-
-  const response = await sidecarRequest(path, {
-    ...init,
-    headers,
+  const response = await acpClient.request<{
+    events?: TimelineEvent[]
+    pagination?: {
+      hasMore?: boolean
+      nextBeforeSequence?: number | null
+    }
+  }>("timeline/list", {
+    sessionId,
+    limit: options?.limit,
+    beforeSequence: options?.beforeSequence ?? null,
   })
 
-  if (!response.ok) {
-    const message = await readErrorMessage(response)
-    throw new NSBotClientError(message, response.status)
+  return {
+    events: Array.isArray(response.events) ? response.events : [],
+    pagination: response.pagination,
   }
-
-  if (response.status === 204) {
-    return undefined as T
-  }
-
-  return (await response.json()) as T
 }
 
-async function readErrorMessage(response: Response): Promise<string> {
-  try {
-    const payload = redactSensitive((await response.json()) as {
-      detail?: string | Array<{ loc?: unknown; msg?: unknown; type?: unknown }>
-    }) as {
-      detail?: string | Array<{ loc?: unknown; msg?: unknown; type?: unknown }>
-    }
-    if (typeof payload.detail === "string" && payload.detail) {
-      return redactText(payload.detail)
-    }
-    if (Array.isArray(payload.detail) && payload.detail.length > 0) {
-      const detailMessage = payload.detail
-        .map((item) => {
-          const location = Array.isArray(item.loc)
-            ? item.loc.map((part) => String(part)).join(".")
-            : "body"
-          const message = typeof item.msg === "string" && item.msg ? item.msg : "Validation failed"
-          return `${location}: ${message}`
-        })
-        .join("; ")
+export async function loadSession(sessionId: string): Promise<{ configOptions: Array<Record<string, unknown>> }> {
+  return acpClient.request("session/load", { sessionId })
+}
 
-      if (detailMessage) {
-        return redactText(detailMessage)
-      }
-    }
-  } catch {
-    // Ignore non-JSON errors.
-  }
+export async function listWorkspaces(): Promise<{ workspaces: Array<Record<string, unknown>> }> {
+  return acpClient.request("workspace/list")
+}
 
-  return `Request failed with status ${response.status}`
+export async function createWorkspace(payload: Record<string, unknown>) {
+  return acpClient.request("workspace/create", payload)
+}
+
+export async function updateWorkspace(workspaceId: string, payload: Record<string, unknown>) {
+  return acpClient.request("workspace/update", { workspaceId, ...payload })
+}
+
+export async function deleteWorkspace(workspaceId: string): Promise<void> {
+  await acpClient.request("workspace/delete", { workspaceId })
+}
+
+export async function listWorkspaceSessions(workspaceId: string): Promise<{ sessions: Array<Record<string, unknown>> }> {
+  return acpClient.request("workspace/sessions/list", { workspaceId })
+}
+
+export async function workspaceSidecarIndexStatus(workspaceId: string) {
+  return acpClient.request("workspace/sidecar_index/status", { workspaceId })
+}
+
+export async function listAttachments(sessionId: string): Promise<{ attachments: Array<Record<string, unknown>> }> {
+  return acpClient.request("attachment/list", { sessionId })
+}
+
+export async function createAttachment(sessionId: string, payload: Record<string, unknown>) {
+  return acpClient.request("attachment/create", { sessionId, ...payload })
+}
+
+export async function deleteAttachment(sessionId: string, attachmentId: string): Promise<void> {
+  await acpClient.request("attachment/delete", { sessionId, attachmentId })
+}
+
+export async function listDraftAttachments(workspaceId: string): Promise<{ draftAttachments: Array<Record<string, unknown>> }> {
+  return acpClient.request("draft_attachment/list", { workspaceId })
+}
+
+export async function createDraftAttachment(workspaceId: string, payload: Record<string, unknown>) {
+  return acpClient.request("draft_attachment/create", { workspaceId, ...payload })
+}
+
+export async function deleteDraftAttachment(
+  workspaceId: string,
+  draftAttachmentId: string
+): Promise<void> {
+  await acpClient.request("draft_attachment/delete", { workspaceId, draftAttachmentId })
+}
+
+export async function updateSessionMeta(sessionId: string, payload: Record<string, unknown>) {
+  return acpClient.request("session/update_meta", { sessionId, ...payload })
+}
+
+export async function deleteSession(sessionId: string): Promise<void> {
+  await acpClient.request("session/delete", { sessionId })
 }

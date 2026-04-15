@@ -35,7 +35,7 @@ class StorageTests(unittest.TestCase):
             self.assertIn("provider_models", tables)
             self.assertIn("provider_headers", tables)
             self.assertIn("sessions", tables)
-            self.assertIn("timeline_entries", tables)
+            self.assertIn("acp_event_log", tables)
             self.assertIn("attachments", tables)
             self.assertIn("draft_attachments", tables)
             self.assertIn("runs", tables)

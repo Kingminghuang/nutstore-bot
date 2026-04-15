@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import shutil
 import tempfile
 import unittest
@@ -55,18 +56,20 @@ class RepositoriesTests(unittest.TestCase):
             active_model_id="gpt-5.4",
         )
 
-        message = self.repositories.timeline_entries.append(
+        event = self.repositories.acp_event_log.append(
             session_id=session.id,
-            entry_kind="user_input",
-            display_role="user",
-            content_text="Help me wire frontend and sidecar",
+            event_type="user_message_chunk",
+            event_json=json.dumps(
+                {"sessionUpdate": "user_message_chunk", "content": {"text": "Help me wire frontend and sidecar"}},
+                ensure_ascii=False,
+            ),
         )
 
         self.repositories.sessions.touch(
             session.id,
             message_count=1,
-            last_message_preview=message.content_text,
-            last_message_at=message.created_at,
+            last_message_preview="Help me wire frontend and sidecar",
+            last_message_at=event.created_at,
             title="Wire frontend and sidecar",
             title_source="heuristic",
         )
@@ -76,13 +79,13 @@ class RepositoriesTests(unittest.TestCase):
             workspace_id=workspace.id,
             connection_id=provider.connection.id,
             model_id="gpt-5.4",
-            input_text=message.content_text or "",
+            input_text="Help me wire frontend and sidecar",
         )
         updated_run = self.repositories.runs.update(
             run.id,
             status="completed",
             final_answer="Done",
-            completed_at=message.created_at,
+            completed_at=event.created_at,
         )
 
         self.assertEqual(len(self.repositories.workspaces.list()), 1)
@@ -91,7 +94,7 @@ class RepositoriesTests(unittest.TestCase):
             len(self.repositories.sessions.list_by_workspace_id(workspace.id)), 1
         )
         self.assertEqual(
-            len(self.repositories.timeline_entries.list_by_session_id(session.id)), 1
+            len(self.repositories.acp_event_log.list_by_session_id(session.id)), 1
         )
         self.assertTrue(provider.connection.secret_ref.startswith("sec_"))
         self.assertEqual(updated_run.status, "completed")

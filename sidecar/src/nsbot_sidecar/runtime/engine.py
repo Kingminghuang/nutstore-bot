@@ -14,7 +14,6 @@ class RuntimeResult(TypedDict):
     deltas: list[dict[str, Any]]
     final_answer: str | None
     session_messages: list[dict[str, Any]]
-    timeline_entries: list[dict[str, Any]]
 
 
 @dataclass(frozen=True)

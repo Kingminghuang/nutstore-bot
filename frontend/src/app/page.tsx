@@ -7,7 +7,7 @@ import {
   applyAssistantDraftChunk,
   createLocalSession,
   createOptimisticUserEntry,
-  mergeTimelineEntriesWithLiveTurn,
+  mergeTimelineEventsWithLiveTurn,
   type LiveTurnStateBySession,
   updateLiveTurnBySession,
   upsertSession,
@@ -17,18 +17,32 @@ import { MainContent } from "@/features/runs"
 import { SettingsModal } from "@/features/settings"
 import { Sidebar } from "@/features/workspaces"
 import {
+  createAttachment,
+  createDraftAttachment,
   createProvider,
+  createWorkspace,
+  deleteAttachment,
   deleteProvider,
+  deleteDraftAttachment,
+  deleteSession,
+  deleteWorkspace,
   getModelOptions,
   getProviderCatalog,
   getProviders,
   getSessionTimeline,
+  listAttachments,
+  listDraftAttachments,
+  listWorkspaceSessions,
+  listWorkspaces,
+  loadSession,
+  projectConversationEvents,
   updateProvider,
+  updateWorkspace,
   validateProvider,
-  type TimelineEntry,
+  workspaceSidecarIndexStatus,
   acpClient,
 } from "@/shared/api/sidecar"
-import { isTauriRuntime, sidecarRequest } from "@/shared/api/sidecar/sidecar-transport"
+import { isTauriRuntime } from "@/shared/api/sidecar/sidecar-transport"
 import {
   normalizeSelectedReasoningEffort,
   type ModelOptionGroup,
@@ -49,7 +63,7 @@ import type {
 
 type ServerSession = Omit<
   Session,
-  "timelineEntries" | "hasMoreHistory" | "nextBeforeSequence" | "isLoadingHistory" | "timelineHydrationStatus"
+  "timelineEvents" | "hasMoreHistory" | "nextBeforeSequence" | "isLoadingHistory" | "timelineHydrationStatus"
 >
 
 type WorkspaceSidecarIndexStatus = {
@@ -75,7 +89,7 @@ const WORKSPACE_INDEX_POLL_MAX_ATTEMPTS = 30
 function withSessionHistoryDefaults(session: ServerSession): Session {
   return {
     ...session,
-    timelineEntries: [],
+    timelineEvents: [],
     hasMoreHistory: false,
     nextBeforeSequence: null,
     isLoadingHistory: false,
@@ -86,16 +100,16 @@ function withSessionHistoryDefaults(session: ServerSession): Session {
 function mergeSessionWithLocalHistory(
   incoming: ServerSession,
   existing: Session | undefined,
-  timelineEntries: TimelineEntry[]
+  timelineEvents: Session["timelineEvents"]
 ): Session {
   return {
     ...incoming,
-    timelineEntries,
+    timelineEvents,
     hasMoreHistory: existing?.hasMoreHistory ?? false,
     nextBeforeSequence: existing?.nextBeforeSequence ?? null,
     isLoadingHistory: existing?.isLoadingHistory ?? false,
     timelineHydrationStatus:
-      timelineEntries.length > 0 ? "loaded" : (existing?.timelineHydrationStatus ?? "loaded"),
+      timelineEvents.length > 0 ? "loaded" : (existing?.timelineHydrationStatus ?? "loaded"),
   }
 }
 
@@ -184,15 +198,15 @@ export default function Home() {
   const refreshWorkspaceState = useCallback(async () => {
     setWorkspaceError(null)
     try {
-      const workspacesResponse = await sidecarFetch<{ workspaces: WorkspaceSummary[] }>("/workspaces")
+      const workspacesResponse = (await listWorkspaces()) as { workspaces: WorkspaceSummary[] }
       const nextWorkspaces = workspacesResponse.workspaces
       setWorkspaces(nextWorkspaces)
 
       const sessionsEntries = await Promise.all(
         nextWorkspaces.map(async (workspace) => {
-          const sessionsResponse = await sidecarFetch<{ sessions: ServerSession[] }>(
-            `/workspaces/${workspace.id}/sessions`
-          )
+          const sessionsResponse = (await listWorkspaceSessions(workspace.id)) as {
+            sessions: ServerSession[]
+          }
           return [
             workspace.id,
             sessionsResponse.sessions.map((session) => withSessionHistoryDefaults(session)),
@@ -253,11 +267,13 @@ export default function Home() {
     ) => {
       setLiveTurnBySession((prev) =>
         updateLiveTurnBySession(prev, sessionId, () => ({
-          optimisticEntries: [createOptimisticUserEntry(sessionId, text)],
+          optimisticEvents: [createOptimisticUserEntry(sessionId, text)],
           truncatedAfterSequence: options?.truncatedAfterSequence ?? null,
           assistantDraft: "",
+          thinkingDraft: "",
           planEntries: [],
           toolCalls: [],
+          availableCommands: [],
           waitingForPermission: false,
         }))
       )
@@ -268,7 +284,7 @@ export default function Home() {
   const hydrateSessionAfterRun = useCallback(async (workspaceId: string, sessionId: string) => {
     const [refreshedTimeline, sessionsPayload] = await Promise.all([
       getSessionTimeline(sessionId, { limit: TIMELINE_PAGE_SIZE }),
-      sidecarFetch<{ sessions: ServerSession[] }>(`/workspaces/${workspaceId}/sessions`),
+      listWorkspaceSessions(workspaceId) as Promise<{ sessions: ServerSession[] }>,
     ])
     const refreshedSession = sessionsPayload.sessions.find((session) => session.id === sessionId)
     if (!refreshedSession) {
@@ -277,7 +293,7 @@ export default function Home() {
 
     setSessionsByWorkspace((prev) => {
       const existing = (prev[workspaceId] ?? []).find((session) => session.id === sessionId)
-      const nextSession = mergeSessionWithLocalHistory(refreshedSession, existing, refreshedTimeline.entries)
+      const nextSession = mergeSessionWithLocalHistory(refreshedSession, existing, refreshedTimeline.events)
       return {
         ...prev,
         [workspaceId]: upsertSession(prev[workspaceId] ?? [], nextSession),
@@ -379,6 +395,21 @@ export default function Home() {
         return
       }
 
+      if (sessionUpdate === "agent_thought_chunk") {
+        const content = update.content as Record<string, unknown> | undefined
+        const text = String(content?.text ?? "")
+        if (!text) {
+          return
+        }
+        setLiveTurnBySession((prev) =>
+          updateLiveTurnBySession(prev, sessionId, (liveTurn) => ({
+            ...liveTurn,
+            thinkingDraft: applyAssistantDraftChunk(liveTurn.thinkingDraft, text),
+          }))
+        )
+        return
+      }
+
       if (sessionUpdate === "plan") {
         const entries = Array.isArray(update.entries) ? update.entries : []
         setLiveTurnBySession((prev) =>
@@ -406,6 +437,36 @@ export default function Home() {
         return
       }
 
+      if (sessionUpdate === "available_commands_update") {
+        const availableCommands = Array.isArray(update.availableCommands)
+          ? update.availableCommands
+              .map((entry) => {
+                const normalized = entry as Record<string, unknown>
+                const name = String(normalized.name ?? "").trim()
+                const description = String(normalized.description ?? "").trim()
+                if (!name || !description) {
+                  return null
+                }
+                const input = normalized.input as Record<string, unknown> | null | undefined
+                const hintValue = input ? String(input.hint ?? "").trim() : ""
+                return {
+                  name,
+                  description,
+                  ...(hintValue ? { hint: hintValue } : {}),
+                }
+              })
+              .filter((entry): entry is { name: string; description: string; hint?: string } => entry != null)
+          : []
+
+        setLiveTurnBySession((prev) =>
+          updateLiveTurnBySession(prev, sessionId, (liveTurn) => ({
+            ...liveTurn,
+            availableCommands,
+          }))
+        )
+        return
+      }
+
       if (sessionUpdate === "tool_call") {
         const toolCallId = String(update.toolCallId ?? "")
         if (!toolCallId) {
@@ -413,11 +474,30 @@ export default function Home() {
         }
         setLiveTurnBySession((prev) =>
           updateLiveTurnBySession(prev, sessionId, (liveTurn) => {
+            const nextStatusRaw = String(update.status ?? "pending")
+            const nextStatus =
+              nextStatusRaw === "pending" ||
+              nextStatusRaw === "in_progress" ||
+              nextStatusRaw === "completed" ||
+              nextStatusRaw === "failed" ||
+              nextStatusRaw === "cancelled"
+                ? nextStatusRaw
+                : "pending"
             const nextToolCall = {
               toolCallId,
               title: String(update.title ?? "Tool call"),
               kind: String(update.kind ?? "other"),
-              status: "pending" as const,
+              status: nextStatus as "pending" | "in_progress" | "completed" | "failed" | "cancelled",
+              rawInput: update.rawInput,
+              content: Array.isArray(update.content)
+                ? (update.content as Array<{
+                    type: "content" | "diff"
+                    content?: { type: "text"; text: string }
+                    path?: string
+                    oldText?: string | null
+                    newText?: string
+                  }>)
+                : [],
             }
             const existingIndex = liveTurn.toolCalls.findIndex(
               (toolCall) => toolCall.toolCallId === toolCallId
@@ -453,10 +533,26 @@ export default function Home() {
             toolCalls: liveTurn.toolCalls.map((toolCall) =>
               toolCall.toolCallId === toolCallId &&
               (status === "pending" ||
+                status === "in_progress" ||
                 status === "completed" ||
                 status === "failed" ||
                 status === "cancelled")
-                ? { ...toolCall, status }
+                ? {
+                    ...toolCall,
+                    status,
+                    ...(update.rawInput !== undefined ? { rawInput: update.rawInput } : {}),
+                    ...(Array.isArray(update.content)
+                      ? {
+                          content: update.content as Array<{
+                            type: "content" | "diff"
+                            content?: { type: "text"; text: string }
+                            path?: string
+                            oldText?: string | null
+                            newText?: string
+                          }>,
+                        }
+                      : {}),
+                  }
                 : toolCall
             ),
           }))
@@ -505,8 +601,8 @@ export default function Home() {
     [activeSessionId, liveTurnBySession]
   )
   const activeTimelineEntries = useMemo(
-    () => mergeTimelineEntriesWithLiveTurn(activeSession?.timelineEntries ?? [], activeLiveTurn),
-    [activeLiveTurn, activeSession?.timelineEntries]
+    () => mergeTimelineEventsWithLiveTurn(activeSession?.timelineEvents ?? [], activeLiveTurn),
+    [activeLiveTurn, activeSession?.timelineEvents]
   )
   const isActiveSessionRunning = activeSessionId != null && pendingSessionId === activeSessionId
 
@@ -545,15 +641,18 @@ export default function Home() {
       )
     )
 
-    void getSessionTimeline(activeSessionId, { limit: TIMELINE_PAGE_SIZE })
-      .then((response) => {
+    void Promise.all([
+      loadSession(activeSessionId),
+      getSessionTimeline(activeSessionId, { limit: TIMELINE_PAGE_SIZE }),
+    ])
+      .then(([, response]) => {
         setSessionsByWorkspace((prev) => ({
           ...prev,
           [activeWorkspaceId]: (prev[activeWorkspaceId] ?? []).map((session) =>
             session.id === activeSessionId
               ? {
                   ...session,
-                  timelineEntries: response.entries,
+                  timelineEvents: response.events,
                   hasMoreHistory: response.pagination?.hasMore ?? false,
                   nextBeforeSequence: response.pagination?.nextBeforeSequence ?? null,
                   isLoadingHistory: false,
@@ -582,7 +681,7 @@ export default function Home() {
     }
 
     let cancelled = false
-    void sidecarFetch<{ attachments: ComposerAttachment[] }>(`/sessions/${activeSessionId}/attachments`)
+    void (listAttachments(activeSessionId) as Promise<{ attachments: ComposerAttachment[] }>)
       .then((response) => {
         if (cancelled) {
           return
@@ -608,9 +707,7 @@ export default function Home() {
     }
 
     let cancelled = false
-    void sidecarFetch<{ draftAttachments: DraftAttachment[] }>(
-      `/workspaces/${activeWorkspaceId}/draft-attachments`
-    )
+    void (listDraftAttachments(activeWorkspaceId) as Promise<{ draftAttachments: DraftAttachment[] }>)
       .then((response) => {
         if (cancelled) {
           return
@@ -650,11 +747,11 @@ export default function Home() {
 
       setSessionsByWorkspace((prev) =>
         updateSessionInWorkspace(prev, activeWorkspaceId, activeSessionId, (session) => {
-          const existingIds = new Set(session.timelineEntries.map((entry) => entry.id))
-          const olderEntries = response.entries.filter((entry) => !existingIds.has(entry.id))
+          const existingIds = new Set(session.timelineEvents.map((event) => event.eventId))
+          const olderEntries = response.events.filter((event) => !existingIds.has(event.eventId))
           return {
             ...session,
-            timelineEntries: [...olderEntries, ...session.timelineEntries],
+            timelineEvents: [...olderEntries, ...session.timelineEvents],
             hasMoreHistory: response.pagination?.hasMore ?? false,
             nextBeforeSequence: response.pagination?.nextBeforeSequence ?? null,
             isLoadingHistory: false,
@@ -700,9 +797,7 @@ export default function Home() {
   const pollWorkspaceSidecarIndexStatus = useCallback(async (workspaceId: string) => {
     for (let attempt = 0; attempt < WORKSPACE_INDEX_POLL_MAX_ATTEMPTS; attempt += 1) {
       try {
-        const status = await sidecarFetch<WorkspaceSidecarIndexStatus>(
-          `/workspaces/${workspaceId}/sidecar-index/status`
-        )
+        const status = (await workspaceSidecarIndexStatus(workspaceId)) as WorkspaceSidecarIndexStatus
         if (status.status === "indexed" || status.status === "disabled") {
           return
         }
@@ -720,10 +815,7 @@ export default function Home() {
 
   const handleAddProject = useCallback(
     async (name: string, path: string) => {
-      const createdWorkspace = await sidecarFetch<WorkspaceSummary>("/workspaces", {
-        method: "POST",
-        body: JSON.stringify({ name, realPath: path, pathLabel: path }),
-      })
+      const createdWorkspace = (await createWorkspace({ name, realPath: path, pathLabel: path })) as WorkspaceSummary
       await refreshWorkspaceState()
       if (createdWorkspace?.id) {
         void pollWorkspaceSidecarIndexStatus(createdWorkspace.id)
@@ -871,15 +963,10 @@ export default function Home() {
         const uploads = files.map(async (file) => {
           const formData = new FormData()
           formData.append("file", file)
-          return sidecarFetch<ComposerAttachment | DraftAttachment>(
-            activeSessionId
-              ? `/sessions/${activeSessionId}/attachments`
-              : `/workspaces/${activeWorkspaceId}/draft-attachments`,
-            {
-              method: "POST",
-              body: formData,
-            }
-          )
+            const payload = await readAttachmentPayload(formData)
+            return activeSessionId
+              ? createAttachment(activeSessionId, payload)
+              : createDraftAttachment(activeWorkspaceId!, payload)
         })
 
         const created = await Promise.all(uploads)
@@ -925,9 +1012,7 @@ export default function Home() {
         return
       }
       if (activeSessionId) {
-        await sidecarFetch<void>(`/sessions/${activeSessionId}/attachments/${attachmentId}`, {
-          method: "DELETE",
-        })
+        await deleteAttachment(activeSessionId, attachmentId)
         setAttachmentsBySession((prev) => ({
           ...prev,
           [activeSessionId]: (prev[activeSessionId] ?? []).filter((attachment) => attachment.id !== attachmentId),
@@ -937,9 +1022,7 @@ export default function Home() {
       if (!activeWorkspaceId) {
         return
       }
-      await sidecarFetch<void>(`/workspaces/${activeWorkspaceId}/draft-attachments/${attachmentId}`, {
-        method: "DELETE",
-      })
+      await deleteDraftAttachment(activeWorkspaceId, attachmentId)
       setDraftAttachmentsByWorkspace((prev) => ({
         ...prev,
         [activeWorkspaceId]: (prev[activeWorkspaceId] ?? []).filter((attachment) => attachment.id !== attachmentId),
@@ -948,15 +1031,20 @@ export default function Home() {
     [activeDraftWorkspaceId, activeSessionId, activeWorkspaceId]
   )
 
-  const handleEditTimelineEntryAndRerun = useCallback(
+  const handleEditConversationEventAndRerun = useCallback(
     async (entryId: string, nextContent: string, options: { autoAllow: boolean }) => {
       if (!activeSessionId || !activeWorkspaceId || !selectedModel || !activeSession) {
         return
       }
 
-      const editedEntry = activeSession.timelineEntries.find((entry) => entry.id === entryId)
+      const editedEntry = projectConversationEvents(activeSession.id, activeSession.timelineEvents).find(
+        (entry) => entry.id === entryId
+      )
       if (!editedEntry) {
         throw new Error("Message not found")
+      }
+      if (!editedEntry.eventId) {
+        throw new Error("Message event anchor is missing")
       }
 
       setRunError(null)
@@ -976,7 +1064,7 @@ export default function Home() {
       try {
         await acpClient.request("session/edit_and_prompt", {
           sessionId: activeSessionId,
-          entryId,
+          eventId: editedEntry.eventId,
           prompt: [{ type: "text", text: nextContent }],
           _meta: {
             autoAllow: options.autoAllow,
@@ -1004,7 +1092,7 @@ export default function Home() {
 
   const handleRemoveProject = useCallback(
     async (projectId: string) => {
-      await sidecarFetch(`/workspaces/${projectId}`, { method: "DELETE" })
+      await deleteWorkspace(projectId)
       setWorkspaces((prev) => prev.filter((workspace) => workspace.id !== projectId))
       setSessionsByWorkspace((prev) => {
         const next = { ...prev }
@@ -1038,7 +1126,7 @@ export default function Home() {
 
   const handleRemoveSession = useCallback(
     async (sessionId: string, workspaceId: string) => {
-      await sidecarFetch<void>(`/sessions/${sessionId}`, { method: "DELETE" })
+      await deleteSession(sessionId)
 
       let nextActiveSessionId: string | null = activeSessionId
       setSessionsByWorkspace((prev) => {
@@ -1151,10 +1239,7 @@ export default function Home() {
           void handleNewSession(projectId)
         }}
         onRenameProject={async (projectId, name, pathLabel) => {
-          await sidecarFetch(`/workspaces/${projectId}`, {
-            method: "PATCH",
-            body: JSON.stringify({ name, pathLabel }),
-          })
+          await updateWorkspace(projectId, { name, pathLabel })
           await refreshWorkspaceState()
         }}
         onSessionChange={(sessionId, projectId) => {
@@ -1174,7 +1259,7 @@ export default function Home() {
       <MainContent
         activeProject={activeProject}
         activeSession={activeSession}
-        timelineEntries={activeTimelineEntries}
+        timelineEvents={activeTimelineEntries}
         liveTurn={activeLiveTurn}
         isDraftSession={isDraftSessionActive}
         onSendMessage={handleSendMessage}
@@ -1209,7 +1294,7 @@ export default function Home() {
         }
         onAttachFiles={handleAttachFiles}
         onRemoveAttachment={handleRemoveAttachment}
-        onEditTimelineEntryAndRerun={handleEditTimelineEntryAndRerun}
+        onEditConversationEventAndRerun={handleEditConversationEventAndRerun}
         pendingPermissionRequest={pendingPermissionRequest}
         onAllowPermissionRequest={() => {
           resolvePermissionRequest(
@@ -1227,7 +1312,7 @@ export default function Home() {
             {
               outcome: {
                 outcome: "selected",
-                optionId: getPendingPermissionOptionId("allow_once", "allow-once"),
+                optionId: getPendingPermissionOptionId("allow_always", "allow-always"),
               },
             },
             pendingPermissionRequest?.sessionId
@@ -1273,50 +1358,28 @@ export default function Home() {
   )
 }
 
-async function sidecarFetch<T>(path: string, init?: RequestInit): Promise<T> {
-  const headers = new Headers(init?.headers)
-  if (!(init?.body instanceof FormData) && !headers.has("Content-Type")) {
-    headers.set("Content-Type", "application/json")
+async function readAttachmentPayload(
+  body: BodyInit | null | undefined
+): Promise<{ fileName: string; mimeType: string; payloadBase64: string }> {
+  if (!(body instanceof FormData)) {
+    throw new NSBotRequestError("Attachment upload requires multipart form data", 400, null)
   }
-
-  const response = await sidecarRequest(path, {
-    ...init,
-    headers,
-  })
-
-  if (!response.ok) {
-    const payload = (await response.json().catch(() => null)) as Record<string, unknown> | null
-    const isSessionDeleteNotAllowed =
-      response.status === 405 && init?.method === "DELETE" && path.startsWith("/sessions/")
-    const fallbackMessage = isSessionDeleteNotAllowed
-      ? "Session deletion is not supported by the connected sidecar yet. Please restart or upgrade the sidecar service, then try again."
-      : `Request failed with status ${response.status}`
-    throw new NSBotRequestError(
-      typeof payload?.detail === "string"
-        ? payload.detail === "Method Not Allowed" && isSessionDeleteNotAllowed
-          ? fallbackMessage
-          : payload.detail
-        : fallbackMessage,
-      response.status,
-      payload
-    )
+  const fileValue = body.get("file")
+  const file = fileValue instanceof File ? fileValue : null
+  if (!file) {
+    throw new NSBotRequestError("Attachment upload is missing file payload", 400, null)
   }
-
-  if (response.status === 204) {
-    return undefined as T
+  const arrayBuffer = await file.arrayBuffer()
+  const bytes = new Uint8Array(arrayBuffer)
+  let binary = ""
+  const chunkSize = 0x8000
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+    const chunk = bytes.subarray(offset, offset + chunkSize)
+    binary += String.fromCharCode(...chunk)
   }
-
-  return (await response.json()) as T
-}
-
-class NSBotRequestError extends Error {
-  status: number
-  payload: Record<string, unknown> | null
-
-  constructor(message: string, status: number, payload: Record<string, unknown> | null) {
-    super(message)
-    this.name = "NSBotRequestError"
-    this.status = status
-    this.payload = payload
+  return {
+    fileName: file.name || "attachment",
+    mimeType: file.type || "application/octet-stream",
+    payloadBase64: btoa(binary),
   }
 }

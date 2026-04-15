@@ -28,7 +28,7 @@ const project = {
       lastMessagePreview: "hello",
       activeConnectionId: "prov_openai",
       activeModelId: "gpt-5.4",
-      timelineEntries: [],
+      timelineEvents: [],
       hasMoreHistory: false,
       nextBeforeSequence: null,
       isLoadingHistory: false,

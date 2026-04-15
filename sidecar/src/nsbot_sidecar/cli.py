@@ -199,7 +199,7 @@ def _build_session_service(ns_bot_home_value: str):
         attachment_store=AttachmentStore(ns_bot_home_value),
         timeline_service=TimelineService(
             sessions=repositories.sessions,
-            timeline_entries=repositories.timeline_entries,
+            acp_event_log=repositories.acp_event_log,
         ),
         workspace_sidecar_indexer=WorkspaceSidecarIndexer(),
     )

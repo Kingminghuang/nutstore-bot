@@ -7,8 +7,8 @@
 - `scripts/`: macOS desktop build/smoke scripts. `templates/` contains runtime template resources.
 
 ## Build, Test, and Development Commands
-- Frontend dev with sidecar (recommended): `cd frontend && npm run dev:with-sidecar`
-- Frontend only: `cd frontend && npm run dev`
+- Desktop dev (recommended): `cd frontend && npm run tauri dev`
+- Frontend only (UI-only, no ACP desktop bridge): `cd frontend && npm run dev`
 - Frontend production build: `cd frontend && npm run build`
 - Frontend preview: `cd frontend && npm run start`
 - Frontend tests: `cd frontend && npm test`
@@ -61,13 +61,21 @@
 - When designing solutions and writing code, there is no need to consider any compatibility or migration issues; functionality can be implemented entirely according to one's own vision. One is free to utilize the latest language features and libraries without any restrictions. This maximizes creativity and efficiency, enabling the rapid achievement of objectives.
 
 ## Runtime Architecture Guardrails
-- Runtime call sites (`sidecar/src/nsbot_sidecar/api/acp_ws.py`, `sidecar/src/nsbot_sidecar/cli.py`, and `sidecar/src/nsbot_sidecar/runtime/worker.py`) must use the `nsbot_sidecar.runtime.engine` interface and must not directly instantiate `AgentRuntimeService`.
+- Runtime call sites (`sidecar/src/nsbot_sidecar/api/acp_session.py`, `sidecar/src/nsbot_sidecar/cli.py`, and `sidecar/src/nsbot_sidecar/runtime/worker.py`) must use the `nsbot_sidecar.runtime.engine` interface and must not directly instantiate `AgentRuntimeService`.
 - Keep `execute_runtime_run` as a compatibility entry point, but keep it as a thin forwarder to RuntimeEngine.
-- Runtime interaction is ACP-only (`/acp/ws`). Do not add or restore `/runs*` endpoints, `run.*` event streams, or HTTP `edit-and-run` style paths.
-- For websocket or transport-layer changes, do not stop at route-level tests; verify a real Uvicorn process can start and complete an actual `/acp/ws` handshake.
+- Runtime interaction is ACP-only over stdio (desktop path: Frontend IPC -> Tauri bridge -> sidecar stdio JSON-RPC). Do not add or restore `/runs*` endpoints, `run.*` event streams, HTTP `edit-and-run` style paths, or frontend-facing ACP websocket routes.
+- `sidecar` HTTP surface is probe-only (`/health`). Any new business capability must go through ACP methods, not REST.
+- For transport-layer changes, do not stop at in-process app tests; verify real stdio ACP handshake and request/notification flow through the bridge.
 - For runtime-layer changes, run at minimum:
   - `cd sidecar && uv run pytest tests/test_runtime_service.py tests/test_worker.py tests/test_api_server.py`
 - When adding a new runtime backend, prefer injecting via `runtime_engine_factory` instead of branching at business call sites.
+
+## ACP Hard-Cut Rules
+- **No semantic leftovers after decoupling**: if transport/protocol is no longer websocket-based, remove websocket-named files/symbols and dead helpers in the same delivery (no long-lived `*_ws` misnomers).
+- **No dormant compatibility flags**: do not keep "temporary" toggles for removed transports/paths unless explicitly approved with an expiry condition.
+- **Dependency feasibility first**: if a plan depends on a new package (for example ACP SDK), first validate install/import viability (`uv add` + import smoke check) before large refactors.
+- **Single history source**: conversation history and edit anchors must be event-native (`acp_event_log`, `eventId`); do not reintroduce `timeline_entries`/`entryId` compatibility aliases.
+- **Load contract clarity**: keep `session/load` as "attach/load session state only" and use `timeline/list` for historical replay.
 
 ## ACP Permission Policy
 - Default client policy is `auto-allow=true`.

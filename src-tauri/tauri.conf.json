@@ -5,8 +5,8 @@
   "identifier": "com.nutstore.bot",
   "build": {
     "devUrl": "http://localhost:13000",
-    "beforeDevCommand": "cd ../frontend && npm run dev -- --port 13000",
-    "beforeBuildCommand": "cd ../frontend && npm run build",
+    "beforeDevCommand": "npm --prefix frontend run dev -- --port 13000",
+    "beforeBuildCommand": "npm --prefix frontend run build",
     "frontendDist": "../frontend/dist"
   },
   "app": {

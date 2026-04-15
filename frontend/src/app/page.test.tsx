@@ -12,6 +12,29 @@ const sidecarApiMocks = vi.hoisted(() => {
 
   return {
     acpRequest: vi.fn((method: string) => {
+      if (method === "workspace/list") {
+        return Promise.resolve({
+          workspaces: [
+            {
+              id: "ws_1",
+              name: "Project 1",
+              pathLabel: "/tmp/project",
+              realPath: "/tmp/project",
+              createdAt: "2026-01-01T00:00:00Z",
+              updatedAt: "2026-01-01T00:00:00Z",
+            },
+          ],
+        })
+      }
+      if (method === "workspace/sessions/list") {
+        return Promise.resolve({ sessions: [baseSession] })
+      }
+      if (method === "attachment/list") {
+        return Promise.resolve({ attachments: [] })
+      }
+      if (method === "draft_attachment/list") {
+        return Promise.resolve({ draftAttachments: [] })
+      }
       if (method === "initialize") {
         return Promise.resolve({ protocolVersion: 1 })
       }
@@ -58,6 +81,7 @@ const sidecarApiMocks = vi.hoisted(() => {
       pendingPromptResolves = []
     },
     getSessionTimeline: vi.fn(),
+    loadSession: vi.fn(async () => ({ configOptions: [] })),
   }
 })
 
@@ -82,9 +106,51 @@ vi.mock("@/shared/api/sidecar", () => ({
     defaultSelection: { connectionId: "prov_openai", modelId: "gpt-5.4" },
   })),
   getSessionTimeline: sidecarApiMocks.getSessionTimeline,
+  loadSession: sidecarApiMocks.loadSession,
   createProvider: vi.fn(),
   updateProvider: vi.fn(),
   deleteProvider: vi.fn(),
+  listWorkspaces: vi.fn(async () => ({
+    workspaces: [
+      {
+        id: "ws_1",
+        name: "Project 1",
+        pathLabel: "/tmp/project",
+        realPath: "/tmp/project",
+        createdAt: "2026-01-01T00:00:00Z",
+        updatedAt: "2026-01-01T00:00:00Z",
+      },
+    ],
+  })),
+  listWorkspaceSessions: vi.fn(async () => ({ sessions: [baseSession] })),
+  listAttachments: vi.fn(async () => ({ attachments: [] })),
+  listDraftAttachments: vi.fn(async () => ({ draftAttachments: [] })),
+  createWorkspace: vi.fn(),
+  updateWorkspace: vi.fn(),
+  deleteWorkspace: vi.fn(),
+  createAttachment: vi.fn(),
+  createDraftAttachment: vi.fn(),
+  deleteAttachment: vi.fn(),
+  deleteDraftAttachment: vi.fn(),
+  deleteSession: vi.fn(),
+  workspaceSidecarIndexStatus: vi.fn(),
+  projectConversationEvents: vi.fn((sessionId: string, events: Array<Record<string, unknown>>) =>
+    events.map((event) => ({
+      id: String(event.eventId ?? `evt-${sessionId}`),
+      eventId: String(event.eventId ?? `evt-${sessionId}`),
+      sessionId,
+      runId: null,
+      sequenceNo: Number(event.sequenceNo ?? 0),
+      entryKind: event.eventType === "agent_thought_chunk" ? "thinking" : String((event as { entryKind?: unknown }).entryKind ?? "user_input"),
+      displayRole: String((event as { displayRole?: unknown }).displayRole ?? "user"),
+      stepId: null,
+      stepNumber: null,
+      contentText:
+        (event.payload as { params?: { update?: { content?: { text?: string } } } } | undefined)?.params?.update?.content?.text ??
+        String((event as { contentText?: unknown }).contentText ?? ""),
+      createdAt: String(event.createdAt ?? "2026-01-01T00:00:00Z"),
+    }))
+  ),
   validateProvider: vi.fn(),
   acpClient: {
     request: sidecarApiMocks.acpRequest,
@@ -112,49 +178,13 @@ beforeEach(() => {
   sidecarApiMocks.reset()
   vi.clearAllMocks()
   sidecarApiMocks.getSessionTimeline.mockReset()
-
-  vi.stubGlobal(
-    "fetch",
-    vi.fn(async (input: RequestInfo | URL) => {
-      const path = new URL(String(input), "http://localhost").pathname
-      if (path === "/workspaces") {
-        return new Response(
-          JSON.stringify({
-            workspaces: [
-              {
-                id: "ws_1",
-                name: "Project 1",
-                pathLabel: "/tmp/project",
-                realPath: "/tmp/project",
-                createdAt: "2026-01-01T00:00:00Z",
-                updatedAt: "2026-01-01T00:00:00Z",
-              },
-            ],
-          }),
-          { status: 200 }
-        )
-      }
-      if (path === "/workspaces/ws_1/sessions") {
-        return new Response(JSON.stringify({ sessions: [baseSession] }), { status: 200 })
-      }
-      if (path === "/sessions/sess_existing/attachments") {
-        return new Response(JSON.stringify({ attachments: [] }), { status: 200 })
-      }
-      if (path === "/workspaces/ws_1/draft-attachments") {
-        return new Response(JSON.stringify({ draftAttachments: [] }), { status: 200 })
-      }
-      return new Response(
-        JSON.stringify({ entries: [], pagination: { hasMore: false, nextBeforeSequence: null } }),
-        { status: 200 }
-      )
-    })
-  )
+  ;(window as Window & { __TAURI__?: object }).__TAURI__ = {}
 })
 
 describe("Home page ACP bootstrap", () => {
   it("initializes ACP and renders workspace", async () => {
     sidecarApiMocks.getSessionTimeline.mockResolvedValueOnce({
-      entries: [],
+      events: [],
       pagination: { hasMore: false, nextBeforeSequence: null },
     })
 
@@ -173,11 +203,12 @@ describe("Home page ACP bootstrap", () => {
 
   it("shows the user message immediately and renders streaming updates before the turn completes", async () => {
     sidecarApiMocks.getSessionTimeline
-      .mockResolvedValueOnce({ entries: [], pagination: { hasMore: false, nextBeforeSequence: null } })
+      .mockResolvedValueOnce({ events: [], pagination: { hasMore: false, nextBeforeSequence: null } })
       .mockResolvedValueOnce({
-        entries: [
+        events: [
           {
             id: "entry_user_1",
+            eventId: "evt_stream_user_1",
             sessionId: "sess_existing",
             runId: null,
             sequenceNo: 1,
@@ -230,6 +261,32 @@ describe("Home page ACP bootstrap", () => {
         params: {
           sessionId: "sess_existing",
           update: {
+            sessionUpdate: "agent_thought_chunk",
+            content: { type: "text", text: "Need to inspect tool output first" },
+          },
+        },
+      })
+      sidecarApiMocks.emitNotification({
+        method: "session/update",
+        params: {
+          sessionId: "sess_existing",
+          update: {
+            sessionUpdate: "available_commands_update",
+            availableCommands: [
+              {
+                name: "write",
+                description: "Write file",
+                input: { hint: "path" },
+              },
+            ],
+          },
+        },
+      })
+      sidecarApiMocks.emitNotification({
+        method: "session/update",
+        params: {
+          sessionId: "sess_existing",
+          update: {
             sessionUpdate: "tool_call",
             toolCallId: "tool_1",
             title: "write",
@@ -252,6 +309,8 @@ describe("Home page ACP bootstrap", () => {
 
     expect(screen.getByText("Inspect the workspace")).toBeInTheDocument()
     expect(screen.getAllByText("write").length).toBeGreaterThan(0)
+    expect(screen.getByText("Need to inspect tool output first")).toBeInTheDocument()
+    expect(screen.getByText(/Available Commands/)).toBeInTheDocument()
     expect(screen.getByText("Hello")).toBeInTheDocument()
 
     await act(async () => {
@@ -261,9 +320,60 @@ describe("Home page ACP bootstrap", () => {
     await screen.findByText("Hello world")
   })
 
-  it("renders the composer permission overlay and returns the selected outcome", async () => {
+  it("merges tool_call_update payload details into ACP tool call card", async () => {
     sidecarApiMocks.getSessionTimeline.mockResolvedValueOnce({
-      entries: [],
+      events: [],
+      pagination: { hasMore: false, nextBeforeSequence: null },
+    })
+
+    render(<Home />)
+    await screen.findAllByText("Project 1")
+
+    act(() => {
+      sidecarApiMocks.emitNotification({
+        method: "session/update",
+        params: {
+          sessionId: "sess_existing",
+          update: {
+            sessionUpdate: "tool_call",
+            toolCallId: "tool_2",
+            title: "write",
+            kind: "write",
+            status: "pending",
+          },
+        },
+      })
+      sidecarApiMocks.emitNotification({
+        method: "session/update",
+        params: {
+          sessionId: "sess_existing",
+          update: {
+            sessionUpdate: "tool_call_update",
+            toolCallId: "tool_2",
+            status: "completed",
+            rawInput: { command: "cat package.json" },
+            content: [
+              {
+                type: "content",
+                content: {
+                  type: "text",
+                  text: "Updated result body",
+                },
+              },
+            ],
+          },
+        },
+      })
+    })
+
+    expect(screen.getByText(/Tool Call ID: tool_2/)).toBeInTheDocument()
+    expect(screen.getByText(/cat package.json/)).toBeInTheDocument()
+    expect(screen.getByText("Updated result body")).toBeInTheDocument()
+  })
+
+  it("renders permission card and returns the selected outcome", async () => {
+    sidecarApiMocks.getSessionTimeline.mockResolvedValueOnce({
+      events: [],
       pagination: { hasMore: false, nextBeforeSequence: null },
     })
 
@@ -285,6 +395,7 @@ describe("Home page ACP bootstrap", () => {
           },
           options: [
             { optionId: "allow-once", name: "Allow once", kind: "allow_once" },
+            { optionId: "allow-always", name: "Allow always", kind: "allow_always" },
             { optionId: "reject-once", name: "Reject", kind: "reject_once" },
           ],
         },
@@ -304,7 +415,7 @@ describe("Home page ACP bootstrap", () => {
 
   it("returns reject-once when the user rejects a permission request", async () => {
     sidecarApiMocks.getSessionTimeline.mockResolvedValueOnce({
-      entries: [],
+      events: [],
       pagination: { hasMore: false, nextBeforeSequence: null },
     })
 
@@ -326,6 +437,7 @@ describe("Home page ACP bootstrap", () => {
           },
           options: [
             { optionId: "allow-once", name: "Allow once", kind: "allow_once" },
+            { optionId: "allow-always", name: "Allow always", kind: "allow_always" },
             { optionId: "reject-once", name: "Reject", kind: "reject_once" },
           ],
         },
@@ -345,7 +457,7 @@ describe("Home page ACP bootstrap", () => {
 
   it("cancels the run and resolves permission as cancelled when the user chooses cancel run", async () => {
     sidecarApiMocks.getSessionTimeline.mockResolvedValueOnce({
-      entries: [],
+      events: [],
       pagination: { hasMore: false, nextBeforeSequence: null },
     })
 
@@ -367,6 +479,7 @@ describe("Home page ACP bootstrap", () => {
           },
           options: [
             { optionId: "allow-once", name: "Allow once", kind: "allow_once" },
+            { optionId: "allow-always", name: "Allow always", kind: "allow_always" },
             { optionId: "reject-once", name: "Reject", kind: "reject_once" },
           ],
         },
@@ -388,7 +501,7 @@ describe("Home page ACP bootstrap", () => {
 
   it("switches the composer back to auto-allow when the user chooses allow always", async () => {
     sidecarApiMocks.getSessionTimeline.mockResolvedValueOnce({
-      entries: [],
+      events: [],
       pagination: { hasMore: false, nextBeforeSequence: null },
     })
 
@@ -414,6 +527,7 @@ describe("Home page ACP bootstrap", () => {
           },
           options: [
             { optionId: "allow-once", name: "Allow once", kind: "allow_once" },
+            { optionId: "allow-always", name: "Allow always", kind: "allow_always" },
             { optionId: "reject-once", name: "Reject", kind: "reject_once" },
           ],
         },
@@ -426,7 +540,7 @@ describe("Home page ACP bootstrap", () => {
     await expect(requestPromise).resolves.toEqual({
       outcome: {
         outcome: "selected",
-        optionId: "allow-once",
+        optionId: "allow-always",
       },
     })
     expect(screen.getByText("Auto-allow")).toBeInTheDocument()
@@ -435,9 +549,10 @@ describe("Home page ACP bootstrap", () => {
   it("truncates the old turn and streams the replacement content during edit-and-rerun", async () => {
     sidecarApiMocks.getSessionTimeline
       .mockResolvedValueOnce({
-        entries: [
+        events: [
           {
             id: "entry_user_1",
+            eventId: "evt_user_1",
             sessionId: "sess_existing",
             runId: null,
             sequenceNo: 1,
@@ -464,9 +579,10 @@ describe("Home page ACP bootstrap", () => {
         pagination: { hasMore: false, nextBeforeSequence: null },
       })
       .mockResolvedValueOnce({
-        entries: [
+        events: [
           {
             id: "entry_user_2",
+            eventId: "evt_user_2",
             sessionId: "sess_existing",
             runId: null,
             sequenceNo: 3,
@@ -508,7 +624,7 @@ describe("Home page ACP bootstrap", () => {
         "session/edit_and_prompt",
         expect.objectContaining({
           sessionId: "sess_existing",
-          entryId: "entry_user_1",
+          eventId: "evt_user_1",
         })
       )
     })

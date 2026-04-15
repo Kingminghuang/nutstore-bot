@@ -28,7 +28,6 @@ from nsbot_sidecar.runtime.native_code_agent import (
 from nsbot_sidecar.domain.agent_memory_projection import (
     extract_action_thought,
     project_agent_memory_to_session_messages,
-    project_agent_memory_to_timeline_entries,
     project_final_answer_to_session_message,
 )
 from nsbot_sidecar.providers.provider_catalog import BUILTIN_PROVIDERS
@@ -251,7 +250,6 @@ class AgentRuntimeService:
         )
 
         deltas: list[dict[str, Any]] = []
-        timeline_entries: list[dict[str, Any]] = []
         stream_buffer_by_step: dict[str, str] = {}
         current_step_id: str | None = None
         step_index = 0
@@ -307,7 +305,6 @@ class AgentRuntimeService:
                         "content_text": event.plan or "",
                         "content_json": None,
                     }
-                    timeline_entries.append(timeline_entry_payload)
                     if event_callback is not None:
                         event_callback(
                             {
@@ -390,7 +387,6 @@ class AgentRuntimeService:
                             ensure_ascii=False,
                         ),
                     }
-                    timeline_entries.append(timeline_entry_payload)
                     if event_callback is not None:
                         event_callback(
                             {
@@ -436,12 +432,6 @@ class AgentRuntimeService:
             "deltas": deltas,
             "final_answer": final_answer,
             "session_messages": projected_messages,
-            "timeline_entries": timeline_entries
-            or project_agent_memory_to_timeline_entries(
-                agent.memory,
-                run_id=run_id,
-                session_id=session_key,
-            ),
         }
 
     def _resolve_workspace_path(self, metadata: RunMetadata) -> str:

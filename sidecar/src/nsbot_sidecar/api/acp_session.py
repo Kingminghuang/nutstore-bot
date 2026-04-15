@@ -1,18 +1,17 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 from concurrent.futures import Future
 import json
+import sys
 from pathlib import Path
 import threading
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Protocol
 from urllib.parse import unquote, urlparse
 
-from fastapi import WebSocket, WebSocketDisconnect
-
 from nsbot_sidecar.api.discovery import nsbot_home
-from nsbot_sidecar.application.timeline_service import serialize_timeline_entry
 from nsbot_sidecar.infrastructure.repositories import create_id
 from nsbot_sidecar.infrastructure.storage import transaction
 from nsbot_sidecar.runtime.engine import create_runtime_engine
@@ -29,9 +28,40 @@ class _ClientRequestWaiter:
     session_id: str
 
 
-class AcpWebSocketSession:
-    def __init__(self, websocket: WebSocket, app_state: Any):
-        self.websocket = websocket
+class JsonRpcTransport(Protocol):
+    async def accept(self) -> None: ...
+
+    async def receive_json(self) -> dict[str, Any]: ...
+
+    async def send_json(self, payload: dict[str, Any]) -> None: ...
+
+    async def close(self) -> None: ...
+
+
+class StdioJsonRpcTransport:
+    async def accept(self) -> None:
+        return
+
+    async def receive_json(self) -> dict[str, Any]:
+        line = await asyncio.to_thread(sys.stdin.readline)
+        if line == "":
+            raise EOFError("stdin closed")
+        try:
+            payload = json.loads(line)
+        except Exception:
+            return {}
+        return payload if isinstance(payload, dict) else {}
+
+    async def send_json(self, payload: dict[str, Any]) -> None:
+        print(json.dumps(payload, ensure_ascii=False), flush=True)
+
+    async def close(self) -> None:
+        return
+
+
+class AcpJsonRpcSession:
+    def __init__(self, transport: JsonRpcTransport, app_state: Any):
+        self.transport = transport
         self.state = app_state
         self.loop: asyncio.AbstractEventLoop | None = None
         self._send_lock = asyncio.Lock()
@@ -49,13 +79,13 @@ class AcpWebSocketSession:
         }
 
     async def run(self) -> None:
-        await self.websocket.accept()
+        await self.transport.accept()
         self.loop = asyncio.get_running_loop()
         try:
             while True:
-                payload = await self.websocket.receive_json()
+                payload = await self.transport.receive_json()
                 await self._dispatch(payload)
-        except WebSocketDisconnect:
+        except EOFError:
             self._cancel_all_sessions()
         except RuntimeError as exc:
             # Starlette may raise RuntimeError on abrupt client disconnect in tests/runtime.
@@ -90,26 +120,308 @@ class AcpWebSocketSession:
             if method == "authenticate":
                 await self._send_result(req_id, {"_meta": {}})
                 return
-            if method in {"disconnect", "session/disconnect"}:
+            if method == "disconnect":
                 await self._send_result(req_id, {})
-                await self.websocket.close()
+                await self.transport.close()
                 return
-            if method in {"session/new", "newSession"}:
+            if method == "session/new":
                 await self._send_result(req_id, self._handle_session_new(params))
                 return
-            if method in {"session/list", "listSessions"}:
+            if method == "session/list":
                 await self._send_result(req_id, self._handle_session_list(params))
                 return
-            if method in {"session/load", "loadSession"}:
+            if method == "workspace/list":
+                await self._send_result(
+                    req_id,
+                    self.state.session_service.list_workspaces_payload(),
+                )
+                return
+            if method == "workspace/create":
+                await self._send_result(
+                    req_id,
+                    self.state.session_service.create_workspace(params),
+                )
+                return
+            if method == "workspace/update":
+                workspace_id = str(
+                    params.get("workspaceId") or params.get("workspace_id") or ""
+                )
+                if not workspace_id:
+                    await self._send_error(req_id, -32000, "workspaceId is required")
+                    return
+                await self._send_result(
+                    req_id,
+                    self.state.session_service.update_workspace(workspace_id, params),
+                )
+                return
+            if method == "workspace/delete":
+                workspace_id = str(
+                    params.get("workspaceId") or params.get("workspace_id") or ""
+                )
+                if not workspace_id:
+                    await self._send_error(req_id, -32000, "workspaceId is required")
+                    return
+                self.state.session_service.delete_workspace(workspace_id)
+                await self._send_result(req_id, {})
+                return
+            if method == "workspace/sessions/list":
+                workspace_id = str(
+                    params.get("workspaceId") or params.get("workspace_id") or ""
+                )
+                if not workspace_id:
+                    await self._send_error(req_id, -32000, "workspaceId is required")
+                    return
+                await self._send_result(
+                    req_id,
+                    self.state.session_service.list_sessions_payload(workspace_id),
+                )
+                return
+            if method == "workspace/sessions/create":
+                workspace_id = str(
+                    params.get("workspaceId") or params.get("workspace_id") or ""
+                )
+                if not workspace_id:
+                    await self._send_error(req_id, -32000, "workspaceId is required")
+                    return
+                await self._send_result(
+                    req_id,
+                    self.state.session_service.create_session(workspace_id, params),
+                )
+                return
+            if method == "workspace/sidecar_index/status":
+                workspace_id = str(
+                    params.get("workspaceId") or params.get("workspace_id") or ""
+                )
+                if not workspace_id:
+                    await self._send_error(req_id, -32000, "workspaceId is required")
+                    return
+                await self._send_result(
+                    req_id,
+                    self.state.session_service.workspace_sidecar_index_status_payload(
+                        workspace_id
+                    ),
+                )
+                return
+            if method == "provider/catalog":
+                await self._send_result(
+                    req_id,
+                    self.state.provider_service.catalog_payload(),
+                )
+                return
+            if method == "provider/list":
+                await self._send_result(
+                    req_id,
+                    self.state.provider_service.list_connections_payload(),
+                )
+                return
+            if method == "provider/model_options":
+                await self._send_result(
+                    req_id,
+                    self.state.provider_service.model_options_payload(),
+                )
+                return
+            if method == "provider/create":
+                await self._send_result(
+                    req_id,
+                    self.state.provider_service.create_provider(params),
+                )
+                return
+            if method == "provider/update":
+                provider_id = str(
+                    params.get("providerId") or params.get("provider_id") or ""
+                )
+                if not provider_id:
+                    await self._send_error(req_id, -32000, "providerId is required")
+                    return
+                await self._send_result(
+                    req_id,
+                    self.state.provider_service.update_provider(provider_id, params),
+                )
+                return
+            if method == "provider/delete":
+                provider_id = str(
+                    params.get("providerId") or params.get("provider_id") or ""
+                )
+                if not provider_id:
+                    await self._send_error(req_id, -32000, "providerId is required")
+                    return
+                self.state.provider_service.delete_provider(provider_id)
+                await self._send_result(req_id, {})
+                return
+            if method == "provider/validate":
+                provider_id = str(
+                    params.get("providerId") or params.get("provider_id") or ""
+                )
+                if not provider_id:
+                    await self._send_error(req_id, -32000, "providerId is required")
+                    return
+                await self._send_result(
+                    req_id,
+                    self.state.provider_service.validate_provider(provider_id, params),
+                )
+                return
+            if method == "session/load":
                 await self._send_result(req_id, await self._handle_session_load(params))
                 return
-            if method in {"session/resume", "resumeSession"}:
+            if method == "session/resume":
                 await self._send_result(req_id, self._handle_session_resume(params))
                 return
-            if method in {"session/set_config_option", "setSessionConfigOption"}:
+            if method == "session/update_meta":
+                session_id = str(
+                    params.get("sessionId") or params.get("session_id") or ""
+                )
+                if not session_id:
+                    await self._send_error(req_id, -32000, "sessionId is required")
+                    return
+                await self._send_result(
+                    req_id,
+                    self.state.session_service.update_session(session_id, params),
+                )
+                return
+            if method == "session/delete":
+                session_id = str(
+                    params.get("sessionId") or params.get("session_id") or ""
+                )
+                if not session_id:
+                    await self._send_error(req_id, -32000, "sessionId is required")
+                    return
+                self.state.session_service.delete_session(session_id)
+                await self._send_result(req_id, {})
+                return
+            if method == "timeline/list":
+                await self._send_result(req_id, self._handle_timeline_list(params))
+                return
+            if method == "draft_attachment/list":
+                workspace_id = str(
+                    params.get("workspaceId") or params.get("workspace_id") or ""
+                )
+                if not workspace_id:
+                    await self._send_error(req_id, -32000, "workspaceId is required")
+                    return
+                await self._send_result(
+                    req_id,
+                    self.state.session_service.list_draft_attachments_payload(
+                        workspace_id
+                    ),
+                )
+                return
+            if method == "draft_attachment/delete":
+                workspace_id = str(
+                    params.get("workspaceId") or params.get("workspace_id") or ""
+                )
+                draft_attachment_id = str(
+                    params.get("draftAttachmentId")
+                    or params.get("draft_attachment_id")
+                    or ""
+                )
+                if not workspace_id or not draft_attachment_id:
+                    await self._send_error(
+                        req_id, -32000, "workspaceId and draftAttachmentId are required"
+                    )
+                    return
+                self.state.session_service.delete_draft_attachment(
+                    workspace_id, draft_attachment_id
+                )
+                await self._send_result(req_id, {})
+                return
+            if method == "draft_attachment/create":
+                workspace_id = str(
+                    params.get("workspaceId") or params.get("workspace_id") or ""
+                )
+                file_name = str(
+                    params.get("fileName") or params.get("file_name") or "attachment"
+                )
+                mime_type = str(
+                    params.get("mimeType")
+                    or params.get("mime_type")
+                    or "application/octet-stream"
+                )
+                payload_b64 = str(params.get("payloadBase64") or "")
+                if not workspace_id or not payload_b64:
+                    await self._send_error(
+                        req_id, -32000, "workspaceId and payloadBase64 are required"
+                    )
+                    return
+                try:
+                    payload_bytes = base64.b64decode(payload_b64)
+                except Exception:  # noqa: BLE001
+                    await self._send_error(req_id, -32000, "payloadBase64 is invalid")
+                    return
+                result = self.state.session_service.create_draft_attachment(
+                    workspace_id=workspace_id,
+                    file_name=file_name,
+                    mime_type=mime_type,
+                    payload=payload_bytes,
+                )
+                await self._send_result(req_id, result)
+                return
+            if method == "attachment/list":
+                session_id = str(
+                    params.get("sessionId") or params.get("session_id") or ""
+                )
+                if not session_id:
+                    await self._send_error(req_id, -32000, "sessionId is required")
+                    return
+                await self._send_result(
+                    req_id,
+                    self.state.session_service.list_attachments_payload(session_id),
+                )
+                return
+            if method == "attachment/delete":
+                session_id = str(
+                    params.get("sessionId") or params.get("session_id") or ""
+                )
+                attachment_id = str(
+                    params.get("attachmentId") or params.get("attachment_id") or ""
+                )
+                if not session_id or not attachment_id:
+                    await self._send_error(
+                        req_id, -32000, "sessionId and attachmentId are required"
+                    )
+                    return
+                self.state.session_service.delete_attachment(session_id, attachment_id)
+                await self._send_result(req_id, {})
+                return
+            if method == "attachment/create":
+                session_id = str(
+                    params.get("sessionId") or params.get("session_id") or ""
+                )
+                file_name = str(
+                    params.get("fileName") or params.get("file_name") or "attachment"
+                )
+                mime_type = str(
+                    params.get("mimeType")
+                    or params.get("mime_type")
+                    or "application/octet-stream"
+                )
+                payload_b64 = str(params.get("payloadBase64") or "")
+                if not session_id or not payload_b64:
+                    await self._send_error(
+                        req_id, -32000, "sessionId and payloadBase64 are required"
+                    )
+                    return
+                try:
+                    payload_bytes = base64.b64decode(payload_b64)
+                except Exception:  # noqa: BLE001
+                    await self._send_error(req_id, -32000, "payloadBase64 is invalid")
+                    return
+                result = self.state.session_service.create_attachment(
+                    session_id=session_id,
+                    file_name=file_name,
+                    mime_type=mime_type,
+                    payload=payload_bytes,
+                )
+                await self._send_result(req_id, result)
+                return
+            if method == "session/set_config_option":
                 await self._send_result(req_id, self._handle_set_config_option(params))
                 return
-            if method in {"session/prompt", "prompt"}:
+            if method == "session/cancel":
+                session_id = str(params.get("sessionId") or "")
+                self._cancel_session(session_id)
+                await self._send_result(req_id, {"cancelled": True})
+                return
+            if method == "session/prompt":
                 session_id = str(params.get("sessionId") or "")
                 if not session_id:
                     await self._send_error(req_id, -32000, "sessionId is required")
@@ -121,10 +433,7 @@ class AcpWebSocketSession:
                 task = asyncio.create_task(self._handle_prompt_request(req_id, params))
                 self._prompt_tasks[session_id] = task
                 return
-            if method in {
-                "session/edit_and_prompt",
-                "session/editAndPrompt",
-            }:
+            if method == "session/edit_and_prompt":
                 session_id = str(params.get("sessionId") or "")
                 if not session_id:
                     await self._send_error(req_id, -32000, "sessionId is required")
@@ -146,7 +455,7 @@ class AcpWebSocketSession:
     async def _handle_notification(self, payload: dict[str, Any]) -> None:
         method = str(payload.get("method") or "")
         params = payload.get("params") or {}
-        if method in {"session/cancel", "cancel"}:
+        if method == "session/cancel":
             session_id = str(params.get("sessionId") or "")
             self._cancel_session(session_id)
 
@@ -246,8 +555,10 @@ class AcpWebSocketSession:
 
         thought_level = self._session_thought_levels.get(session_id)
         if not thought_level:
-            thought_level = "medium" if "medium" in reasoning_values else (
-                reasoning_values[0] if reasoning_values else "medium"
+            thought_level = (
+                "medium"
+                if "medium" in reasoning_values
+                else (reasoning_values[0] if reasoning_values else "medium")
             )
 
         options: list[dict[str, Any]] = [
@@ -322,7 +633,9 @@ class AcpWebSocketSession:
         for workspace in workspaces.values():
             if normalized and str(workspace.real_path) != normalized:
                 continue
-            for session in self.state.repositories.sessions.list_by_workspace_id(workspace.id):
+            for session in self.state.repositories.sessions.list_by_workspace_id(
+                workspace.id
+            ):
                 sessions.append(
                     {
                         "sessionId": session.id,
@@ -336,39 +649,63 @@ class AcpWebSocketSession:
         return {"sessions": sessions}
 
     async def _replay_session_history(self, session_id: str) -> None:
-        entries = self.state.repositories.timeline_entries.list_by_session_id(session_id)
-        for entry in entries:
-            if entry.entry_kind == "user_input":
-                await self._send_notification(
-                    "session/update",
-                    {
-                        "sessionId": session_id,
-                        "update": {
-                            "sessionUpdate": "user_message_chunk",
-                            "content": {"type": "text", "text": entry.content_text or ""},
-                        },
-                    },
-                )
+        events = self.state.repositories.acp_event_log.list_by_session_id(session_id)
+        for event in events:
+            try:
+                payload = json.loads(event.event_json)
+            except Exception:
                 continue
+            if not isinstance(payload, dict):
+                continue
+            method = str(payload.get("method") or "")
+            params = payload.get("params")
+            if method == "session/update" and isinstance(params, dict):
+                await self._send_notification(method, params)
 
-            if entry.entry_kind in {"planning", "action", "final_answer", "system_notice"}:
-                await self._send_notification(
-                    "session/update",
-                    {
-                        "sessionId": session_id,
-                        "update": {
-                            "sessionUpdate": "agent_message_chunk",
-                            "content": {"type": "text", "text": entry.content_text or ""},
-                        },
-                    },
-                )
+    def _handle_timeline_list(self, params: dict[str, Any]) -> dict[str, Any]:
+        session_id = str(params.get("sessionId") or params.get("session_id") or "")
+        if not session_id:
+            raise RuntimeError("sessionId is required")
+        self._ensure_session_exists(session_id)
+
+        limit_value = params.get("limit")
+        before_sequence_value = params.get("beforeSequence")
+        if before_sequence_value is None:
+            before_sequence_value = params.get("before_sequence")
+        limit = (
+            int(limit_value)
+            if isinstance(limit_value, (int, float, str)) and str(limit_value).strip()
+            else 100
+        )
+        if limit <= 0:
+            limit = 100
+        before_sequence = (
+            int(before_sequence_value)
+            if isinstance(before_sequence_value, (int, float, str))
+            and str(before_sequence_value).strip()
+            else None
+        )
+
+        events, has_more, next_before_sequence = (
+            self.state.repositories.acp_event_log.list_by_session_id_page(
+                session_id,
+                limit=limit,
+                before_sequence=before_sequence,
+            )
+        )
+        return {
+            "events": [self._serialize_event_log(event) for event in events],
+            "pagination": {
+                "hasMore": has_more,
+                "nextBeforeSequence": next_before_sequence,
+            },
+        }
 
     async def _handle_session_load(self, params: dict[str, Any]) -> dict[str, Any]:
         session_id = str(params.get("sessionId") or "")
         if not session_id:
             raise RuntimeError("sessionId is required")
         self._ensure_session_exists(session_id)
-        await self._replay_session_history(session_id)
         return {"configOptions": self._config_options_for_session(session_id)}
 
     def _handle_session_resume(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -443,9 +780,15 @@ class AcpWebSocketSession:
 
             if block_type == "resource_link":
                 uri = str(block.get("uri") or "").strip()
-                if uri and self._client_supports_read_text_file() and self._looks_like_file_uri(uri):
+                if (
+                    uri
+                    and self._client_supports_read_text_file()
+                    and self._looks_like_file_uri(uri)
+                ):
                     try:
-                        content = await self._request_client_read_text_file(session_id, uri)
+                        content = await self._request_client_read_text_file(
+                            session_id, uri
+                        )
                         if content.strip():
                             parts.append(content)
                         normalized_blocks.append(
@@ -469,7 +812,9 @@ class AcpWebSocketSession:
 
             normalized_blocks.append(block)
 
-        return "\n".join([part for part in parts if part.strip()]).strip(), normalized_blocks
+        return "\n".join(
+            [part for part in parts if part.strip()]
+        ).strip(), normalized_blocks
 
     def _resource_text_from_embedded(self, resource: Any) -> str:
         if not isinstance(resource, dict):
@@ -508,17 +853,18 @@ class AcpWebSocketSession:
         self, req_id: Any, params: dict[str, Any]
     ) -> None:
         session_id = str(params.get("sessionId") or "")
-        entry_id = str(params.get("entryId") or "")
+        event_id = str(params.get("eventId") or params.get("event_id") or "")
         delegated = False
         try:
             if not session_id:
                 raise RuntimeError("sessionId is required")
-            if not entry_id:
-                raise RuntimeError("entryId is required")
+            if not event_id:
+                raise RuntimeError("eventId is required")
 
             session = self._ensure_session_exists(session_id)
-            message = self._validate_editable_user_entry(session_id, entry_id)
-
+            event_anchor = self._resolve_edit_anchor_from_event(session_id, event_id)
+            if event_anchor is None:
+                raise RuntimeError("Event not found")
             prompt_blocks = params.get("prompt")
             if not isinstance(prompt_blocks, list):
                 raise RuntimeError("prompt must be content block array")
@@ -529,8 +875,8 @@ class AcpWebSocketSession:
                 raise RuntimeError("prompt text is empty")
 
             with transaction(self.state.database):
-                self.state.repositories.timeline_entries.delete_by_session_id_from_sequence(
-                    session_id, message.sequence_no
+                self.state.repositories.acp_event_log.delete_by_session_id_from_sequence(
+                    session_id, event_anchor["sequenceNo"]
                 )
                 self.state.session_service.timeline_service.refresh_session_summary(
                     session_id,
@@ -554,16 +900,38 @@ class AcpWebSocketSession:
                 self._prompt_tasks.pop(session_id, None)
             await self._send_error(req_id, -32000, str(exc))
 
-    def _validate_editable_user_entry(self, session_id: str, entry_id: str):
+    def _resolve_edit_anchor_from_event(
+        self, session_id: str, event_id: str
+    ) -> dict[str, Any] | None:
+        if not event_id:
+            return None
         try:
-            message = self.state.repositories.timeline_entries.get_by_id(entry_id)
+            event = self.state.repositories.acp_event_log.get_by_id(event_id)
         except ValueError as exc:
-            raise RuntimeError("Message not found") from exc
-        if message.session_id != session_id:
-            raise RuntimeError("Message not found")
-        if message.entry_kind != "user_input":
-            raise RuntimeError("Only user input timeline entries can be edited")
-        return message
+            raise RuntimeError("Event not found") from exc
+        if event.session_id != session_id:
+            raise RuntimeError("Event not found")
+        try:
+            payload = json.loads(event.event_json)
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError("Event payload is invalid") from exc
+        if not isinstance(payload, dict):
+            raise RuntimeError("Event payload is invalid")
+        params = payload.get("params")
+        if not isinstance(params, dict):
+            raise RuntimeError("Event payload is invalid")
+        update = params.get("update")
+        if not isinstance(update, dict):
+            raise RuntimeError("Event is not editable")
+        if str(update.get("sessionUpdate") or "") != "user_message_chunk":
+            raise RuntimeError("Only user input events can be edited")
+        content = update.get("content")
+        if not isinstance(content, dict):
+            raise RuntimeError("Event payload is invalid")
+        if str(content.get("type") or "") != "text":
+            raise RuntimeError("Only text user message events can be edited")
+        message_text = str(content.get("text") or "")
+        return {"sequenceNo": event.sequence_no, "messageText": message_text}
 
     async def _handle_prompt_request(self, req_id: Any, params: dict[str, Any]) -> None:
         session_id = str(params.get("sessionId") or "")
@@ -574,7 +942,9 @@ class AcpWebSocketSession:
                 raise RuntimeError("sessionId is required")
 
             session = self._ensure_session_exists(session_id)
-            workspace = self.state.repositories.workspaces.get_by_id(session.workspace_id)
+            workspace = self.state.repositories.workspaces.get_by_id(
+                session.workspace_id
+            )
 
             prompt_blocks = params.get("prompt")
             user_text = params.get("_preparsedPromptText")
@@ -602,29 +972,17 @@ class AcpWebSocketSession:
             )
             cancel_event.clear()
 
-            self.state.repositories.timeline_entries.append(
-                timeline_entry_id=create_id("tle"),
-                session_id=session_id,
-                run_id=None,
-                entry_kind="user_input",
-                display_role="user",
-                content_text=user_text,
-                content_json=json.dumps({"content": normalized_blocks}, ensure_ascii=False),
-            )
             self.state.session_service.timeline_service.refresh_session_summary(
                 session_id,
                 active_connection_id=session.active_connection_id,
                 active_model_id=session.active_model_id,
             )
 
-            await self._send_notification(
-                "session/update",
+            await self._emit_session_update(
+                session_id,
                 {
-                    "sessionId": session_id,
-                    "update": {
-                        "sessionUpdate": "user_message_chunk",
-                        "content": {"type": "text", "text": user_text},
-                    },
+                    "sessionUpdate": "user_message_chunk",
+                    "content": {"type": "text", "text": user_text},
                 },
             )
 
@@ -657,7 +1015,9 @@ class AcpWebSocketSession:
                 fd_executable=self.state.api_server_config.fd_executable,
                 rg_executable=self.state.api_server_config.rg_executable,
             )
-            metadata = RunMetadata(workspace_path=workspace.real_path, session_key=session_id)
+            metadata = RunMetadata(
+                workspace_path=workspace.real_path, session_key=session_id
+            )
 
             run_id = create_id("acprun")
             engine = create_runtime_engine(config)
@@ -677,51 +1037,80 @@ class AcpWebSocketSession:
                     text = str(payload.get("text") or "")
                     if not text:
                         return
-                    self._send_notification_threadsafe(
-                        "session/update",
+                    self._emit_session_update_threadsafe(
+                        session_id,
                         {
-                            "sessionId": session_id,
-                            "update": {
-                                "sessionUpdate": "agent_message_chunk",
-                                "content": {"type": "text", "text": text},
-                            },
+                            "sessionUpdate": "agent_message_chunk",
+                            "content": {"type": "text", "text": text},
                         },
+                    )
+                    return
+
+                if etype == "thinking_delta":
+                    text = str(payload.get("text") or "")
+                    if not text:
+                        return
+                    self._emit_session_update_threadsafe(
+                        session_id,
+                        {
+                            "sessionUpdate": "agent_thought_chunk",
+                            "content": {"type": "text", "text": text},
+                        },
+                        record_event=True,
+                    )
+                    return
+
+                if etype == "available_commands":
+                    commands = payload.get("commands")
+                    if not isinstance(commands, list):
+                        return
+                    self._emit_session_update_threadsafe(
+                        session_id,
+                        {
+                            "sessionUpdate": "available_commands_update",
+                            "availableCommands": commands,
+                        },
+                        record_event=False,
                     )
                     return
 
                 if etype != "timeline_entry":
                     return
 
-                if payload.get("run_id"):
-                    payload = {**payload, "run_id": None}
-                entry = self.state.repositories.timeline_entries.append(created_at=None, **payload)
-                entry_payload = serialize_timeline_entry(entry)
+                entry_kind = str(payload.get("entry_kind") or "")
+                if not entry_kind:
+                    return
 
-                if entry.entry_kind == "planning":
-                    self._send_notification_threadsafe(
-                        "session/update",
+                if entry_kind == "planning":
+                    self._emit_session_update_threadsafe(
+                        session_id,
                         {
-                            "sessionId": session_id,
-                            "update": {
-                                "sessionUpdate": "plan",
-                                "entries": [
-                                    {
-                                        "content": entry.content_text or "",
-                                        "priority": "medium",
-                                        "status": "pending",
-                                    }
-                                ],
-                            },
+                            "sessionUpdate": "plan",
+                            "entries": [
+                                {
+                                    "content": str(payload.get("content_text") or ""),
+                                    "priority": "medium",
+                                    "status": "pending",
+                                }
+                            ],
                         },
                     )
                     return
 
-                if entry.entry_kind != "action":
+                if entry_kind != "action":
                     return
 
-                content_json = entry_payload.get("contentJson") or {}
+                content_json = payload.get("content_json")
+                if isinstance(content_json, str):
+                    try:
+                        content_json = json.loads(content_json)
+                    except Exception:
+                        content_json = None
+                content_json = content_json if isinstance(content_json, dict) else {}
                 tool_calls = (
-                    content_json.get("toolCalls") if isinstance(content_json, dict) else None
+                    content_json.get("toolCalls")
+                    if isinstance(content_json, dict)
+                    else None
                 )
                 error_text = (
                     str(content_json.get("error") or "")
@@ -738,28 +1127,22 @@ class AcpWebSocketSession:
                         name = str(tool_call.get("name") or "Tool call")
                         kind = self._tool_kind_for_name(name)
 
-                        self._send_notification_threadsafe(
-                            "session/update",
+                        self._emit_session_update_threadsafe(
+                            session_id,
                             {
-                                "sessionId": session_id,
-                                "update": {
-                                    "sessionUpdate": "tool_call",
-                                    "toolCallId": tool_call_id,
-                                    "title": name,
-                                    "kind": kind,
-                                    "status": "pending",
-                                },
+                                "sessionUpdate": "tool_call",
+                                "toolCallId": tool_call_id,
+                                "title": name,
+                                "kind": kind,
+                                "status": "pending",
                             },
                         )
-                        self._send_notification_threadsafe(
-                            "session/update",
+                        self._emit_session_update_threadsafe(
+                            session_id,
                             {
-                                "sessionId": session_id,
-                                "update": {
-                                    "sessionUpdate": "tool_call_update",
-                                    "toolCallId": tool_call_id,
-                                    "status": status,
-                                },
+                                "sessionUpdate": "tool_call_update",
+                                "toolCallId": tool_call_id,
+                                "status": status,
                             },
                         )
 
@@ -776,29 +1159,19 @@ class AcpWebSocketSession:
 
             final_answer = str(result.get("final_answer") or "").strip()
             if final_answer:
-                final_entry = self.state.repositories.timeline_entries.append(
-                    session_id=session_id,
-                    run_id=None,
-                    entry_kind="final_answer",
-                    display_role="assistant",
-                    content_text=final_answer,
-                )
                 self.state.session_service.timeline_service.refresh_session_summary(
                     session_id,
                     active_connection_id=session.active_connection_id,
                     active_model_id=session.active_model_id,
                     trigger_title_generation=True,
                 )
-                await self._send_notification(
-                    "session/update",
+                await self._emit_session_update(
+                    session_id,
                     {
-                        "sessionId": session_id,
-                        "update": {
-                            "sessionUpdate": "agent_message_chunk",
-                            "content": {
-                                "type": "text",
-                                "text": final_entry.content_text or "",
-                            },
+                        "sessionUpdate": "agent_message_chunk",
+                        "content": {
+                            "type": "text",
+                            "text": final_answer,
                         },
                     },
                 )
@@ -863,8 +1236,12 @@ class AcpWebSocketSession:
         result = future.result()
 
         outcome = result.get("outcome") if isinstance(result, dict) else None
-        decision = str(outcome.get("outcome") or "") if isinstance(outcome, dict) else ""
-        option_id = str(outcome.get("optionId") or "") if isinstance(outcome, dict) else ""
+        decision = (
+            str(outcome.get("outcome") or "") if isinstance(outcome, dict) else ""
+        )
+        option_id = (
+            str(outcome.get("optionId") or "") if isinstance(outcome, dict) else ""
+        )
 
         if decision == "cancelled":
             self._send_permission_terminal_update(
@@ -889,7 +1266,9 @@ class AcpWebSocketSession:
         )
         return "reject"
 
-    async def _request_client_rpc(self, session_id: str, method: str, params: dict[str, Any]) -> Any:
+    async def _request_client_rpc(
+        self, session_id: str, method: str, params: dict[str, Any]
+    ) -> Any:
         if self.loop is None:
             raise RuntimeError("ACP loop is unavailable")
 
@@ -937,16 +1316,14 @@ class AcpWebSocketSession:
         tool_call_id: str,
         status: str,
     ) -> None:
-        self._send_notification_threadsafe(
-            "session/update",
+        self._emit_session_update_threadsafe(
+            session_id,
             {
-                "sessionId": session_id,
-                "update": {
-                    "sessionUpdate": "tool_call_update",
-                    "toolCallId": tool_call_id,
-                    "status": status,
-                },
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": tool_call_id,
+                "status": status,
             },
+            record_event=True,
         )
 
     def _handle_client_response(self, payload: dict[str, Any]) -> None:
@@ -1005,9 +1382,73 @@ class AcpWebSocketSession:
                     waiter.future.set_result({"outcome": {"outcome": "cancelled"}})
 
     def _cancel_all_sessions(self) -> None:
-        session_ids = set(self._session_cancel_events.keys()) | set(self._prompt_tasks.keys())
+        session_ids = set(self._session_cancel_events.keys()) | set(
+            self._prompt_tasks.keys()
+        )
         for session_id in session_ids:
             self._cancel_session(session_id)
+
+    async def _emit_session_update(
+        self,
+        session_id: str,
+        update: dict[str, Any],
+        *,
+        record_event: bool = True,
+    ) -> None:
+        payload = {"sessionId": session_id, "update": update}
+        if record_event:
+            self._persist_session_update_event(payload)
+        await self._send_notification("session/update", payload)
+
+    def _emit_session_update_threadsafe(
+        self,
+        session_id: str,
+        update: dict[str, Any],
+        *,
+        record_event: bool = True,
+    ) -> None:
+        payload = {"sessionId": session_id, "update": update}
+        if record_event:
+            self._persist_session_update_event(payload)
+        self._send_notification_threadsafe("session/update", payload)
+
+    def _persist_session_update_event(self, params: dict[str, Any]) -> None:
+        session_id = str(params.get("sessionId") or "")
+        if not session_id:
+            return
+        update = params.get("update")
+        event_type = (
+            str(update.get("sessionUpdate") or "session_update")
+            if isinstance(update, dict)
+            else "session_update"
+        )
+        payload = {
+            "method": "session/update",
+            "params": params,
+        }
+        self.state.repositories.acp_event_log.append(
+            session_id=session_id,
+            event_type=event_type,
+            event_json=json.dumps(payload, ensure_ascii=False),
+        )
+
+    def _serialize_event_log(self, event: Any) -> dict[str, Any]:
+        payload: dict[str, Any] | None = None
+        try:
+            parsed = json.loads(event.event_json)
+            if isinstance(parsed, dict):
+                payload = parsed
+        except Exception:
+            payload = None
+        return {
+            "eventId": event.id,
+            "sessionId": event.session_id,
+            "turnId": event.turn_id,
+            "sequenceNo": event.sequence_no,
+            "eventType": event.event_type,
+            "payload": payload,
+            "createdAt": event.created_at,
+        }
 
     async def _send_result(self, req_id: Any, result: dict[str, Any]) -> None:
         await self._send_json({"jsonrpc": "2.0", "id": req_id, "result": result})
@@ -1027,7 +1468,9 @@ class AcpWebSocketSession:
     async def _send_notification(self, method: str, params: dict[str, Any]) -> None:
         await self._send_json({"jsonrpc": "2.0", "method": method, "params": params})
 
-    def _send_notification_threadsafe(self, method: str, params: dict[str, Any]) -> None:
+    def _send_notification_threadsafe(
+        self, method: str, params: dict[str, Any]
+    ) -> None:
         if self.loop is None:
             return
         asyncio.run_coroutine_threadsafe(
@@ -1037,4 +1480,4 @@ class AcpWebSocketSession:
 
     async def _send_json(self, payload: dict[str, Any]) -> None:
         async with self._send_lock:
-            await self.websocket.send_json(payload)
+            await self.transport.send_json(payload)

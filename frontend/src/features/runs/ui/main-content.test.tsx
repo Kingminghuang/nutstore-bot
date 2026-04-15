@@ -2,7 +2,7 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 
 import { MainContent } from "@/features/runs"
 import type { LiveTurn, PendingPermissionRequest } from "@/features/session"
-import type { TimelineEntry } from "@/shared/api/sidecar"
+import type { ConversationEvent } from "@/shared/api/sidecar"
 import type { ModelOptionGroup, SelectedModelRef } from "@/features/providers"
 
 const groups: ModelOptionGroup[] = [
@@ -39,7 +39,7 @@ const groups: ModelOptionGroup[] = [
   },
 ]
 
-function buildSession(timelineEntries: TimelineEntry[] = []) {
+function buildSession(timelineEvents: ConversationEvent[] = []) {
   return {
     id: "sess_1",
     workspaceId: "ws_1",
@@ -48,11 +48,11 @@ function buildSession(timelineEntries: TimelineEntry[] = []) {
     createdAt: "2026-03-24T12:00:00Z",
     updatedAt: "2026-03-24T12:00:00Z",
     lastMessageAt: null,
-    messageCount: timelineEntries.length,
+    messageCount: timelineEvents.length,
     lastMessagePreview: null,
     activeConnectionId: null,
     activeModelId: null,
-    timelineEntries,
+    timelineEvents,
     hasMoreHistory: false,
     nextBeforeSequence: null,
     isLoadingHistory: false,
@@ -62,7 +62,7 @@ function buildSession(timelineEntries: TimelineEntry[] = []) {
 
 function renderMainContent(
   selection: SelectedModelRef | null,
-  timelineEntries: TimelineEntry[] = [],
+  timelineEvents: ConversationEvent[] = [],
   options?: {
     isSessionRunning?: boolean
     liveTurn?: LiveTurn | null
@@ -79,8 +79,8 @@ function renderMainContent(
   render(
     <MainContent
       activeProject={{ id: "ws_1", name: "nutstore-bot", path: "/tmp/nutstore-bot", sessions: [] }}
-      activeSession={buildSession(timelineEntries)}
-      timelineEntries={timelineEntries}
+      activeSession={buildSession(timelineEvents)}
+      timelineEvents={timelineEvents}
       liveTurn={options?.liveTurn ?? null}
       isDraftSession={false}
       onSendMessage={vi.fn()}
@@ -99,7 +99,7 @@ function renderMainContent(
       isUploadingAttachment={false}
       onAttachFiles={vi.fn(async () => undefined)}
       onRemoveAttachment={vi.fn(async () => undefined)}
-      onEditTimelineEntryAndRerun={vi.fn(async () => undefined)}
+      onEditConversationEventAndRerun={vi.fn(async () => undefined)}
       pendingPermissionRequest={options?.pendingPermissionRequest ?? null}
       onAllowPermissionRequest={options?.onAllowPermissionRequest ?? vi.fn()}
       onAllowAlwaysPermissionRequest={options?.onAllowAlwaysPermissionRequest ?? vi.fn()}
@@ -151,7 +151,7 @@ describe("MainContent model selector", () => {
       <MainContent
         activeProject={{ id: "ws_1", name: "nutstore-bot", path: "/tmp/nutstore-bot", sessions: [] }}
         activeSession={buildSession()}
-        timelineEntries={[]}
+        timelineEvents={[]}
         liveTurn={null}
         isDraftSession={false}
         onSendMessage={vi.fn()}
@@ -170,7 +170,7 @@ describe("MainContent model selector", () => {
         isUploadingAttachment={false}
         onAttachFiles={vi.fn(async () => undefined)}
         onRemoveAttachment={vi.fn(async () => undefined)}
-        onEditTimelineEntryAndRerun={vi.fn(async () => undefined)}
+        onEditConversationEventAndRerun={vi.fn(async () => undefined)}
         pendingPermissionRequest={null}
         onAllowPermissionRequest={vi.fn()}
         onAllowAlwaysPermissionRequest={vi.fn()}
@@ -190,7 +190,7 @@ describe("MainContent model selector", () => {
       <MainContent
         activeProject={{ id: "ws_1", name: "nutstore-bot", path: "/tmp/nutstore-bot", sessions: [] }}
         activeSession={buildSession()}
-        timelineEntries={[]}
+        timelineEvents={[]}
         liveTurn={null}
         isDraftSession={false}
         onSendMessage={vi.fn()}
@@ -209,7 +209,7 @@ describe("MainContent model selector", () => {
         isUploadingAttachment={false}
         onAttachFiles={vi.fn(async () => undefined)}
         onRemoveAttachment={vi.fn(async () => undefined)}
-        onEditTimelineEntryAndRerun={vi.fn(async () => undefined)}
+        onEditConversationEventAndRerun={vi.fn(async () => undefined)}
         pendingPermissionRequest={null}
         onAllowPermissionRequest={vi.fn()}
         onAllowAlwaysPermissionRequest={vi.fn()}
@@ -309,11 +309,10 @@ describe("MainContent model selector", () => {
       ]
     )
 
-    expect(screen.getByText("Planning step")).toBeInTheDocument()
     expect(screen.getByText("Inspect the repo and identify the main entry points.")).toBeInTheDocument()
     expect(screen.getByText("Step 1")).toBeInTheDocument()
     expect(screen.queryByText("I will inspect output first.")).not.toBeInTheDocument()
-    expect(screen.getByRole("button", { name: "Show Thought" })).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: /Thought/i })).toBeInTheDocument()
     expect(screen.queryByText("print(\"hello\")")).not.toBeInTheDocument()
     expect(screen.queryByText('grep(pattern="hello")')).not.toBeInTheDocument()
     expect(screen.queryByText('python_interpreter(print("hidden"))')).not.toBeInTheDocument()
@@ -321,9 +320,9 @@ describe("MainContent model selector", () => {
     expect(screen.queryByText("Execution logs:\nhello")).not.toBeInTheDocument()
     expect(screen.getByText("Minor warning")).toBeInTheDocument()
 
-    fireEvent.click(screen.getByRole("button", { name: /Tool calls/i }))
-    expect(screen.getByText('grep(pattern="hello")')).toBeInTheDocument()
-    expect(screen.queryByText('python_interpreter(print("hidden"))')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: /View Steps/i }))
+    expect(screen.getByText(/grep .*pattern=\"hello\"/)).toBeInTheDocument()
+    expect(screen.queryByText(/python_interpreter .*print\(\"hidden\"\)/)).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByRole("button", { name: /Thought/i }))
     expect(screen.getByText("I will inspect output first.")).toBeInTheDocument()
@@ -561,9 +560,10 @@ describe("MainContent model selector", () => {
       {
         isSessionRunning: true,
         liveTurn: {
-          optimisticEntries: [],
+          optimisticEvents: [],
           truncatedAfterSequence: null,
           assistantDraft: "Streaming answer",
+          thinkingDraft: "",
           waitingForPermission: true,
           planEntries: [
             {
@@ -581,6 +581,7 @@ describe("MainContent model selector", () => {
               status: "pending",
             },
           ],
+          availableCommands: [],
         },
       }
     )
@@ -642,7 +643,7 @@ describe("MainContent model selector", () => {
             createdAt: "2026-03-24T12:00:00Z",
           },
         ])}
-        timelineEntries={[
+        timelineEvents={[
           {
             id: "entry_user_1",
             sessionId: "sess_1",
@@ -674,7 +675,7 @@ describe("MainContent model selector", () => {
         isUploadingAttachment={false}
         onAttachFiles={vi.fn(async () => undefined)}
         onRemoveAttachment={vi.fn(async () => undefined)}
-        onEditTimelineEntryAndRerun={vi.fn(async () => undefined)}
+        onEditConversationEventAndRerun={vi.fn(async () => undefined)}
         pendingPermissionRequest={null}
         onAllowPermissionRequest={vi.fn()}
         onAllowAlwaysPermissionRequest={vi.fn()}
@@ -706,7 +707,7 @@ describe("MainContent model selector", () => {
         writeText: vi.fn(async () => undefined),
       },
     })
-    const onEditTimelineEntryAndRerun = vi.fn(async () => undefined)
+    const onEditConversationEventAndRerun = vi.fn(async () => undefined)
 
     render(
       <MainContent
@@ -737,7 +738,7 @@ describe("MainContent model selector", () => {
             createdAt: "2026-03-24T12:00:01Z",
           },
         ])}
-        timelineEntries={[
+        timelineEvents={[
           {
             id: "msg_user",
             sessionId: "sess_1",
@@ -781,7 +782,7 @@ describe("MainContent model selector", () => {
         isUploadingAttachment={false}
         onAttachFiles={vi.fn(async () => undefined)}
         onRemoveAttachment={vi.fn(async () => undefined)}
-        onEditTimelineEntryAndRerun={onEditTimelineEntryAndRerun}
+        onEditConversationEventAndRerun={onEditConversationEventAndRerun}
         pendingPermissionRequest={null}
         onAllowPermissionRequest={vi.fn()}
         onAllowAlwaysPermissionRequest={vi.fn()}
@@ -801,7 +802,7 @@ describe("MainContent model selector", () => {
     fireEvent.click(screen.getByText("Send"))
 
     await waitFor(() => {
-      expect(onEditTimelineEntryAndRerun).toHaveBeenCalledWith(
+      expect(onEditConversationEventAndRerun).toHaveBeenCalledWith(
         "msg_user",
         "please update this now",
         { autoAllow: true }

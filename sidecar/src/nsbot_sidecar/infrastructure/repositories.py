@@ -120,17 +120,13 @@ class SessionRecord:
 
 
 @dataclass(frozen=True)
-class TimelineEntryRecord:
+class AcpEventLogRecord:
     id: str
     session_id: str
-    run_id: str | None
-    entry_kind: str
-    display_role: str
-    step_id: str | None
+    turn_id: str | None
     sequence_no: int
-    step_number: int | None
-    content_text: str | None
-    content_json: str | None
+    event_type: str
+    event_json: str
     created_at: str
 
 
@@ -543,7 +539,7 @@ class SessionsRepository:
         return self.get_by_id(session_id)
 
 
-class TimelineEntriesRepository:
+class AcpEventLogRepository:
     def __init__(self, connection: sqlite3.Connection):
         self.connection = connection
 
@@ -551,58 +547,54 @@ class TimelineEntriesRepository:
         self,
         *,
         session_id: str,
-        entry_kind: str,
-        display_role: str,
-        content_text: str | None,
-        content_json: str | None = None,
-        timeline_entry_id: str | None = None,
-        run_id: str | None = None,
-        step_id: str | None = None,
+        event_type: str,
+        event_json: str,
+        turn_id: str | None = None,
+        event_id: str | None = None,
         sequence_no: int | None = None,
-        step_number: int | None = None,
         created_at: str | None = None,
-    ) -> TimelineEntryRecord:
-        record_id = timeline_entry_id or create_id("tle")
+    ) -> AcpEventLogRecord:
+        record_id = event_id or create_id("acpevt")
         sequence = sequence_no or self._next_sequence_number(session_id)
         timestamp = created_at or now_iso_timestamp()
         self.connection.execute(
             """
-            INSERT INTO timeline_entries (
-                id, session_id, run_id, sequence_no, entry_kind, display_role,
-                step_id, step_number, content_text, content_json, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO acp_event_log (
+                id, session_id, turn_id, sequence_no, event_type, event_json, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 record_id,
                 session_id,
-                run_id,
+                turn_id,
                 sequence,
-                entry_kind,
-                display_role,
-                step_id,
-                step_number,
-                content_text,
-                content_json,
+                event_type,
+                event_json,
                 timestamp,
             ),
         )
         self.connection.commit()
         return self.get_by_id(record_id)
 
-    def get_by_id(self, timeline_entry_id: str) -> TimelineEntryRecord:
+    def get_by_id(self, event_id: str) -> AcpEventLogRecord:
         row = self.connection.execute(
-            "SELECT * FROM timeline_entries WHERE id = ?", (timeline_entry_id,)
+            "SELECT * FROM acp_event_log WHERE id = ?",
+            (event_id,),
         ).fetchone()
         if row is None:
-            raise ValueError(f"Timeline entry not found: {timeline_entry_id}")
-        return _map_timeline_entry(row)
+            raise ValueError(f"ACP event not found: {event_id}")
+        return _map_acp_event(row)
 
-    def list_by_session_id(self, session_id: str) -> list[TimelineEntryRecord]:
+    def list_by_session_id(self, session_id: str) -> list[AcpEventLogRecord]:
         rows = self.connection.execute(
-            "SELECT * FROM timeline_entries WHERE session_id = ? ORDER BY sequence_no ASC, created_at ASC",
+            """
+            SELECT * FROM acp_event_log
+            WHERE session_id = ?
+            ORDER BY sequence_no ASC, created_at ASC
+            """,
             (session_id,),
         ).fetchall()
-        return [_map_timeline_entry(row) for row in rows]
+        return [_map_acp_event(row) for row in rows]
 
     def list_by_session_id_page(
         self,
@@ -610,7 +602,7 @@ class TimelineEntriesRepository:
         *,
         limit: int,
         before_sequence: int | None = None,
-    ) -> tuple[list[TimelineEntryRecord], bool, int | None]:
+    ) -> tuple[list[AcpEventLogRecord], bool, int | None]:
         where_sql = "session_id = ?"
         params: list[object] = [session_id]
         if before_sequence is not None:
@@ -621,7 +613,7 @@ class TimelineEntriesRepository:
         rows = self.connection.execute(
             f"""
             SELECT *
-            FROM timeline_entries
+            FROM acp_event_log
             WHERE {where_sql}
             ORDER BY sequence_no DESC, created_at DESC
             LIMIT ?
@@ -634,48 +626,22 @@ class TimelineEntriesRepository:
             rows = rows[:limit]
 
         rows.reverse()
-        records = [_map_timeline_entry(row) for row in rows]
+        records = [_map_acp_event(row) for row in rows]
         next_before_sequence = records[0].sequence_no if has_more and records else None
         return records, has_more, next_before_sequence
-
-    def list_by_run_id(self, run_id: str) -> list[TimelineEntryRecord]:
-        rows = self.connection.execute(
-            """
-            SELECT *
-            FROM timeline_entries
-            WHERE run_id = ?
-            ORDER BY sequence_no ASC, created_at ASC
-            """,
-            (run_id,),
-        ).fetchall()
-        return [_map_timeline_entry(row) for row in rows]
-
-    def list_by_session_id_from_sequence(
-        self, session_id: str, from_sequence: int
-    ) -> list[TimelineEntryRecord]:
-        rows = self.connection.execute(
-            """
-            SELECT *
-            FROM timeline_entries
-            WHERE session_id = ? AND sequence_no >= ?
-            ORDER BY sequence_no ASC, created_at ASC
-            """,
-            (session_id, from_sequence),
-        ).fetchall()
-        return [_map_timeline_entry(row) for row in rows]
 
     def delete_by_session_id_from_sequence(
         self, session_id: str, from_sequence: int
     ) -> None:
         self.connection.execute(
-            "DELETE FROM timeline_entries WHERE session_id = ? AND sequence_no >= ?",
+            "DELETE FROM acp_event_log WHERE session_id = ? AND sequence_no >= ?",
             (session_id, from_sequence),
         )
         self.connection.commit()
 
     def _next_sequence_number(self, session_id: str) -> int:
         row = self.connection.execute(
-            "SELECT COALESCE(MAX(sequence_no), 0) FROM timeline_entries WHERE session_id = ?",
+            "SELECT COALESCE(MAX(sequence_no), 0) FROM acp_event_log WHERE session_id = ?",
             (session_id,),
         ).fetchone()
         return int(row[0]) + 1 if row is not None else 1
@@ -964,7 +930,7 @@ class Repositories:
     workspaces: WorkspacesRepository
     providers: ProviderConnectionsRepository
     sessions: SessionsRepository
-    timeline_entries: TimelineEntriesRepository
+    acp_event_log: AcpEventLogRepository
     attachments: AttachmentsRepository
     draft_attachments: DraftAttachmentsRepository
     runs: RunsRepository
@@ -975,7 +941,7 @@ def create_repositories(connection: sqlite3.Connection) -> Repositories:
         workspaces=WorkspacesRepository(connection),
         providers=ProviderConnectionsRepository(connection),
         sessions=SessionsRepository(connection),
-        timeline_entries=TimelineEntriesRepository(connection),
+        acp_event_log=AcpEventLogRepository(connection),
         attachments=AttachmentsRepository(connection),
         draft_attachments=DraftAttachmentsRepository(connection),
         runs=RunsRepository(connection),
@@ -1061,18 +1027,14 @@ def _map_session(row: sqlite3.Row) -> SessionRecord:
     )
 
 
-def _map_timeline_entry(row: sqlite3.Row) -> TimelineEntryRecord:
-    return TimelineEntryRecord(
+def _map_acp_event(row: sqlite3.Row) -> AcpEventLogRecord:
+    return AcpEventLogRecord(
         id=str(row["id"]),
         session_id=str(row["session_id"]),
-        run_id=_nullable_str(row["run_id"]),
-        entry_kind=str(row["entry_kind"]),
-        display_role=str(row["display_role"]),
-        step_id=_nullable_str(row["step_id"]),
+        turn_id=_nullable_str(row["turn_id"]),
         sequence_no=int(row["sequence_no"]),
-        step_number=None if row["step_number"] is None else int(row["step_number"]),
-        content_text=_nullable_str(row["content_text"]),
-        content_json=_nullable_str(row["content_json"]),
+        event_type=str(row["event_type"]),
+        event_json=str(row["event_json"]),
         created_at=str(row["created_at"]),
     )
 
