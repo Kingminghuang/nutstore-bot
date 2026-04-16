@@ -62,6 +62,20 @@ describe("sidecar-client ACP resource requests", () => {
     })
   })
 
+  it("loads sessions through ACP session/load with the required stdio schema fields", async () => {
+    requestMock.mockResolvedValueOnce({ configOptions: [] })
+
+    const { loadSession } = await import("@/shared/api/sidecar")
+    const response = await loadSession("sess_1", "/tmp/project")
+
+    expect(response).toEqual({ configOptions: [] })
+    expect(requestMock).toHaveBeenCalledWith("session/load", {
+      sessionId: "sess_1",
+      cwd: "/tmp/project",
+      mcpServers: [],
+    })
+  })
+
   it("projects user display text and resource labels from prompt blocks", async () => {
     const { projectConversationEvents } = await import("@/shared/api/sidecar")
 

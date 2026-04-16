@@ -500,8 +500,11 @@ export async function getSessionTimeline(
   }
 }
 
-export async function loadSession(sessionId: string): Promise<{ configOptions: Array<Record<string, unknown>> }> {
-  return acpClient.request("session/load", { sessionId })
+export async function loadSession(
+  sessionId: string,
+  cwd: string
+): Promise<{ configOptions: Array<Record<string, unknown>> }> {
+  return acpClient.request("session/load", { sessionId, cwd, mcpServers: [] })
 }
 
 export async function listWorkspaces(): Promise<{ workspaces: Array<Record<string, unknown>> }> {

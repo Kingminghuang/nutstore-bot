@@ -67,6 +67,22 @@ fn acp_payload_summary(payload: &Value) -> String {
     }
 }
 
+fn acp_incoming_payload_summary(payload: &Value) -> String {
+    let request_id = payload.get("id").and_then(Value::as_u64);
+    let method = payload.get("method").and_then(Value::as_str);
+
+    match (method, request_id) {
+        (Some(method), None) => format!("notification method={method}"),
+        (Some(method), Some(request_id)) => {
+            format!("server request id={} method={}", request_id, method)
+        }
+        (None, Some(response_id)) => {
+            format!("response id={} {}", response_id, acp_payload_summary(payload))
+        }
+        (None, None) => "message without method or id".to_string(),
+    }
+}
+
 fn forward_acp_sidecar_stderr(stderr: ChildStderr) {
     thread::spawn(move || {
         let mut reader = BufReader::new(stderr);
@@ -971,7 +987,10 @@ fn acp_bridge_worker_loop(
             match active_socket.read_message() {
                 Ok(Some(Message::Text(text))) => {
                     if let Ok(payload) = serde_json::from_str::<Value>(&text) {
-                        acp_debug_log(format!("incoming {}", acp_payload_summary(&payload)));
+                        acp_debug_log(format!(
+                            "incoming {}",
+                            acp_incoming_payload_summary(&payload)
+                        ));
                         route_incoming_payload(&app, &bridge_state, &mut pending_requests, payload);
                     } else {
                         acp_debug_log(format!("incoming non-json payload={text}"));
@@ -1491,6 +1510,26 @@ mod tests {
             "result": {"b": true, "a": 1}
         }));
         assert_eq!(summary, "result keys=a,b");
+    }
+
+    #[test]
+    fn acp_incoming_payload_summary_reports_notifications() {
+        let summary = acp_incoming_payload_summary(&json!({
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": {"sessionId": "sess-1"}
+        }));
+        assert_eq!(summary, "notification method=session/update");
+    }
+
+    #[test]
+    fn acp_incoming_payload_summary_reports_responses() {
+        let summary = acp_incoming_payload_summary(&json!({
+            "jsonrpc": "2.0",
+            "id": 23,
+            "result": {"stopReason": "end_turn"}
+        }));
+        assert_eq!(summary, "response id=23 result keys=stopReason");
     }
 
     #[test]

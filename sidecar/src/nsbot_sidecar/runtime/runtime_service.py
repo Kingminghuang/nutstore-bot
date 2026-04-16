@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import inspect
 import json
 import logging
@@ -10,6 +11,8 @@ from typing import Any, Callable, cast
 
 from smolagents.memory import ActionStep, FinalAnswerStep, PlanningStep
 from smolagents.models import ChatMessageStreamDelta
+from smolagents.monitoring import AgentLogger, LogLevel
+from rich.console import Console
 
 from nsbot_sidecar.runtime.context_builder import (
     SECTION_SEPARATOR,
@@ -44,6 +47,20 @@ WORKSPACE_BASED_INSTRUCTION = (
 LOGGER = logging.getLogger(__name__)
 
 
+def _build_agent_logger(*, allow_console_output: bool) -> AgentLogger | None:
+    if allow_console_output:
+        return None
+    return AgentLogger(
+        level=LogLevel.ERROR,
+        console=Console(
+            file=io.StringIO(),
+            highlight=False,
+            force_terminal=False,
+            color_system=None,
+        ),
+    )
+
+
 class RuntimeProcessError(RuntimeError):
     def __init__(self, code: str, message: str):
         super().__init__(message)
@@ -61,6 +78,7 @@ class RuntimeWorkerConfig:
     model_id: str
     ns_bot_home: str
     workspace_path_default: str
+    allow_console_output: bool = True
     provider: str | None = None
     base_url: str | None = None
     api_key: str | None = None
@@ -225,12 +243,20 @@ class AgentRuntimeService:
             context_prompt=context_prompt,
             workspace_path=workspace_path,
         )
+        allow_console_output = self.config.allow_console_output
+        code_agent_logger = _build_agent_logger(
+            allow_console_output=allow_console_output
+        )
+        main_agent_logger = _build_agent_logger(
+            allow_console_output=allow_console_output
+        )
 
         code_agent = NativeCodeAgent(
             tools=tools,
             model=model,
             context_prefix=code_context_prefix,
             stream_outputs=True,
+            logger=code_agent_logger,
             max_steps=self.config.max_steps,
             executor=code_executor,
             name="python_exec_agent",
@@ -245,6 +271,7 @@ class AgentRuntimeService:
             context_prefix=context_prompt,
             instructions=WORKSPACE_BASED_INSTRUCTION,
             stream_outputs=True,
+            logger=main_agent_logger,
             max_steps=self.config.max_steps,
             managed_agents=[code_agent],
         )

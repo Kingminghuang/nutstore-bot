@@ -444,6 +444,32 @@ describe("Home page ACP bootstrap", () => {
     await screen.findByText("Hello world")
   })
 
+  it("creates a new ACP session with mcpServers before the first prompt in draft mode", async () => {
+    const sidecarApi = await import("@/shared/api/sidecar")
+
+    vi.mocked(sidecarApi.listWorkspaceSessions).mockResolvedValueOnce({ sessions: [] })
+    sidecarApiMocks.getSessionTimeline.mockResolvedValue({
+      events: [],
+      pagination: { hasMore: false, nextBeforeSequence: null },
+    })
+
+    render(<Home />)
+    await screen.findAllByText("Project 1")
+
+    fireEvent.click(screen.getByRole("button", { name: "New session" }))
+
+    const input = await screen.findByPlaceholderText("Ask for follow-up changes")
+    fireEvent.change(input, { target: { value: "Open a fresh session" } })
+    fireEvent.click(screen.getByLabelText("Send"))
+
+    await waitFor(() => {
+      expect(sidecarApiMocks.acpRequest).toHaveBeenCalledWith("session/new", {
+        cwd: "/tmp/project",
+        mcpServers: [],
+      })
+    })
+  })
+
   it("merges tool_call_update payload details into ACP tool call card", async () => {
     sidecarApiMocks.getSessionTimeline.mockResolvedValueOnce({
       events: [],

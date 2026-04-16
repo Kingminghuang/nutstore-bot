@@ -625,6 +625,10 @@ export default function Home() {
           null,
     [activeSessionId, activeWorkspaceId, sessionsByWorkspace]
   )
+  const activeWorkspace =
+    activeWorkspaceId == null
+      ? null
+      : workspaces.find((workspace) => workspace.id === activeWorkspaceId) ?? null
   const activeLiveTurn = useMemo(
     () => (activeSessionId ? liveTurnBySession[activeSessionId] ?? null : null),
     [activeSessionId, liveTurnBySession]
@@ -647,7 +651,7 @@ export default function Home() {
   }, [activeSessionId])
 
   useEffect(() => {
-    if (!activeSessionId || !activeWorkspaceId) {
+    if (!activeSessionId || !activeWorkspaceId || !activeWorkspace?.realPath) {
       return
     }
     if (activeSessionHydrationStatus !== "idle") {
@@ -671,7 +675,7 @@ export default function Home() {
     )
 
     void Promise.all([
-      loadSession(activeSessionId),
+      loadSession(activeSessionId, activeWorkspace.realPath),
       getSessionTimeline(activeSessionId, { limit: TIMELINE_PAGE_SIZE }),
     ])
       .then(([, response]) => {
@@ -699,7 +703,7 @@ export default function Home() {
           }))
         )
       })
-  }, [activeSessionHydrationStatus, activeSessionId, activeWorkspaceId])
+  }, [activeSessionHydrationStatus, activeSessionId, activeWorkspace, activeWorkspaceId])
 
   useEffect(() => {
     if (!activeSessionId) {
@@ -893,6 +897,7 @@ export default function Home() {
 
           const createdSession = await acpClient.request<{ sessionId: string }>("session/new", {
             cwd: workspace.realPath,
+            mcpServers: [],
           })
           targetSessionId = createdSession.sessionId
           await acpClient.request("session/set_config_option", {

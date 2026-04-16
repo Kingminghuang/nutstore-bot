@@ -1379,6 +1379,7 @@ class AcpJsonRpcSession:
             model_id = str(session.active_model_id or "")
             config = RuntimeWorkerConfig(
                 model_id=model_id,
+                allow_console_output=False,
                 provider=bundle.connection.runtime_provider,
                 base_url=bundle.connection.base_url,
                 api_key=api_key,

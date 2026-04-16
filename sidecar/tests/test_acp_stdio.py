@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 from pathlib import Path
 import sys
@@ -9,6 +10,33 @@ import unittest
 
 from acp import spawn_agent_process, text_block
 from acp.interfaces import Client
+
+
+async def _send_jsonrpc_request(
+    proc: asyncio.subprocess.Process,
+    request_id: int,
+    method: str,
+    params: dict,
+) -> dict:
+    assert proc.stdin is not None
+    assert proc.stdout is not None
+
+    payload = {
+        "jsonrpc": "2.0",
+        "id": request_id,
+        "method": method,
+        "params": params,
+    }
+    proc.stdin.write((json.dumps(payload) + "\n").encode("utf-8"))
+    await proc.stdin.drain()
+
+    while True:
+        line = await asyncio.wait_for(proc.stdout.readline(), timeout=5)
+        if not line:
+            raise AssertionError("ACP stdio process closed before responding")
+        message = json.loads(line)
+        if message.get("id") == request_id:
+            return message
 
 
 class _RecordingClient(Client):
@@ -91,6 +119,88 @@ class AcpStdioIntegrationTests(unittest.TestCase):
                         for sid, update in client.session_updates
                     )
                 )
+
+        asyncio.run(_run())
+
+    def test_raw_jsonrpc_session_requests_accept_frontend_bridge_shape(self) -> None:
+        temp_dir = Path(tempfile.mkdtemp(prefix="acp-stdio-raw-"))
+        workspace = temp_dir / "workspace"
+        workspace.mkdir(parents=True, exist_ok=True)
+
+        async def _run() -> None:
+            env = {
+                **os.environ,
+                "NSBOT_ACP_TRANSPORT": "stdio",
+                "NS_BOT_HOME": str(temp_dir),
+            }
+            proc = await asyncio.create_subprocess_exec(
+                sys.executable,
+                "-m",
+                "nsbot_sidecar.api.acp_stdio",
+                cwd=str(workspace),
+                env=env,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            try:
+                init = await _send_jsonrpc_request(
+                    proc,
+                    1,
+                    "initialize",
+                    {
+                        "protocolVersion": 1,
+                        "clientCapabilities": {
+                            "fs": {"readTextFile": False, "writeTextFile": False},
+                            "terminal": False,
+                        },
+                    },
+                )
+                self.assertEqual(init["result"]["protocolVersion"], 1)
+
+                provider = await _send_jsonrpc_request(
+                    proc,
+                    2,
+                    "_nsbot/provider/create",
+                    {
+                        "kind": "builtin",
+                        "catalogProviderId": "openai",
+                        "displayName": "OpenAI",
+                        "apiKey": "sk-test",
+                        "preferredModelId": "gpt-5.4",
+                    },
+                )
+                self.assertIn("id", provider["result"])
+
+                session = await _send_jsonrpc_request(
+                    proc,
+                    3,
+                    "session/new",
+                    {"cwd": str(workspace), "mcpServers": []},
+                )
+                session_id = session["result"].get("sessionId")
+                self.assertTrue(session_id)
+
+                loaded = await _send_jsonrpc_request(
+                    proc,
+                    4,
+                    "session/load",
+                    {
+                        "cwd": str(workspace),
+                        "sessionId": session_id,
+                        "mcpServers": [],
+                    },
+                )
+                self.assertIn("configOptions", loaded["result"])
+            finally:
+                if proc.stdin is not None:
+                    proc.stdin.close()
+                proc.terminate()
+                try:
+                    await asyncio.wait_for(proc.wait(), timeout=5)
+                except asyncio.TimeoutError:
+                    proc.kill()
+                    await proc.wait()
 
         asyncio.run(_run())
 

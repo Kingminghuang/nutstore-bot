@@ -417,6 +417,79 @@ class RuntimeServiceTests(unittest.TestCase):
             str(main_kwargs["context_prefix"]),
             str(code_kwargs["context_prefix"]),
         )
+        self.assertTrue(code_kwargs["stream_outputs"])
+        self.assertTrue(main_kwargs["stream_outputs"])
+        self.assertNotIn("verbosity_level", code_kwargs)
+        self.assertNotIn("verbosity_level", main_kwargs)
+        self.assertIsNone(code_kwargs["logger"])
+        self.assertIsNone(main_kwargs["logger"])
+
+    def test_runtime_service_disables_console_output_when_configured(self) -> None:
+        created: dict[str, object] = {}
+
+        class FakeCodeAgent:
+            def __init__(self, *args, **kwargs):
+                del args
+                created["code_kwargs"] = kwargs
+                created["code_instance"] = self
+
+        class FakeToolCallingAgent:
+            def __init__(self, *args, **kwargs):
+                del args
+                created["main_kwargs"] = kwargs
+                self.memory = type("Memory", (), {"steps": []})()
+
+            def run(self, *args, **kwargs):
+                del args, kwargs
+                return iter(())
+
+        with patch(
+            "nsbot_sidecar.runtime.runtime_service.NativeCodeAgent",
+            FakeCodeAgent,
+        ), patch(
+            "nsbot_sidecar.runtime.runtime_service.NativeToolCallingAgent",
+            FakeToolCallingAgent,
+        ):
+            service = SmolagentsRuntimeEngine(
+                replace(self._config(), allow_console_output=False),
+                model_factory=lambda: FakeStreamingModel("ok"),
+            )
+            service.process(
+                turn_id="turn-stream-flags-disabled",
+                user_input="task",
+                auth_context={},
+                metadata=RunMetadata(
+                    workspace_path=str(self.workspace_a),
+                    session_key=None,
+                ),
+            )
+
+        self.assertTrue(created["code_kwargs"]["stream_outputs"])
+        self.assertTrue(created["main_kwargs"]["stream_outputs"])
+        self.assertNotIn("verbosity_level", created["code_kwargs"])
+        self.assertNotIn("verbosity_level", created["main_kwargs"])
+        self.assertIsNotNone(created["code_kwargs"]["logger"])
+        self.assertIsNotNone(created["main_kwargs"]["logger"])
+        self.assertEqual(created["code_kwargs"]["logger"].level, 0)
+        self.assertEqual(created["main_kwargs"]["logger"].level, 0)
+
+    def test_has_delta_when_console_output_disabled(self) -> None:
+        service = SmolagentsRuntimeEngine(
+            replace(self._config(), allow_console_output=False),
+            model_factory=lambda: FakeStreamingModel("silent-ok"),
+        )
+
+        result = service.process(
+            turn_id="turn-silent-deltas",
+            user_input="say ok",
+            auth_context={},
+            metadata=RunMetadata(
+                workspace_path=str(self.workspace_a), session_key=None
+            ),
+        )
+
+        self.assertEqual(result["final_answer"], "silent-ok")
+        self.assertGreaterEqual(len(result["deltas"]), 1)
 
     def test_execute_runtime_turn_forwards_event_callback_and_is_cancelled(self) -> None:
         cfg = self._config()
