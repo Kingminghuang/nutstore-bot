@@ -12,7 +12,7 @@ const sidecarApiMocks = vi.hoisted(() => {
 
   return {
     acpRequest: vi.fn((method: string) => {
-      if (method === "workspace/list") {
+      if (method === "_nsbot/workspace/list") {
         return Promise.resolve({
           workspaces: [
             {
@@ -26,13 +26,13 @@ const sidecarApiMocks = vi.hoisted(() => {
           ],
         })
       }
-      if (method === "workspace/sessions/list") {
+      if (method === "_nsbot/workspace/sessions/list") {
         return Promise.resolve({ sessions: [baseSession] })
       }
-      if (method === "attachment/list") {
+      if (method === "_nsbot/attachment/list") {
         return Promise.resolve({ attachments: [] })
       }
-      if (method === "draft_attachment/list") {
+      if (method === "_nsbot/draft_attachment/list") {
         return Promise.resolve({ draftAttachments: [] })
       }
       if (method === "initialize") {
@@ -43,7 +43,7 @@ const sidecarApiMocks = vi.hoisted(() => {
           pendingPromptResolves.push(resolve)
         })
       }
-      if (method === "session/edit_and_prompt") {
+      if (method === "_nsbot/session/edit_and_prompt") {
         return new Promise((resolve) => {
           pendingPromptResolves.push(resolve)
         })
@@ -127,6 +127,7 @@ vi.mock("@/shared/api/sidecar", () => ({
     ],
   })),
   listWorkspaceSessions: vi.fn(async () => ({ sessions: [baseSession] })),
+  searchWorkspaceEntries: vi.fn(async () => ({ entries: [] })),
   listAttachments: vi.fn(async () => ({ attachments: [] })),
   listDraftAttachments: vi.fn(async () => ({ draftAttachments: [] })),
   createWorkspace: vi.fn(),
@@ -150,8 +151,18 @@ vi.mock("@/shared/api/sidecar", () => ({
       stepId: null,
       stepNumber: null,
       contentText:
+        (event.payload as { params?: { update?: { content?: { displayText?: string } } } } | undefined)?.params?.update?.content?.displayText ??
         (event.payload as { params?: { update?: { content?: { text?: string } } } } | undefined)?.params?.update?.content?.text ??
         String((event as { contentText?: unknown }).contentText ?? ""),
+      editableText:
+        (event.payload as { params?: { update?: { content?: { editableText?: string } } } } | undefined)?.params?.update?.content?.editableText ??
+        ((event as { editableText?: unknown }).editableText != null
+          ? String((event as { editableText?: unknown }).editableText)
+          : undefined),
+      displayBlocks: (event as { displayBlocks?: unknown }).displayBlocks,
+      promptBlocks:
+        (event.payload as { params?: { update?: { content?: { promptBlocks?: unknown } } } } | undefined)?.params?.update?.content?.promptBlocks ??
+        (event as { promptBlocks?: unknown }).promptBlocks,
       createdAt: String(event.createdAt ?? "2026-01-01T00:00:00Z"),
     }))
   ),
@@ -333,6 +344,7 @@ describe("Home page ACP bootstrap", () => {
           },
           {
             id: "entry_answer_1",
+            eventId: "evt_answer_1",
             sessionId: "sess_existing",
             turnId: null,
             sequenceNo: 2,
@@ -672,7 +684,7 @@ describe("Home page ACP bootstrap", () => {
             displayRole: "user",
             stepId: null,
             stepNumber: null,
-            contentText: "Old prompt",
+            contentText: "First prompt",
             createdAt: "2026-01-01T00:00:01Z",
           },
           {
@@ -684,14 +696,9 @@ describe("Home page ACP bootstrap", () => {
             displayRole: "assistant",
             stepId: null,
             stepNumber: null,
-            contentText: "Old answer",
+            contentText: "First answer",
             createdAt: "2026-01-01T00:00:02Z",
           },
-        ],
-        pagination: { hasMore: false, nextBeforeSequence: null },
-      })
-      .mockResolvedValueOnce({
-        events: [
           {
             id: "entry_user_2",
             eventId: "evt_user_2",
@@ -702,14 +709,48 @@ describe("Home page ACP bootstrap", () => {
             displayRole: "user",
             stepId: null,
             stepNumber: null,
-            contentText: "Updated prompt",
+            contentText: "Old prompt",
+            editableText: "Old prompt",
+            promptBlocks: [{ type: "text", text: "Old prompt" }],
             createdAt: "2026-01-01T00:01:01Z",
           },
           {
             id: "entry_answer_2",
+            eventId: "evt_answer_2",
             sessionId: "sess_existing",
             turnId: null,
             sequenceNo: 4,
+            entryKind: "final_answer",
+            displayRole: "assistant",
+            stepId: null,
+            stepNumber: null,
+            contentText: "Old answer",
+            createdAt: "2026-01-01T00:01:02Z",
+          },
+        ],
+        pagination: { hasMore: false, nextBeforeSequence: null },
+      })
+      .mockResolvedValueOnce({
+        events: [
+          {
+            id: "entry_user_3",
+            eventId: "evt_user_3",
+            sessionId: "sess_existing",
+            turnId: null,
+            sequenceNo: 5,
+            entryKind: "user_input",
+            displayRole: "user",
+            stepId: null,
+            stepNumber: null,
+            contentText: "Updated prompt",
+            createdAt: "2026-01-01T00:01:01Z",
+          },
+          {
+            id: "entry_answer_3",
+            eventId: "evt_answer_3",
+            sessionId: "sess_existing",
+            turnId: null,
+            sequenceNo: 6,
             entryKind: "final_answer",
             displayRole: "assistant",
             stepId: null,
@@ -723,6 +764,8 @@ describe("Home page ACP bootstrap", () => {
 
     render(<Home />)
     await screen.findAllByText("Project 1")
+    await screen.findByText("First prompt")
+    await screen.findByText("First answer")
     await screen.findByText("Old prompt")
     await screen.findByText("Old answer")
 
@@ -733,10 +776,10 @@ describe("Home page ACP bootstrap", () => {
 
     await waitFor(() => {
       expect(sidecarApiMocks.acpRequest).toHaveBeenCalledWith(
-        "session/edit_and_prompt",
+        "_nsbot/session/edit_and_prompt",
         expect.objectContaining({
           sessionId: "sess_existing",
-          eventId: "evt_user_1",
+          eventId: "evt_user_2",
         })
       )
     })
@@ -764,5 +807,268 @@ describe("Home page ACP bootstrap", () => {
     })
 
     await screen.findByText("Replacement answer")
+  })
+
+  it("sends composer attachments as resource blocks", async () => {
+    const sidecarApi = await import("@/shared/api/sidecar")
+
+    sidecarApiMocks.getSessionTimeline.mockResolvedValue({
+      events: [],
+      pagination: { hasMore: false, nextBeforeSequence: null },
+    })
+    vi.mocked(sidecarApi.listAttachments).mockResolvedValue({
+      attachments: [
+        {
+          id: "att_1",
+          sessionId: "sess_existing",
+          workspaceId: "ws_1",
+          fileName: "notes.txt",
+          mimeType: "text/plain",
+          sizeBytes: 12,
+          status: "uploaded",
+          createdAt: "2026-01-01T00:00:00Z",
+          updatedAt: "2026-01-01T00:00:00Z",
+        },
+      ],
+    })
+
+    render(<Home />)
+    await screen.findAllByText("Project 1")
+    await screen.findAllByText("notes.txt")
+
+    fireEvent.change(screen.getByPlaceholderText("Ask for follow-up changes"), {
+      target: { value: "Summarize the attachment" },
+    })
+    fireEvent.click(screen.getByRole("button", { name: "Send" }))
+
+    await waitFor(() => {
+      expect(sidecarApiMocks.acpRequest).toHaveBeenNthCalledWith(
+        2,
+        "session/prompt",
+        expect.objectContaining({
+          sessionId: "sess_existing",
+          prompt: [
+            { type: "text", text: "Summarize the attachment" },
+            {
+              type: "resource",
+              resource: {
+                uri: "attachment://session/att_1",
+                mimeType: "text/plain",
+                title: "notes.txt",
+              },
+            },
+          ],
+        })
+      )
+    })
+  })
+
+  it("sends selected mentions as resource_link prompt blocks", async () => {
+    const sidecarApi = await import("@/shared/api/sidecar")
+
+    sidecarApiMocks.getSessionTimeline.mockResolvedValue({
+      events: [],
+      pagination: { hasMore: false, nextBeforeSequence: null },
+    })
+    vi.mocked(sidecarApi.searchWorkspaceEntries).mockResolvedValue({
+      entries: [
+        {
+          name: "page.tsx",
+          relativePath: "src/app/page.tsx",
+          parentPath: "src/app",
+          absolutePath: "/tmp/project/src/app/page.tsx",
+          uri: "file:///tmp/project/src/app/page.tsx",
+          entryType: "file",
+        },
+      ],
+    })
+
+    render(<Home />)
+    await screen.findAllByText("Project 1")
+
+    fireEvent.change(screen.getByPlaceholderText("Ask for follow-up changes"), {
+      target: { value: "Inspect @pag", selectionStart: 12 },
+    })
+
+    await waitFor(() => {
+      expect(sidecarApi.searchWorkspaceEntries).toHaveBeenCalledWith("ws_1", "pag", { limit: 8 })
+    })
+
+    fireEvent.click(await screen.findByText("page.tsx"))
+    fireEvent.click(screen.getByRole("button", { name: "Send" }))
+
+    await waitFor(() => {
+      expect(sidecarApiMocks.acpRequest).toHaveBeenNthCalledWith(
+        2,
+        "session/prompt",
+        expect.objectContaining({
+          sessionId: "sess_existing",
+          prompt: expect.arrayContaining([
+            { type: "text", text: "Inspect " },
+            expect.objectContaining({
+              type: "resource_link",
+              uri: "file:///tmp/project/src/app/page.tsx",
+              name: "page.tsx",
+            }),
+          ]),
+        })
+      )
+    })
+  })
+
+  it("preserves attachment resource blocks during edit-and-rerun", async () => {
+    sidecarApiMocks.getSessionTimeline
+      .mockResolvedValueOnce({
+        events: [
+          {
+            id: "entry_user_attachment",
+            eventId: "evt_user_attachment",
+            sessionId: "sess_existing",
+            turnId: null,
+            sequenceNo: 1,
+            entryKind: "user_input",
+            displayRole: "user",
+            stepId: null,
+            stepNumber: null,
+            contentText: "Summarize this\nnotes.txt",
+            editableText: "Summarize this",
+            displayBlocks: [
+              { type: "text", text: "Summarize this" },
+              { type: "resource", label: "notes.txt", uri: "attachment://session/att_1" },
+            ],
+            promptBlocks: [
+              { type: "text", text: "Summarize this" },
+              {
+                type: "resource",
+                resource: {
+                  uri: "attachment://session/att_1",
+                  mimeType: "text/plain",
+                  title: "notes.txt",
+                },
+              },
+            ],
+            createdAt: "2026-01-01T00:00:01Z",
+          },
+        ],
+        pagination: { hasMore: false, nextBeforeSequence: null },
+      })
+      .mockResolvedValueOnce({
+        events: [
+          {
+            id: "entry_user_attachment_2",
+            eventId: "evt_user_attachment_2",
+            sessionId: "sess_existing",
+            turnId: null,
+            sequenceNo: 2,
+            entryKind: "user_input",
+            displayRole: "user",
+            stepId: null,
+            stepNumber: null,
+            contentText: "Explain in more detail\nnotes.txt",
+            editableText: "Explain in more detail",
+            displayBlocks: [
+              { type: "text", text: "Explain in more detail" },
+              { type: "resource", label: "notes.txt", uri: "attachment://session/att_1" },
+            ],
+            promptBlocks: [
+              { type: "text", text: "Explain in more detail" },
+              {
+                type: "resource",
+                resource: {
+                  uri: "attachment://session/att_1",
+                  mimeType: "text/plain",
+                  title: "notes.txt",
+                },
+              },
+            ],
+            createdAt: "2026-01-01T00:00:02Z",
+          },
+        ],
+        pagination: { hasMore: false, nextBeforeSequence: null },
+      })
+
+    render(<Home />)
+    await screen.findAllByText("Project 1")
+    await screen.findAllByText("notes.txt")
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit user message" }))
+    const editor = screen.getByDisplayValue("Summarize this")
+    fireEvent.change(editor, { target: { value: "Explain in more detail" } })
+    fireEvent.click(screen.getByText("Send"))
+
+    await waitFor(() => {
+      expect(sidecarApiMocks.acpRequest).toHaveBeenCalledWith(
+        "_nsbot/session/edit_and_prompt",
+        expect.objectContaining({
+          sessionId: "sess_existing",
+          eventId: "evt_user_attachment",
+          prompt: [
+            { type: "text", text: "Explain in more detail" },
+            {
+              type: "resource",
+              resource: {
+                uri: "attachment://session/att_1",
+                mimeType: "text/plain",
+                title: "notes.txt",
+              },
+            },
+          ],
+        })
+      )
+    })
+  })
+
+  it("drops removed mention resource_link blocks during edit-and-rerun", async () => {
+    sidecarApiMocks.getSessionTimeline.mockResolvedValueOnce({
+      events: [
+        {
+          id: "entry_user_mention",
+          eventId: "evt_user_mention",
+          sessionId: "sess_existing",
+          turnId: null,
+          sequenceNo: 1,
+          entryKind: "user_input",
+          displayRole: "user",
+          stepId: null,
+          stepNumber: null,
+          contentText: "Inspect page.tsx",
+          editableText: "Inspect ",
+          displayBlocks: [
+            { type: "text", text: "Inspect " },
+            { type: "resource_link", label: "page.tsx", uri: "file:///tmp/project/src/app/page.tsx" },
+          ],
+          promptBlocks: [
+            { type: "text", text: "Inspect " },
+            {
+              type: "resource_link",
+              uri: "file:///tmp/project/src/app/page.tsx",
+              name: "page.tsx",
+            },
+          ],
+          createdAt: "2026-01-01T00:00:01Z",
+        },
+      ],
+      pagination: { hasMore: false, nextBeforeSequence: null },
+    })
+
+    render(<Home />)
+    await screen.findAllByText("Project 1")
+    await screen.findByText("page.tsx")
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit user message" }))
+    const editor = screen.getByDisplayValue("Inspect @page.tsx")
+    fireEvent.change(editor, { target: { value: "Inspect again" } })
+    fireEvent.click(screen.getByText("Send"))
+
+    await waitFor(() => {
+      expect(sidecarApiMocks.acpRequest).toHaveBeenCalledWith(
+        "_nsbot/session/edit_and_prompt",
+        expect.objectContaining({
+          sessionId: "sess_existing",
+          eventId: "evt_user_mention",
+          prompt: [{ type: "text", text: "Inspect again" }],
+        })
+      )
+    })
   })
 })

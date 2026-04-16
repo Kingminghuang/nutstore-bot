@@ -181,7 +181,15 @@ def _extract_messages_by_update(events: list[Any], target_update: str) -> list[s
             continue
         content = update.get("content")
         if isinstance(content, dict) and str(content.get("type") or "") == "text":
-            text = str(content.get("text") or "").strip()
+            if target_update == "user_message_chunk":
+                text = str(
+                    content.get("displayText")
+                    or content.get("editableText")
+                    or content.get("text")
+                    or ""
+                ).strip()
+            else:
+                text = str(content.get("text") or "").strip()
             if text:
                 messages.append(text)
     return messages

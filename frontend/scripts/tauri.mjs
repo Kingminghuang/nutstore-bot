@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, statSync } from "node:fs"
+import { chmodSync, cpSync, existsSync, mkdirSync, readdirSync, rmSync, statSync } from "node:fs"
 import path from "node:path"
 import process from "node:process"
 import { spawnSync } from "node:child_process"
@@ -29,6 +29,65 @@ function run(command, args, cwd) {
 
 function shouldInjectConfig(commandName) {
   return commandName === "dev" || commandName === "build"
+}
+
+function resolvePreparedSidecarPath() {
+  if (process.platform === "darwin" && process.arch === "arm64") {
+    return path.join(
+      repoRoot,
+      "src-tauri",
+      "binaries",
+      "nsbot-sidecar-aarch64-apple-darwin"
+    )
+  }
+
+  return null
+}
+
+function syncTauriDevArtifactsIfNeeded(commandName) {
+  if (commandName !== "dev") {
+    return
+  }
+
+  const cleanupTargets = [path.join(frontendRoot, "dist")]
+  const debugRoot = path.join(repoRoot, "src-tauri", "target", "debug")
+  const runtimeSource = path.join(repoRoot, "src-tauri", "runtime")
+  const runtimeTarget = path.join(debugRoot, "runtime")
+  const preparedSidecarPath = resolvePreparedSidecarPath()
+  const debugSidecarTarget = path.join(debugRoot, "nsbot-sidecar")
+
+  let removedAny = false
+  for (const targetPath of cleanupTargets) {
+    if (!existsSync(targetPath)) {
+      continue
+    }
+
+    rmSync(targetPath, { recursive: true, force: true })
+    removedAny = true
+    console.log(`[tauri-wrapper] Removed stale dev artifact: ${targetPath}`)
+  }
+
+  let refreshedAny = false
+  if (existsSync(runtimeSource)) {
+    mkdirSync(debugRoot, { recursive: true })
+    rmSync(runtimeTarget, { recursive: true, force: true })
+    cpSync(runtimeSource, runtimeTarget, { recursive: true })
+    refreshedAny = true
+    console.log(`[tauri-wrapper] Refreshed dev runtime: ${runtimeTarget}`)
+  }
+
+  if (preparedSidecarPath && existsSync(preparedSidecarPath)) {
+    mkdirSync(debugRoot, { recursive: true })
+    rmSync(debugSidecarTarget, { force: true })
+    cpSync(preparedSidecarPath, debugSidecarTarget)
+    chmodSync(debugSidecarTarget, 0o755)
+    refreshedAny = true
+    console.log(`[tauri-wrapper] Refreshed dev sidecar: ${debugSidecarTarget}`)
+  }
+
+  if (!removedAny && !refreshedAny) {
+    console.log("[tauri-wrapper] No stale dev artifacts found.")
+  }
 }
 
 function artifactLooksPrepared(filePath, minSizeBytes) {
@@ -76,11 +135,16 @@ function ensureDesktopRuntimePreparedIfNeeded(commandName) {
     artifactLooksPrepared(rgPath, 100 * 1024) &&
     directoryHasEntries(templatesPath)
 
-  if (runtimeReady) {
+  const forcePrepare = commandName === "dev"
+  if (runtimeReady && !forcePrepare) {
     return
   }
 
-  console.log("[tauri-wrapper] Preparing desktop runtime assets...")
+  console.log(
+    forcePrepare
+      ? "[tauri-wrapper] Rebuilding desktop runtime assets for tauri dev..."
+      : "[tauri-wrapper] Preparing desktop runtime assets..."
+  )
   const result = spawnSync("bash", ["./scripts/prepare_desktop_runtime_macos.sh"], {
     cwd: repoRoot,
     stdio: "inherit",
@@ -129,6 +193,7 @@ function main() {
   const commandName = originalArgs[0]
 
   ensureDesktopRuntimePreparedIfNeeded(commandName)
+  syncTauriDevArtifactsIfNeeded(commandName)
 
   const tauriBin = path.join(
     frontendRoot,

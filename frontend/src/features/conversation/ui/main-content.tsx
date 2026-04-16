@@ -27,7 +27,17 @@ import type {
   Project,
   Session,
 } from "@/features/session"
-import type { ActionEntry, PlanningEntry, ConversationEvent } from "@/shared/api/sidecar"
+import type {
+  ActionEntry,
+  PlanningEntry,
+  ConversationEvent,
+  WorkspaceEntrySearchResult,
+} from "@/shared/api/sidecar"
+import {
+  buildComposerBlocksFromPromptBlocks,
+  INLINE_MENTION_SENTINEL,
+  type ComposerInlineBlock,
+} from "@/app/prompt-blocks"
 import {
   getModelOptionLabel,
   getReasoningEffortOptions,
@@ -56,8 +66,9 @@ interface MainContentProps {
   timelineEvents: ConversationEvent[]
   liveTurn: LiveTurn | null
   isDraftSession: boolean
-  onSendMessage: (text: string, options: { autoAllow: boolean }) => Promise<void>
+  onSendMessage: (payload: { blocks: ComposerInlineBlock[] }, options: { autoAllow: boolean }) => Promise<void>
   onCancelTurn?: () => Promise<void> | void
+  onSearchWorkspaceEntries: (query: string) => Promise<WorkspaceEntrySearchResult[]>
   modelOptionGroups: ModelOptionGroup[]
   selectedModel: SelectedModelRef | null
   selectedReasoningEffort: SelectedReasoningEffort
@@ -75,7 +86,7 @@ interface MainContentProps {
   onRemoveAttachment: (attachmentId: string) => Promise<void>
   onEditConversationEventAndRerun: (
     entryId: string,
-    nextContent: string,
+    nextBlocks: ComposerInlineBlock[],
     options: { autoAllow: boolean }
   ) => Promise<void>
   pendingPermissionRequest: PendingPermissionRequest | null
@@ -95,6 +106,7 @@ export function MainContent({
   isDraftSession,
   onSendMessage,
   onCancelTurn,
+  onSearchWorkspaceEntries,
   modelOptionGroups,
   selectedModel,
   selectedReasoningEffort,
@@ -123,20 +135,53 @@ export function MainContent({
   const [permission, setPermission] = useState<PermissionMode>("auto_allow")
   const [modelOpen, setModelOpen] = useState(false)
   const [reasoningOpen, setReasoningOpen] = useState(false)
-  const [inputValue, setInputValue] = useState("")
+  const [composerBlocks, setComposerBlocks] = useState<ComposerInlineBlock[]>([{ type: "text", text: "" }])
   const [isGenerating, setIsGenerating] = useState(false)
   const [hasAnimatedProviderNotice, setHasAnimatedProviderNotice] = useState(false)
   const [editingEntryId, setEditingEntryId] = useState<string | null>(null)
-  const [editingValue, setEditingValue] = useState("")
+  const [editingBlocks, setEditingBlocks] = useState<ComposerInlineBlock[]>([{ type: "text", text: "" }])
+  const [editingSelectionRange, setEditingSelectionRange] = useState({ start: 0, end: 0 })
+  const [editingMentionResults, setEditingMentionResults] = useState<WorkspaceEntrySearchResult[]>([])
+  const [editingMentionActiveIndex, setEditingMentionActiveIndex] = useState(0)
+  const [isSearchingEditMentions, setIsSearchingEditMentions] = useState(false)
+  const [editingMentionSearchError, setEditingMentionSearchError] = useState<string | null>(null)
+  const [dismissedEditMentionKey, setDismissedEditMentionKey] = useState<string | null>(null)
   const [isSubmittingEdit, setIsSubmittingEdit] = useState(false)
   const [copiedEntryId, setCopiedEntryId] = useState<string | null>(null)
+  const [mentionResults, setMentionResults] = useState<WorkspaceEntrySearchResult[]>([])
+  const [mentionActiveIndex, setMentionActiveIndex] = useState(0)
+  const [isSearchingMentions, setIsSearchingMentions] = useState(false)
+  const [mentionSearchError, setMentionSearchError] = useState<string | null>(null)
+  const [selectionRange, setSelectionRange] = useState({ start: 0, end: 0 })
+  const [dismissedMentionKey, setDismissedMentionKey] = useState<string | null>(null)
 
-  const inputRef = useRef<HTMLInputElement>(null)
+  const inputRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const copyResetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const editingInputRef = useRef<HTMLTextAreaElement>(null)
+  const inputValue = useMemo(() => serializeComposerBlocks(composerBlocks), [composerBlocks])
+  const selectedMentions = useMemo(
+    () => composerBlocks.flatMap((block) => (block.type === "mention" ? [block.mention] : [])),
+    [composerBlocks]
+  )
+  const editingValue = useMemo(() => serializeComposerBlocks(editingBlocks), [editingBlocks])
+  const editingSelectedMentions = useMemo(
+    () => editingBlocks.flatMap((block) => (block.type === "mention" ? [block.mention] : [])),
+    [editingBlocks]
+  )
 
   const messages = timelineEvents ?? EMPTY_ENTRIES
+  const latestEditableUserMessageId = useMemo(() => {
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      if (messages[i].entryKind === "user_input") {
+        return messages[i].id
+      }
+    }
+    return null
+  }, [messages])
   const canCompose = activeSession != null || isDraftSession
+  const canSubmitPrompt =
+    stripInlineTokenText(inputValue).trim().length > 0 || selectedMentions.length > 0 || composerAttachments.length > 0
   const hasMessages =
     messages.length > 0 ||
     (liveTurn?.planEntries.length ?? 0) > 0 ||
@@ -191,6 +236,31 @@ export function MainContent({
     !hasLiveStepCard &&
     !hasLiveAssistantDraft &&
     !isGenerating
+  const activeMentionMatch = useMemo(
+    () =>
+      selectionRange.start === selectionRange.end
+        ? getActiveMentionMatch(inputValue, selectionRange.start)
+        : null,
+    [inputValue, selectionRange.end, selectionRange.start]
+  )
+  const activeMentionKey = activeMentionMatch
+    ? `${activeMentionMatch.start}:${activeMentionMatch.end}:${activeMentionMatch.query}`
+    : null
+  const mentionPopoverOpen =
+    Boolean(canCompose && activeMentionMatch) && activeMentionKey !== dismissedMentionKey
+  const activeEditMentionMatch = useMemo(
+    () =>
+      editingSelectionRange.start === editingSelectionRange.end
+        ? getActiveMentionMatch(editingValue, editingSelectionRange.start)
+        : null,
+    [editingSelectionRange.end, editingSelectionRange.start, editingValue]
+  )
+  const activeEditMentionKey = activeEditMentionMatch
+    ? `${activeEditMentionMatch.start}:${activeEditMentionMatch.end}:${activeEditMentionMatch.query}`
+    : null
+  const editMentionPopoverOpen =
+    Boolean(editingEntryId && activeEditMentionMatch) &&
+    activeEditMentionKey !== dismissedEditMentionKey
 
   useEffect(() => {
     if (!showProviderNotice || hasAnimatedProviderNotice) {
@@ -221,6 +291,117 @@ export function MainContent({
     inputRef.current?.blur()
   }, [pendingPermissionRequest])
 
+  useEffect(() => {
+    setComposerBlocks([{ type: "text", text: "" }])
+    setMentionResults([])
+    setMentionSearchError(null)
+    setIsSearchingMentions(false)
+    setMentionActiveIndex(0)
+    setDismissedMentionKey(null)
+  }, [activeProject?.id])
+
+  useEffect(() => {
+    if (!activeMentionKey) {
+      if (dismissedMentionKey !== null) {
+        setDismissedMentionKey(null)
+      }
+      return
+    }
+    if (dismissedMentionKey && dismissedMentionKey !== activeMentionKey) {
+      setDismissedMentionKey(null)
+    }
+  }, [activeMentionKey, dismissedMentionKey])
+
+  useEffect(() => {
+    if (!activeEditMentionKey) {
+      if (dismissedEditMentionKey !== null) {
+        setDismissedEditMentionKey(null)
+      }
+      return
+    }
+    if (dismissedEditMentionKey && dismissedEditMentionKey !== activeEditMentionKey) {
+      setDismissedEditMentionKey(null)
+    }
+  }, [activeEditMentionKey, dismissedEditMentionKey])
+
+  useEffect(() => {
+    if (!mentionPopoverOpen || !activeMentionMatch) {
+      setMentionResults([])
+      setMentionSearchError(null)
+      setIsSearchingMentions(false)
+      setMentionActiveIndex(0)
+      return
+    }
+
+    let cancelled = false
+    setIsSearchingMentions(true)
+    setMentionSearchError(null)
+    const timer = setTimeout(async () => {
+      try {
+        const results = await onSearchWorkspaceEntries(activeMentionMatch.query)
+        if (cancelled) {
+          return
+        }
+        setMentionResults(results)
+        setMentionActiveIndex(0)
+      } catch (error) {
+        if (cancelled) {
+          return
+        }
+        setMentionResults([])
+        setMentionSearchError(error instanceof Error ? error.message : "Failed to search workspace")
+      } finally {
+        if (!cancelled) {
+          setIsSearchingMentions(false)
+        }
+      }
+    }, 120)
+
+    return () => {
+      cancelled = true
+      clearTimeout(timer)
+    }
+  }, [activeMentionMatch, mentionPopoverOpen, onSearchWorkspaceEntries])
+
+  useEffect(() => {
+    if (!editMentionPopoverOpen || !activeEditMentionMatch) {
+      setEditingMentionResults([])
+      setEditingMentionSearchError(null)
+      setIsSearchingEditMentions(false)
+      setEditingMentionActiveIndex(0)
+      return
+    }
+
+    let cancelled = false
+    setIsSearchingEditMentions(true)
+    setEditingMentionSearchError(null)
+    const timer = setTimeout(async () => {
+      try {
+        const results = await onSearchWorkspaceEntries(activeEditMentionMatch.query)
+        if (cancelled) {
+          return
+        }
+        setEditingMentionResults(results)
+        setEditingMentionActiveIndex(0)
+      } catch (error) {
+        if (cancelled) {
+          return
+        }
+        setEditingMentionResults([])
+        setEditingMentionSearchError(error instanceof Error ? error.message : "Failed to search workspace")
+      } finally {
+        if (!cancelled) {
+          setIsSearchingEditMentions(false)
+        }
+      }
+    }, 120)
+
+    return () => {
+      cancelled = true
+      clearTimeout(timer)
+    }
+  }, [activeEditMentionMatch, editMentionPopoverOpen, onSearchWorkspaceEntries])
+
   const selectedModelLabel = useMemo(() => {
     if (isLoadingModels) {
       return "Loading models..."
@@ -232,12 +413,15 @@ export function MainContent({
   }, [isLoadingModels, modelOptionGroups, providerError, selectedModel])
 
   const handleSubmit = async () => {
-    const text = inputValue.trim()
-    if (!text || isGenerating || !canCompose || !selectedModel) return
+    if (!canSubmitPrompt || isGenerating || !canCompose || !selectedModel) return
     setIsGenerating(true)
-    setInputValue("")
+    setComposerBlocks([{ type: "text", text: "" }])
+    setSelectionRange({ start: 0, end: 0 })
+    setMentionResults([])
+    setMentionSearchError(null)
+    setDismissedMentionKey(null)
     try {
-      await onSendMessage(text, { autoAllow: permission === "auto_allow" })
+      await onSendMessage({ blocks: composerBlocks }, { autoAllow: permission === "auto_allow" })
     } catch {
       // Parent state already surfaces request errors.
     } finally {
@@ -260,10 +444,308 @@ export function MainContent({
     void onRemoveAttachment(attachmentId)
   }
 
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+  const handleMentionSelection = (mention: WorkspaceEntrySearchResult) => {
+    if (!activeMentionMatch) {
+      return
+    }
+    const nextBlocks = replaceComposerBlocksRange(
+      composerBlocks,
+      activeMentionMatch.start,
+      activeMentionMatch.end,
+      [{ type: "mention", mention }]
+    )
+    setComposerBlocks(nextBlocks)
+    setSelectionRange({
+      start: activeMentionMatch.start + getComposerMentionDisplayText(mention).length,
+      end: activeMentionMatch.start + getComposerMentionDisplayText(mention).length,
+    })
+    setMentionResults([])
+    setMentionActiveIndex(0)
+    setMentionSearchError(null)
+    setDismissedMentionKey(null)
+    requestAnimationFrame(() => {
+      inputRef.current?.focus()
+      const cursor = activeMentionMatch.start + getComposerMentionDisplayText(mention).length
+      inputRef.current?.setSelectionRange(cursor, cursor)
+    })
+  }
+
+  const handleInputChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    const nextValue = e.target.value
+    const diff = getTextareaDiff(inputValue, nextValue)
+    setComposerBlocks((current) =>
+      replaceComposerBlocksRange(current, diff.start, diff.end, diff.insertedText ? [{ type: "text", text: diff.insertedText }] : [])
+    )
+    setSelectionRange({
+      start: e.target.selectionStart ?? nextValue.length,
+      end: e.target.selectionEnd ?? nextValue.length,
+    })
+  }
+
+  const handleInputSelect = (e: React.SyntheticEvent<HTMLTextAreaElement>) => {
+    const nextSelection = snapSelectionOutOfMentionToken(
+      composerBlocks,
+      e.currentTarget.selectionStart ?? e.currentTarget.value.length,
+      e.currentTarget.selectionEnd ?? e.currentTarget.value.length
+    )
+    setSelectionRange(nextSelection)
+    if (
+      nextSelection.start !== (e.currentTarget.selectionStart ?? nextSelection.start) ||
+      nextSelection.end !== (e.currentTarget.selectionEnd ?? nextSelection.end)
+    ) {
+      requestAnimationFrame(() => {
+        inputRef.current?.setSelectionRange(nextSelection.start, nextSelection.end)
+      })
+    }
+  }
+
+  const handleBeforeInput = (e: React.FormEvent<HTMLTextAreaElement>) => {
+    const nativeEvent = e.nativeEvent as InputEvent
+    const target = e.currentTarget
+    const selectionStart = target.selectionStart ?? selectionRange.start
+    const selectionEnd = target.selectionEnd ?? selectionRange.end
+    const affectedRange = getAffectedInputRange(
+      composerBlocks,
+      selectionStart,
+      selectionEnd,
+      nativeEvent.inputType
+    )
+    if (!affectedRange) {
+      return
+    }
+
+    e.preventDefault()
+    const replacementText = getBeforeInputReplacementText(nativeEvent)
+    const nextBlocks = replaceComposerBlocksRange(
+      composerBlocks,
+      affectedRange.start,
+      affectedRange.end,
+      replacementText ? [{ type: "text", text: replacementText }] : []
+    )
+    const nextCursor = affectedRange.start + replacementText.length
+    setComposerBlocks(nextBlocks)
+    setSelectionRange({ start: nextCursor, end: nextCursor })
+    requestAnimationFrame(() => {
+      inputRef.current?.focus()
+      inputRef.current?.setSelectionRange(nextCursor, nextCursor)
+    })
+  }
+
+  const handlePaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const selectionStart = e.currentTarget.selectionStart ?? selectionRange.start
+    const selectionEnd = e.currentTarget.selectionEnd ?? selectionRange.end
+    const tokenRanges = getComposerMentionRanges(composerBlocks)
+    const overlapsToken = tokenRanges.some(
+      (range) => selectionStart < range.end && selectionEnd > range.start
+    )
+    if (!overlapsToken) {
+      return
+    }
+
+    e.preventDefault()
+    const pastedText = e.clipboardData.getData("text")
+    const nextBlocks = replaceComposerBlocksRange(
+      composerBlocks,
+      selectionStart,
+      selectionEnd,
+      pastedText ? [{ type: "text", text: pastedText }] : []
+    )
+    const nextCursor = selectionStart + pastedText.length
+    setComposerBlocks(nextBlocks)
+    setSelectionRange({ start: nextCursor, end: nextCursor })
+    requestAnimationFrame(() => {
+      inputRef.current?.focus()
+      inputRef.current?.setSelectionRange(nextCursor, nextCursor)
+    })
+  }
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (mentionPopoverOpen) {
+      if (e.key === "ArrowDown") {
+        e.preventDefault()
+        setMentionActiveIndex((current) =>
+          mentionResults.length === 0 ? 0 : (current + 1) % mentionResults.length
+        )
+        return
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault()
+        setMentionActiveIndex((current) =>
+          mentionResults.length === 0 ? 0 : (current - 1 + mentionResults.length) % mentionResults.length
+        )
+        return
+      }
+      if (e.key === "Escape") {
+        e.preventDefault()
+        setDismissedMentionKey(activeMentionKey)
+        setMentionResults([])
+        setMentionSearchError(null)
+        setIsSearchingMentions(false)
+        return
+      }
+      if (e.key === "Enter" || e.key === "Tab") {
+        e.preventDefault()
+        if (mentionResults.length > 0) {
+          handleMentionSelection(mentionResults[mentionActiveIndex] ?? mentionResults[0])
+        }
+        return
+      }
+    }
+
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault()
       void handleSubmit()
+    }
+  }
+
+  const handleEditMentionSelection = (mention: WorkspaceEntrySearchResult) => {
+    if (!activeEditMentionMatch) {
+      return
+    }
+    const nextBlocks = replaceComposerBlocksRange(
+      editingBlocks,
+      activeEditMentionMatch.start,
+      activeEditMentionMatch.end,
+      [{ type: "mention", mention }]
+    )
+    setEditingBlocks(nextBlocks)
+    const cursor = activeEditMentionMatch.start + getComposerMentionDisplayText(mention).length
+    setEditingSelectionRange({ start: cursor, end: cursor })
+    setEditingMentionResults([])
+    setEditingMentionActiveIndex(0)
+    setEditingMentionSearchError(null)
+    setDismissedEditMentionKey(null)
+    requestAnimationFrame(() => {
+      editingInputRef.current?.focus()
+      editingInputRef.current?.setSelectionRange(cursor, cursor)
+    })
+  }
+
+  const handleEditInputChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    const nextValue = e.target.value
+    const diff = getTextareaDiff(editingValue, nextValue)
+    setEditingBlocks((current) =>
+      replaceComposerBlocksRange(current, diff.start, diff.end, diff.insertedText ? [{ type: "text", text: diff.insertedText }] : [])
+    )
+    setEditingSelectionRange({
+      start: e.target.selectionStart ?? nextValue.length,
+      end: e.target.selectionEnd ?? nextValue.length,
+    })
+  }
+
+  const handleEditInputSelect = (e: React.SyntheticEvent<HTMLTextAreaElement>) => {
+    const nextSelection = snapSelectionOutOfMentionToken(
+      editingBlocks,
+      e.currentTarget.selectionStart ?? editingSelectionRange.start,
+      e.currentTarget.selectionEnd ?? editingSelectionRange.end
+    )
+    setEditingSelectionRange(nextSelection)
+    if (
+      nextSelection.start !== (e.currentTarget.selectionStart ?? nextSelection.start) ||
+      nextSelection.end !== (e.currentTarget.selectionEnd ?? nextSelection.end)
+    ) {
+      requestAnimationFrame(() => {
+        editingInputRef.current?.setSelectionRange(nextSelection.start, nextSelection.end)
+      })
+    }
+  }
+
+  const handleEditBeforeInput = (e: React.FormEvent<HTMLTextAreaElement>) => {
+    const nativeEvent = e.nativeEvent as InputEvent
+    const target = e.currentTarget
+    const selectionStart = target.selectionStart ?? editingSelectionRange.start
+    const selectionEnd = target.selectionEnd ?? editingSelectionRange.end
+    const affectedRange = getAffectedInputRange(
+      editingBlocks,
+      selectionStart,
+      selectionEnd,
+      nativeEvent.inputType
+    )
+    if (!affectedRange) {
+      return
+    }
+
+    e.preventDefault()
+    const replacementText = getBeforeInputReplacementText(nativeEvent)
+    const nextBlocks = replaceComposerBlocksRange(
+      editingBlocks,
+      affectedRange.start,
+      affectedRange.end,
+      replacementText ? [{ type: "text", text: replacementText }] : []
+    )
+    const nextCursor = affectedRange.start + replacementText.length
+    setEditingBlocks(nextBlocks)
+    setEditingSelectionRange({ start: nextCursor, end: nextCursor })
+    requestAnimationFrame(() => {
+      editingInputRef.current?.focus()
+      editingInputRef.current?.setSelectionRange(nextCursor, nextCursor)
+    })
+  }
+
+  const handleEditPaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const selectionStart = e.currentTarget.selectionStart ?? editingSelectionRange.start
+    const selectionEnd = e.currentTarget.selectionEnd ?? editingSelectionRange.end
+    const tokenRanges = getComposerMentionRanges(editingBlocks)
+    const overlapsToken = tokenRanges.some(
+      (range) => selectionStart < range.end && selectionEnd > range.start
+    )
+    if (!overlapsToken) {
+      return
+    }
+
+    e.preventDefault()
+    const pastedText = e.clipboardData.getData("text")
+    const nextBlocks = replaceComposerBlocksRange(
+      editingBlocks,
+      selectionStart,
+      selectionEnd,
+      pastedText ? [{ type: "text", text: pastedText }] : []
+    )
+    const nextCursor = selectionStart + pastedText.length
+    setEditingBlocks(nextBlocks)
+    setEditingSelectionRange({ start: nextCursor, end: nextCursor })
+    requestAnimationFrame(() => {
+      editingInputRef.current?.focus()
+      editingInputRef.current?.setSelectionRange(nextCursor, nextCursor)
+    })
+  }
+
+  const handleEditKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (editMentionPopoverOpen) {
+      if (e.key === "ArrowDown") {
+        e.preventDefault()
+        setEditingMentionActiveIndex((current) =>
+          editingMentionResults.length === 0 ? 0 : (current + 1) % editingMentionResults.length
+        )
+        return
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault()
+        setEditingMentionActiveIndex((current) =>
+          editingMentionResults.length === 0 ? 0 : (current - 1 + editingMentionResults.length) % editingMentionResults.length
+        )
+        return
+      }
+      if (e.key === "Escape") {
+        e.preventDefault()
+        setDismissedEditMentionKey(activeEditMentionKey)
+        setEditingMentionResults([])
+        setEditingMentionSearchError(null)
+        setIsSearchingEditMentions(false)
+        return
+      }
+      if (e.key === "Enter" || e.key === "Tab") {
+        e.preventDefault()
+        if (editingMentionResults.length > 0) {
+          handleEditMentionSelection(editingMentionResults[editingMentionActiveIndex] ?? editingMentionResults[0])
+        }
+        return
+      }
+    }
+
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault()
+      void submitEditedConversationEvent()
     }
   }
 
@@ -295,7 +777,11 @@ export function MainContent({
       return
     }
     setEditingEntryId(entryId)
-    setEditingValue(content)
+    const entry = messages.find((item) => item.id === entryId)
+    const nextBlocks = buildComposerBlocksFromPromptBlocks(entry?.promptBlocks)
+    setEditingBlocks(nextBlocks)
+    const cursor = serializeComposerBlocks(nextBlocks).length
+    setEditingSelectionRange({ start: cursor, end: cursor })
   }
 
   const cancelEditConversationEvent = () => {
@@ -303,24 +789,27 @@ export function MainContent({
       return
     }
     setEditingEntryId(null)
-    setEditingValue("")
+    setEditingBlocks([{ type: "text", text: "" }])
+    setEditingSelectionRange({ start: 0, end: 0 })
+    setEditingMentionResults([])
+    setEditingMentionSearchError(null)
   }
 
   const submitEditedConversationEvent = async () => {
     if (!editingEntryId || isSubmittingEdit) {
       return
     }
-    const nextContent = editingValue.trim()
-    if (!nextContent) {
+    if (stripInlineTokenText(editingValue).trim().length === 0 && editingSelectedMentions.length === 0) {
       return
     }
     setIsSubmittingEdit(true)
     try {
-      await onEditConversationEventAndRerun(editingEntryId, nextContent, {
+      await onEditConversationEventAndRerun(editingEntryId, editingBlocks, {
         autoAllow: permission === "auto_allow",
       })
       setEditingEntryId(null)
-      setEditingValue("")
+      setEditingBlocks([{ type: "text", text: "" }])
+      setEditingSelectionRange({ start: 0, end: 0 })
     } catch {
       // Parent state already surfaces request errors.
     } finally {
@@ -378,18 +867,33 @@ export function MainContent({
             entry={entry}
             showRunningIndicator={isTurnPending && entry.entryKind === "action" && entry.id === latestCurrentTurnActionId}
             isEditing={editingEntryId === entry.id}
-            editingValue={editingValue}
+            editingBlocks={editingBlocks}
             isSubmittingEdit={isSubmittingEdit}
             copied={copiedEntryId === entry.id}
             onCopyMessage={(entryId, content) => {
               void copyMessage(entryId, content)
             }}
-            onEditValueChange={setEditingValue}
+            editingInputRef={editingInputRef}
+            editingMentionResults={editingMentionResults}
+            editingMentionActiveIndex={editingMentionActiveIndex}
+            isSearchingEditMentions={isSearchingEditMentions}
+            editingMentionSearchError={editingMentionSearchError}
+            editMentionPopoverOpen={editMentionPopoverOpen}
+            activeEditMentionQuery={activeEditMentionMatch?.query ?? ""}
+            onEditInputChange={handleEditInputChange}
+            onEditInputSelect={handleEditInputSelect}
+            onEditBeforeInput={handleEditBeforeInput}
+            onEditPaste={handleEditPaste}
+            onEditKeyDown={handleEditKeyDown}
+            onEditMentionSelect={handleEditMentionSelection}
             onStartEdit={startEditConversationEvent}
             onCancelEdit={cancelEditConversationEvent}
             onSubmitEdit={() => {
               void submitEditedConversationEvent()
             }}
+            canEditUserMessage={
+              entry.entryKind === "user_input" && entry.id === latestEditableUserMessageId
+            }
           />
         )}
         renderLivePlanningEntry={(entry) => <LivePlanningStepCard key={entry.id} entry={entry} />}
@@ -448,18 +952,46 @@ export function MainContent({
               </div>
             )}
 
-            <input
-              ref={inputRef}
-              type="text"
-              value={inputValue}
-              onChange={(e) => setInputValue(e.target.value)}
-              onKeyDown={handleKeyDown}
-              placeholder={canCompose ? "Ask for follow-up changes" : "Select or create a session first"}
-              disabled={!canCompose}
-              aria-keyshortcuts="Enter"
-              className="w-full bg-transparent text-sm placeholder:text-muted-foreground focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed"
-            />
+            <div className="relative">
+              {inputValue.length > 0 && (
+                <div
+                  aria-hidden="true"
+                  className="pointer-events-none absolute inset-0 whitespace-pre-wrap break-words text-sm leading-6 text-foreground"
+                >
+                  <ComposerInlinePreview blocks={composerBlocks} />
+                </div>
+              )}
+              <textarea
+                ref={inputRef}
+                value={inputValue}
+                onBeforeInput={handleBeforeInput}
+                onPaste={handlePaste}
+                onChange={handleInputChange}
+                onKeyDown={handleKeyDown}
+                onClick={handleInputSelect}
+                onSelect={handleInputSelect}
+                placeholder={canCompose ? "Ask for follow-up changes" : "Select or create a session first"}
+                disabled={!canCompose}
+                aria-keyshortcuts="Enter"
+                rows={2}
+                className="relative min-h-[52px] w-full resize-none bg-transparent text-sm leading-6 text-transparent caret-foreground placeholder:text-muted-foreground focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed"
+              />
+            </div>
           </div>
+
+          {mentionPopoverOpen && (
+            <div className="px-4 pb-2">
+              <FileMentionPopover
+                query={activeMentionMatch?.query ?? ""}
+                results={mentionResults}
+                activeIndex={mentionActiveIndex}
+                isLoading={isSearchingMentions}
+                error={mentionSearchError}
+                onSelect={handleMentionSelection}
+              />
+              <MentionAssistText />
+            </div>
+          )}
 
           {showProviderNotice && (
             <div className="px-4 pb-2">
@@ -724,10 +1256,10 @@ export function MainContent({
                         onClick={() => {
                           void handleSubmit()
                         }}
-                        disabled={!inputValue.trim() || !canCompose || !selectedModel}
+                        disabled={!canSubmitPrompt || !canCompose || !selectedModel}
                         className={cn(
                           "p-2 rounded-full transition-colors",
-                          inputValue.trim() && canCompose && selectedModel
+                          canSubmitPrompt && canCompose && selectedModel
                             ? "bg-[#f5a76c] hover:bg-[#e99a5f] text-white"
                             : "bg-[#e8e4e0] text-muted-foreground cursor-not-allowed"
                         )}
@@ -751,30 +1283,354 @@ export function MainContent({
   )
 }
 
+function FileMentionPopover({
+  query,
+  results,
+  activeIndex,
+  isLoading,
+  error,
+  onSelect,
+}: {
+  query: string
+  results: WorkspaceEntrySearchResult[]
+  activeIndex: number
+  isLoading: boolean
+  error: string | null
+  onSelect: (entry: WorkspaceEntrySearchResult) => void
+}) {
+  return (
+    <div className="rounded-xl border border-[#e1ddd8] bg-[#fbfaf8] shadow-sm">
+      <div className="flex items-center justify-between border-b border-[#ede7e1] px-3 py-2 text-[11px] uppercase tracking-[0.12em] text-foreground/45">
+        <span>Files</span>
+        <span>@{query}</span>
+      </div>
+      <div className="max-h-64 overflow-y-auto p-1">
+        {isLoading ? (
+          <div className="px-3 py-3 text-sm text-muted-foreground">Searching workspace...</div>
+        ) : error ? (
+          <div className="px-3 py-3 text-sm text-[#b45b44]">{error}</div>
+        ) : results.length === 0 ? (
+          <div className="px-3 py-3 text-sm text-muted-foreground">No files or directories match this query.</div>
+        ) : (
+          results.map((result, index) => (
+            <button
+              key={result.absolutePath}
+              type="button"
+              onClick={() => onSelect(result)}
+              className={cn(
+                "flex w-full items-start justify-between gap-3 rounded-lg px-3 py-2 text-left transition-colors",
+                index === activeIndex ? "bg-[#efe9e4]" : "hover:bg-[#f4efea]"
+              )}
+            >
+              <div className="min-w-0 flex-1">
+                <div className="truncate text-sm text-foreground/85">{result.name}</div>
+                <div className="truncate text-xs text-muted-foreground">{result.parentPath || "/"}</div>
+              </div>
+              <span className="rounded-full bg-[#f1ede8] px-2 py-0.5 text-[11px] text-foreground/55">
+                {result.entryType === "directory" ? "Dir" : "File"}
+              </span>
+            </button>
+          ))
+        )}
+      </div>
+    </div>
+  )
+}
+
+function MentionAssistText() {
+  return (
+    <div className="pt-2 text-[12px] text-muted-foreground">
+      Use ↑/↓ to navigate, Enter or Tab to insert, Esc to close.
+    </div>
+  )
+}
+
+function ComposerInlinePreview({ blocks }: { blocks: ComposerInlineBlock[] }) {
+  return (
+    <>
+      {blocks.map((block, index) =>
+        block.type === "text" ? (
+          <span key={`composer-text:${index}`}>{block.text}</span>
+        ) : (
+          <span
+            key={`composer-mention:${index}:${block.mention.absolutePath}`}
+            className="rounded-[4px] bg-[#edf3ef] text-[#365444] outline outline-1 outline-[#cfded3]"
+          >
+            {getComposerMentionDisplayText(block.mention)}
+          </span>
+        )
+      )}
+    </>
+  )
+}
+
+function getComposerMentionDisplayText(mention: WorkspaceEntrySearchResult): string {
+  return `@${mention.name}`
+}
+
+function serializeComposerBlocks(blocks: ComposerInlineBlock[]): string {
+  return blocks
+    .map((block) =>
+      block.type === "text" ? block.text : getComposerMentionDisplayText(block.mention)
+    )
+    .join("")
+}
+
+function getComposerMentionRanges(
+  blocks: ComposerInlineBlock[]
+): Array<{ start: number; end: number; index: number }> {
+  const ranges: Array<{ start: number; end: number; index: number }> = []
+  let cursor = 0
+  let mentionIndex = 0
+
+  for (const block of blocks) {
+    const text = block.type === "text" ? block.text : getComposerMentionDisplayText(block.mention)
+    const nextCursor = cursor + text.length
+    if (block.type === "mention") {
+      ranges.push({ start: cursor, end: nextCursor, index: mentionIndex })
+      mentionIndex += 1
+    }
+    cursor = nextCursor
+  }
+
+  return ranges
+}
+
+function snapSelectionOutOfMentionToken(
+  blocks: ComposerInlineBlock[],
+  start: number,
+  end: number
+): { start: number; end: number } {
+  if (start !== end) {
+    return { start, end }
+  }
+
+  for (const range of getComposerMentionRanges(blocks)) {
+    if (start <= range.start || start >= range.end) {
+      continue
+    }
+    const midpoint = range.start + (range.end - range.start) / 2
+    const snapped = start < midpoint ? range.start : range.end
+    return { start: snapped, end: snapped }
+  }
+
+  return { start, end }
+}
+
+function getAffectedInputRange(
+  blocks: ComposerInlineBlock[],
+  start: number,
+  end: number,
+  inputType: string
+): { start: number; end: number } | null {
+  const tokenRanges = getComposerMentionRanges(blocks)
+  if (start !== end) {
+    const overlaps = tokenRanges.some((range) => start < range.end && end > range.start)
+    return overlaps ? { start, end } : null
+  }
+
+  if (inputType === "deleteContentBackward") {
+    const touching = tokenRanges.find((range) => range.end === start)
+    return touching ? { start: touching.start, end: touching.end } : null
+  }
+
+  if (inputType === "deleteContentForward") {
+    const touching = tokenRanges.find((range) => range.start === start)
+    return touching ? { start: touching.start, end: touching.end } : null
+  }
+
+  const inside = tokenRanges.find((range) => start > range.start && start < range.end)
+  return inside ? { start: inside.start, end: inside.end } : null
+}
+
+function getBeforeInputReplacementText(event: InputEvent): string {
+  if (event.inputType === "insertParagraph" || event.inputType === "insertLineBreak") {
+    return "\n"
+  }
+  return typeof event.data === "string" ? event.data.replaceAll(INLINE_MENTION_SENTINEL, "") : ""
+}
+
+function getTextareaDiff(previous: string, next: string): {
+  start: number
+  end: number
+  insertedText: string
+} {
+  let start = 0
+  while (start < previous.length && start < next.length && previous[start] === next[start]) {
+    start += 1
+  }
+
+  let previousEnd = previous.length
+  let nextEnd = next.length
+  while (previousEnd > start && nextEnd > start && previous[previousEnd - 1] === next[nextEnd - 1]) {
+    previousEnd -= 1
+    nextEnd -= 1
+  }
+
+  return {
+    start,
+    end: previousEnd,
+    insertedText: next.slice(start, nextEnd),
+  }
+}
+
+function replaceComposerBlocksRange(
+  blocks: ComposerInlineBlock[],
+  start: number,
+  end: number,
+  replacementBlocks: ComposerInlineBlock[]
+): ComposerInlineBlock[] {
+  const nextBlocks: ComposerInlineBlock[] = []
+  let cursor = 0
+  let inserted = false
+
+  const pushText = (text: string) => {
+    if (!text) {
+      return
+    }
+    const previous = nextBlocks[nextBlocks.length - 1]
+    if (previous?.type === "text") {
+      previous.text += text
+      return
+    }
+    nextBlocks.push({ type: "text", text })
+  }
+
+  const pushReplacement = () => {
+    if (inserted) {
+      return
+    }
+    for (const block of replacementBlocks) {
+      if (block.type === "text") {
+        pushText(block.text)
+      } else {
+        nextBlocks.push(block)
+      }
+    }
+    inserted = true
+  }
+
+  for (const block of blocks) {
+    const blockText = block.type === "text" ? block.text : getComposerMentionDisplayText(block.mention)
+    const blockStart = cursor
+    const blockEnd = cursor + blockText.length
+
+    if (blockEnd <= start) {
+      if (block.type === "text") {
+        pushText(block.text)
+      } else {
+        nextBlocks.push(block)
+      }
+      cursor = blockEnd
+      continue
+    }
+
+    if (blockStart >= end) {
+      pushReplacement()
+      if (block.type === "text") {
+        pushText(block.text)
+      } else {
+        nextBlocks.push(block)
+      }
+      cursor = blockEnd
+      continue
+    }
+
+    if (block.type === "text") {
+      const localStart = Math.max(0, start - blockStart)
+      const localEnd = Math.max(0, end - blockStart)
+      pushText(block.text.slice(0, localStart))
+      pushReplacement()
+      pushText(block.text.slice(localEnd))
+    } else {
+      pushReplacement()
+    }
+
+    cursor = blockEnd
+  }
+
+  pushReplacement()
+  if (nextBlocks.length === 0 || nextBlocks.every((block) => block.type !== "text")) {
+    nextBlocks.push({ type: "text", text: "" })
+  }
+
+  return nextBlocks
+}
+
+function stripInlineTokenText(value: string): string {
+  return value.replaceAll(INLINE_MENTION_SENTINEL, "")
+}
+
+function getActiveMentionMatch(
+  value: string,
+  cursorPosition: number
+): { query: string; start: number; end: number } | null {
+  const textBeforeCursor = value.slice(0, cursorPosition)
+  const match = textBeforeCursor.match(/(^|\s)@([^\s@]{1,120})$/)
+  if (!match) {
+    return null
+  }
+
+  const query = match[2]
+  const end = textBeforeCursor.length
+  const start = end - query.length - 1
+  if (query.trim().length < 1) {
+    return null
+  }
+
+  return { query, start, end }
+}
+
 function ConversationEventView({
   entry,
   showRunningIndicator,
   copied,
   isEditing,
-  editingValue,
+  editingBlocks,
   isSubmittingEdit,
   onCopyMessage,
-  onEditValueChange,
+  editingInputRef,
+  editingMentionResults,
+  editingMentionActiveIndex,
+  isSearchingEditMentions,
+  editingMentionSearchError,
+  editMentionPopoverOpen,
+  activeEditMentionQuery,
+  onEditInputChange,
+  onEditInputSelect,
+  onEditBeforeInput,
+  onEditPaste,
+  onEditKeyDown,
+  onEditMentionSelect,
   onStartEdit,
   onCancelEdit,
   onSubmitEdit,
+  canEditUserMessage,
 }: {
   entry: ConversationEvent
   showRunningIndicator: boolean
   copied: boolean
   isEditing: boolean
-  editingValue: string
+  editingBlocks: ComposerInlineBlock[]
   isSubmittingEdit: boolean
   onCopyMessage: (entryId: string, content: string) => void
-  onEditValueChange: (value: string) => void
+  editingInputRef: React.RefObject<HTMLTextAreaElement | null>
+  editingMentionResults: WorkspaceEntrySearchResult[]
+  editingMentionActiveIndex: number
+  isSearchingEditMentions: boolean
+  editingMentionSearchError: string | null
+  editMentionPopoverOpen: boolean
+  activeEditMentionQuery: string
+  onEditInputChange: (event: React.ChangeEvent<HTMLTextAreaElement>) => void
+  onEditInputSelect: (event: React.SyntheticEvent<HTMLTextAreaElement>) => void
+  onEditBeforeInput: (event: React.FormEvent<HTMLTextAreaElement>) => void
+  onEditPaste: (event: React.ClipboardEvent<HTMLTextAreaElement>) => void
+  onEditKeyDown: (event: React.KeyboardEvent<HTMLTextAreaElement>) => void
+  onEditMentionSelect: (entry: WorkspaceEntrySearchResult) => void
   onStartEdit: (messageId: string, content: string) => void
   onCancelEdit: () => void
   onSubmitEdit: () => void
+  canEditUserMessage: boolean
 }) {
   if (entry.entryKind === "planning") {
     return <PlanningStepCard step={entry} />
@@ -788,13 +1644,42 @@ function ConversationEventView({
         <div className="group max-w-[80%] flex flex-col items-end gap-2">
           {isEditing ? (
             <div className="w-full min-w-[320px] bg-[#f0ebe6] border border-[#e8e4e0] rounded-2xl px-4 py-3">
-              <textarea
-                value={editingValue}
-                onChange={(event) => onEditValueChange(event.target.value)}
-                disabled={isSubmittingEdit}
-                rows={5}
-                className="w-full resize-none bg-transparent text-sm text-foreground/90 focus:outline-none disabled:opacity-60"
-              />
+              <div className="relative">
+                {serializeComposerBlocks(editingBlocks).length > 0 ? (
+                  <div
+                    aria-hidden="true"
+                    className="pointer-events-none absolute inset-0 whitespace-pre-wrap break-words text-sm leading-6 text-foreground/90"
+                  >
+                    <ComposerInlinePreview blocks={editingBlocks} />
+                  </div>
+                ) : null}
+                <textarea
+                  ref={editingInputRef}
+                  value={serializeComposerBlocks(editingBlocks)}
+                  onBeforeInput={onEditBeforeInput}
+                  onPaste={onEditPaste}
+                  onChange={onEditInputChange}
+                  onKeyDown={onEditKeyDown}
+                  onClick={onEditInputSelect}
+                  onSelect={onEditInputSelect}
+                  disabled={isSubmittingEdit}
+                  rows={5}
+                  className="w-full resize-none bg-transparent text-sm leading-6 text-transparent caret-foreground focus:outline-none disabled:opacity-60"
+                />
+              </div>
+              {editMentionPopoverOpen ? (
+                <div className="mt-3">
+                  <FileMentionPopover
+                    query={activeEditMentionQuery}
+                    results={editingMentionResults}
+                    activeIndex={editingMentionActiveIndex}
+                    isLoading={isSearchingEditMentions}
+                    error={editingMentionSearchError}
+                    onSelect={onEditMentionSelect}
+                  />
+                  <MentionAssistText />
+                </div>
+              ) : null}
               <div className="mt-3 flex justify-end gap-2">
                 <button
                   type="button"
@@ -807,7 +1692,11 @@ function ConversationEventView({
                 <button
                   type="button"
                   onClick={onSubmitEdit}
-                  disabled={isSubmittingEdit || editingValue.trim().length === 0}
+                  disabled={
+                    isSubmittingEdit ||
+                    (stripInlineTokenText(serializeComposerBlocks(editingBlocks)).trim().length === 0 &&
+                      !editingBlocks.some((block) => block.type === "mention"))
+                  }
                   className="rounded-2xl bg-foreground px-4 py-1.5 text-sm text-background hover:bg-foreground/85 transition-colors disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   {isSubmittingEdit ? "Sending..." : "Send"}
@@ -816,7 +1705,7 @@ function ConversationEventView({
             </div>
           ) : (
             <div className="w-full bg-[#f0ebe6] border border-[#e8e4e0] rounded-2xl rounded-tr-sm px-4 py-2.5 text-sm text-foreground/90 whitespace-pre-wrap">
-              {entry.contentText}
+              <UserMessageContent entry={entry} />
             </div>
           )}
 
@@ -837,21 +1726,23 @@ function ConversationEventView({
                   Copy
                 </TooltipContent>
               </Tooltip>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <button
-                    type="button"
-                    onClick={() => onStartEdit(entry.id, entry.contentText ?? "")}
-                    className="h-9 w-9 rounded-full border border-[#e8e4e0] bg-[#f3efeb] text-muted-foreground hover:text-foreground hover:bg-[#efe9e4] transition-colors inline-flex items-center justify-center"
-                    aria-label="Edit user message"
-                  >
-                    <Pencil className="w-4 h-4" />
-                  </button>
-                </TooltipTrigger>
-                <TooltipContent side="top" sideOffset={6}>
-                  Edit
-                </TooltipContent>
-              </Tooltip>
+              {canEditUserMessage ? (
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button
+                      type="button"
+                      onClick={() => onStartEdit(entry.id, entry.editableText ?? entry.contentText ?? "")}
+                      className="h-9 w-9 rounded-full border border-[#e8e4e0] bg-[#f3efeb] text-muted-foreground hover:text-foreground hover:bg-[#efe9e4] transition-colors inline-flex items-center justify-center"
+                      aria-label="Edit user message"
+                    >
+                      <Pencil className="w-4 h-4" />
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent side="top" sideOffset={6}>
+                    Edit
+                  </TooltipContent>
+                </Tooltip>
+              ) : null}
             </div>
           )}
         </div>
@@ -887,6 +1778,31 @@ function ConversationEventView({
         </div>
       </div>
     </div>
+  )
+}
+
+function UserMessageContent({ entry }: { entry: ConversationEvent }) {
+  if (!entry.displayBlocks || entry.displayBlocks.length === 0) {
+    return <>{entry.contentText}</>
+  }
+
+  return (
+    <span className="flex flex-wrap items-center gap-2">
+      {entry.displayBlocks.map((block, index) =>
+        block.type === "text" ? (
+          <span key={`${entry.id}:text:${index}`} className="whitespace-pre-wrap">
+            {block.text}
+          </span>
+        ) : (
+          <span
+            key={`${entry.id}:resource:${index}`}
+            className="inline-flex items-center rounded-md border border-[#d8cfc7] bg-[#f7f2ed] px-2 py-0.5 text-[12.5px] font-medium text-[#7a4a2f] underline decoration-[#c59577] underline-offset-2"
+          >
+            {block.label}
+          </span>
+        )
+      )}
+    </span>
   )
 }
 

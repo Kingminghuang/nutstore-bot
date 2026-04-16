@@ -5,7 +5,7 @@ use std::collections::HashSet;
 use std::fs;
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, Command, Stdio};
+use std::process::{Child, ChildStderr, ChildStdin, Command, Stdio};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -19,6 +19,76 @@ const DEFAULT_SIDECAR_PORT: u16 = 18765;
 const DEFAULT_SIDECAR_HEALTH_TIMEOUT_SECS: u64 = 45;
 const PYTHON_SIDECAR_ID: &str = "binaries/nsbot-sidecar";
 const ACP_NOTIFICATION_EVENT: &str = "acp-notification";
+
+fn acp_debug_enabled() -> bool {
+    if cfg!(debug_assertions) {
+        return true;
+    }
+
+    matches!(
+        std::env::var("NSBOT_ACP_DEBUG"),
+        Ok(value)
+            if !matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "" | "0" | "false" | "no" | "off"
+            )
+    )
+}
+
+fn acp_debug_log(message: impl AsRef<str>) {
+    if acp_debug_enabled() {
+        eprintln!("[acp-bridge] {}", message.as_ref());
+    }
+}
+
+fn acp_payload_summary(payload: &Value) -> String {
+    if let Some(error) = payload.get("error") {
+        let code = error.get("code").and_then(Value::as_i64);
+        let message = error
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or("ACP request failed");
+        return match code {
+            Some(code) => format!("error code={} message={}", code, message),
+            None => format!("error message={}", message),
+        };
+    }
+
+    match payload.get("result") {
+        Some(Value::Object(result)) => {
+            let mut keys = result.keys().cloned().collect::<Vec<_>>();
+            keys.sort();
+            format!("result keys={}", keys.join(","))
+        }
+        Some(Value::Array(result)) => format!("result array_len={}", result.len()),
+        Some(Value::String(result)) => format!("result string_len={}", result.len()),
+        Some(Value::Null) | None => "result null".to_string(),
+        Some(_) => "result scalar".to_string(),
+    }
+}
+
+fn forward_acp_sidecar_stderr(stderr: ChildStderr) {
+    thread::spawn(move || {
+        let mut reader = BufReader::new(stderr);
+        let mut line = String::new();
+        loop {
+            line.clear();
+            match reader.read_line(&mut line) {
+                Ok(0) => break,
+                Ok(_) => {
+                    let trimmed = line.trim_end_matches(['\r', '\n']);
+                    if !trimmed.is_empty() {
+                        eprintln!("[acp-sidecar] {trimmed}");
+                    }
+                }
+                Err(err) => {
+                    acp_debug_log(format!("failed reading sidecar stderr: {err}"));
+                    break;
+                }
+            }
+        }
+    });
+}
 
 #[derive(Debug)]
 enum ManagedChild {
@@ -127,6 +197,9 @@ impl StdioTransport {
             .stdout
             .take()
             .ok_or_else(|| "Missing ACP stdio stdout".to_string())?;
+        if let Some(stderr) = child.stderr.take() {
+            forward_acp_sidecar_stderr(stderr);
+        }
         let (reader_tx, reader_rx) = mpsc::channel();
         thread::spawn(move || {
             let mut reader = BufReader::new(stdout);
@@ -305,13 +378,23 @@ fn acp_request(
     method: String,
     params: Option<Value>,
 ) -> Result<Value, String> {
-    run_acp_rpc(
+    acp_debug_log(format!("ipc request method={method}"));
+    let result = run_acp_rpc(
         &app,
         runtime_state.inner(),
         bridge_state.inner(),
         &method,
         params,
-    )
+    );
+    match &result {
+        Ok(payload) => acp_debug_log(format!(
+            "ipc response method={} {}",
+            method,
+            acp_payload_summary(&json!({"result": payload.clone()}))
+        )),
+        Err(err) => acp_debug_log(format!("ipc response method={} error={}", method, err)),
+    }
+    result
 }
 
 #[tauri::command]
@@ -698,7 +781,7 @@ fn spawn_helper_process(
     executable: &Path,
     envs: &[(&str, String)],
 ) -> Result<ManagedChild, Box<dyn std::error::Error>> {
-    let mut command = Command::new(executable);
+    let mut command = Command::new(&executable);
     command.stdout(Stdio::null()).stderr(Stdio::null());
     for (key, value) in envs {
         command.env(key, value);
@@ -806,9 +889,23 @@ fn run_acp_rpc(
             response_tx,
         })
         .map_err(|_| "ACP bridge worker is unavailable".to_string())?;
-    response_rx
+    acp_debug_log(format!("queued request id={} method={}", request_id, method));
+    let result = response_rx
         .recv_timeout(Duration::from_secs(60))
-        .map_err(|_| "Timed out waiting for ACP response".to_string())?
+        .map_err(|_| "Timed out waiting for ACP response".to_string())?;
+    match &result {
+        Ok(payload) => acp_debug_log(format!(
+            "completed request id={} method={} {}",
+            request_id,
+            method,
+            acp_payload_summary(&json!({"result": payload.clone()}))
+        )),
+        Err(err) => acp_debug_log(format!(
+            "completed request id={} method={} error={}",
+            request_id, method, err
+        )),
+    }
+    result
 }
 
 fn bridge_has_subscribers(bridge_state: &Arc<Mutex<AcpBridgeState>>) -> bool {
@@ -858,26 +955,40 @@ fn acp_bridge_worker_loop(
 
         if socket.is_none() && last_connect_attempt.elapsed() >= Duration::from_millis(500) {
             last_connect_attempt = Instant::now();
-            socket = connect_acp_stdio(&app, &runtime_state).ok();
+            socket = match connect_acp_stdio(&app, &runtime_state) {
+                Ok(transport) => {
+                    acp_debug_log("connected ACP stdio bridge");
+                    Some(transport)
+                }
+                Err(err) => {
+                    acp_debug_log(format!("failed to connect ACP stdio bridge: {err}"));
+                    None
+                }
+            };
         }
 
         if let Some(active_socket) = socket.as_mut() {
             match active_socket.read_message() {
                 Ok(Some(Message::Text(text))) => {
                     if let Ok(payload) = serde_json::from_str::<Value>(&text) {
+                        acp_debug_log(format!("incoming {}", acp_payload_summary(&payload)));
                         route_incoming_payload(&app, &bridge_state, &mut pending_requests, payload);
+                    } else {
+                        acp_debug_log(format!("incoming non-json payload={text}"));
                     }
                 }
                 Ok(Some(Message::Ping(payload))) => {
                     let _ = active_socket.send_message(Message::Pong(payload));
                 }
                 Ok(Some(Message::Close(_))) => {
+                    acp_debug_log("ACP stdio bridge closed by sidecar");
                     socket = None;
                     fail_pending_requests(&mut pending_requests, "ACP bridge connection closed");
                 }
                 Ok(Some(_)) => {}
                 Ok(None) => {}
                 Err(_) => {
+                    acp_debug_log("ACP stdio bridge lost while reading");
                     socket = None;
                     fail_pending_requests(&mut pending_requests, "ACP bridge connection lost");
                 }
@@ -906,7 +1017,16 @@ fn handle_bridge_command(
         } => {
             if socket.is_none() {
                 *last_connect_attempt = Instant::now();
-                *socket = connect_acp_stdio(app, runtime_state).ok();
+                *socket = match connect_acp_stdio(app, runtime_state) {
+                    Ok(transport) => {
+                        acp_debug_log("reconnected ACP stdio bridge");
+                        Some(transport)
+                    }
+                    Err(err) => {
+                        acp_debug_log(format!("failed to reconnect ACP stdio bridge: {err}"));
+                        None
+                    }
+                };
             }
             let Some(active_socket) = socket.as_mut() else {
                 let _ = response_tx.send(Err("ACP bridge is unavailable".to_string()));
@@ -921,7 +1041,11 @@ fn handle_bridge_command(
                 response_tx,
             ) {
                 Ok(()) => {}
-                Err(_) => {
+                Err(err) => {
+                    acp_debug_log(format!(
+                        "request id={} method={} send failed: {}",
+                        request_id, method, err
+                    ));
                     *socket = None;
                     if !bridge_has_subscribers(bridge_state) {
                         fail_pending_requests(pending_requests, "ACP bridge connection lost");
@@ -995,6 +1119,17 @@ fn send_bridge_request<T: BridgeTransport + ?Sized>(
     response_tx: Sender<Result<Value, String>>,
 ) -> Result<(), String> {
     let request_payload = build_jsonrpc_request_payload(request_id, method, params);
+    acp_debug_log(format!(
+        "sending request id={} method={} params_kind={}",
+        request_id,
+        method,
+        match request_payload.get("params") {
+            Some(Value::Object(_)) => "object",
+            Some(Value::Array(_)) => "array",
+            Some(Value::Null) | None => "null",
+            Some(_) => "scalar",
+        }
+    ));
     if let Err(err) = socket.send_message(Message::Text(request_payload.to_string().into())) {
         let _ = response_tx.send(Err(err.clone()));
         return Err(err);
@@ -1041,6 +1176,7 @@ fn resolve_pending_response(
     payload: &Value,
 ) -> bool {
     let Some(response_tx) = pending_requests.remove(&response_id) else {
+        acp_debug_log(format!("ignoring response for unknown request id={response_id}"));
         return false;
     };
 
@@ -1050,10 +1186,20 @@ fn resolve_pending_response(
             .and_then(Value::as_str)
             .unwrap_or("ACP request failed")
             .to_string();
+        acp_debug_log(format!(
+            "resolved response id={} {}",
+            response_id,
+            acp_payload_summary(payload)
+        ));
         let _ = response_tx.send(Err(message));
         return true;
     }
 
+    acp_debug_log(format!(
+        "resolved response id={} {}",
+        response_id,
+        acp_payload_summary(payload)
+    ));
     let _ = response_tx.send(Ok(payload.get("result").cloned().unwrap_or(Value::Null)));
     true
 }
@@ -1091,18 +1237,26 @@ fn connect_acp_stdio(
         }
     };
 
-    let mut command = Command::new(executable);
+    let mut command = Command::new(&executable);
+    let stderr = if acp_debug_enabled() {
+        Stdio::piped()
+    } else {
+        Stdio::null()
+    };
     command
         .env("NS_BOT_HOST", "127.0.0.1")
         .env("NS_BOT_PORT", config.sidecar_port.to_string())
         .env("NS_BOT_HOME", ns_bot_home.to_string_lossy().to_string())
         .env("NSBOT_ACP_TRANSPORT", "stdio")
+        .env("NSBOT_ACP_DEBUG", if acp_debug_enabled() { "1" } else { "0" })
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null());
+        .stderr(stderr);
+    acp_debug_log(format!("launching ACP stdio sidecar executable={}", executable.display()));
     let child = command.spawn().map_err(|err| err.to_string())?;
     let mut transport = StdioTransport::new(child)?;
     initialize_acp_transport(&mut transport)?;
+    acp_debug_log("ACP stdio initialize handshake completed");
     Ok(Box::new(transport))
 }
 
@@ -1321,6 +1475,22 @@ mod tests {
         let payload = build_jsonrpc_response_payload(8, json!({"outcome": "ok"}));
         assert_eq!(payload["id"], json!(8));
         assert_eq!(payload["result"], json!({"outcome": "ok"}));
+    }
+
+    #[test]
+    fn acp_payload_summary_reports_error_code_and_message() {
+        let summary = acp_payload_summary(&json!({
+            "error": {"code": -32601, "message": "Method not found: timeline/list"}
+        }));
+        assert_eq!(summary, "error code=-32601 message=Method not found: timeline/list");
+    }
+
+    #[test]
+    fn acp_payload_summary_reports_sorted_result_keys() {
+        let summary = acp_payload_summary(&json!({
+            "result": {"b": true, "a": 1}
+        }));
+        assert_eq!(summary, "result keys=a,b");
     }
 
     #[test]

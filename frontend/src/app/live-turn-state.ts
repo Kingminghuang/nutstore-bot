@@ -1,6 +1,7 @@
 import type { SelectedModelRef } from "@/features/providers"
 import type { LiveTurn, Session } from "@/features/session"
 import { projectConversationEvents, type ConversationEvent, type TimelineEvent } from "@/shared/api/sidecar"
+import type { UserDisplayBlock } from "./prompt-blocks"
 
 export type LiveTurnStateBySession = Record<string, LiveTurn>
 
@@ -46,7 +47,14 @@ export function updateLiveTurnBySession(
   }
 }
 
-export function createOptimisticUserEntry(sessionId: string, text: string): ConversationEvent {
+export function createOptimisticUserEntry(
+  sessionId: string,
+  payload: {
+    displayText: string
+    editableText: string
+    displayBlocks: UserDisplayBlock[]
+  }
+): ConversationEvent {
   return {
     id: `live-user-${sessionId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     sessionId,
@@ -56,7 +64,9 @@ export function createOptimisticUserEntry(sessionId: string, text: string): Conv
     displayRole: "user",
     stepId: null,
     stepNumber: null,
-    contentText: text,
+    contentText: payload.displayText,
+    editableText: payload.editableText,
+    displayBlocks: payload.displayBlocks,
     createdAt: new Date().toISOString(),
   }
 }
@@ -116,7 +126,9 @@ export function mergeTimelineEventsWithLiveTurn(
   const persistedEntries =
     liveTurn.truncatedAfterSequence == null
       ? projectedEvents
-      : projectedEvents.filter((entry) => entry.sequenceNo < liveTurn.truncatedAfterSequence)
+      : projectedEvents.filter(
+          (entry) => entry.sequenceNo < (liveTurn.truncatedAfterSequence ?? Number.MAX_SAFE_INTEGER)
+        )
 
   const optimisticEvents = liveTurn.optimisticEvents.filter((entry) => {
     return !persistedEntries.some(

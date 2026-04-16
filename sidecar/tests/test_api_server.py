@@ -81,7 +81,7 @@ class ApiServerTests(unittest.TestCase):
                 {
                     "jsonrpc": "2.0",
                     "id": 2,
-                    "method": "workspace/create",
+                    "method": "_nsbot/workspace/create",
                     "params": {
                         "name": "workspace-a",
                         "realPath": str(workspace_path),
@@ -91,7 +91,7 @@ class ApiServerTests(unittest.TestCase):
                 {
                     "jsonrpc": "2.0",
                     "id": 3,
-                    "method": "workspace/list",
+                    "method": "_nsbot/workspace/list",
                     "params": {},
                 },
             ]
@@ -126,7 +126,7 @@ class ApiServerTests(unittest.TestCase):
                 {
                     "jsonrpc": "2.0",
                     "id": 2,
-                    "method": "workspace/create",
+                    "method": "_nsbot/workspace/create",
                     "params": {
                         "name": "workspace-b",
                         "realPath": str(workspace_path),
@@ -136,7 +136,7 @@ class ApiServerTests(unittest.TestCase):
                 {
                     "jsonrpc": "2.0",
                     "id": 3,
-                    "method": "provider/create",
+                    "method": "_nsbot/provider/create",
                     "params": {
                         "kind": "builtin",
                         "catalogProviderId": "openai",
@@ -156,7 +156,7 @@ class ApiServerTests(unittest.TestCase):
                 {
                     "jsonrpc": "2.0",
                     "id": 4,
-                    "method": "workspace/sessions/create",
+                    "method": "_nsbot/workspace/sessions/create",
                     "params": {
                         "workspaceId": workspace_id,
                         "connectionId": provider_id,
@@ -219,7 +219,7 @@ class ApiServerTests(unittest.TestCase):
                 {
                     "jsonrpc": "2.0",
                     "id": 1,
-                    "method": "timeline/list",
+                    "method": "_nsbot/timeline/list",
                     "params": {"sessionId": session.id, "limit": 20},
                 }
             ]

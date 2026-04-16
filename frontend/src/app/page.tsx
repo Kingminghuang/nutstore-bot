@@ -12,6 +12,12 @@ import {
   updateLiveTurnBySession,
   upsertSession,
 } from "@/app/live-turn-state"
+import {
+  buildPromptPayloadFromComposerBlocks,
+  rebuildPromptPayloadForEditFromComposerBlocks,
+  type ComposerInlineBlock,
+  type UserDisplayBlock,
+} from "./prompt-blocks"
 import { usePermissionRequests } from "@/app/use-permission-requests"
 import { MainContent } from "@/features/conversation"
 import { SettingsModal } from "@/features/settings"
@@ -36,6 +42,8 @@ import {
   listWorkspaces,
   loadSession,
   projectConversationEvents,
+  searchWorkspaceEntries,
+  type WorkspaceEntrySearchResult,
   updateProvider,
   updateWorkspace,
   workspaceSidecarIndexStatus,
@@ -124,6 +132,24 @@ function updateSessionInWorkspace(
       session.id === sessionId ? updateSession(session) : session
     ),
   }
+}
+
+function resolveComposerAttachments(
+  activeSessionId: string | null,
+  activeWorkspaceId: string | null,
+  activeDraftWorkspaceId: string | null,
+  attachmentsBySession: Record<string, ComposerAttachment[]>,
+  draftAttachmentsByWorkspace: Record<string, DraftAttachment[]>
+): Array<ComposerAttachment | DraftAttachment> {
+  if (activeSessionId) {
+    return attachmentsBySession[activeSessionId] ?? []
+  }
+
+  if (activeWorkspaceId && activeDraftWorkspaceId === activeWorkspaceId) {
+    return draftAttachmentsByWorkspace[activeWorkspaceId] ?? []
+  }
+
+  return []
 }
 
 export default function Home() {
@@ -259,14 +285,18 @@ export default function Home() {
   const startLiveTurn = useCallback(
     (
       sessionId: string,
-      text: string,
+      payload: {
+        displayText: string
+        editableText: string
+        displayBlocks: UserDisplayBlock[]
+      },
       options?: {
         truncatedAfterSequence?: number | null
       }
     ) => {
       setLiveTurnBySession((prev) =>
         updateLiveTurnBySession(prev, sessionId, () => ({
-          optimisticEvents: [createOptimisticUserEntry(sessionId, text)],
+          optimisticEvents: [createOptimisticUserEntry(sessionId, payload)],
           truncatedAfterSequence: options?.truncatedAfterSequence ?? null,
           assistantDraft: "",
           thinkingDraft: "",
@@ -836,9 +866,20 @@ export default function Home() {
   )
 
   const handleSendMessage = useCallback(
-    async (text: string, options: { autoAllow: boolean }) => {
+    async (
+      payload: { blocks: ComposerInlineBlock[] },
+      options: { autoAllow: boolean }
+    ) => {
       if (!activeWorkspaceId || !selectedModel) return
       const isDraftMode = activeSessionId == null && activeDraftWorkspaceId === activeWorkspaceId
+      const composerAttachments = resolveComposerAttachments(
+        activeSessionId,
+        activeWorkspaceId,
+        activeDraftWorkspaceId,
+        attachmentsBySession,
+        draftAttachmentsByWorkspace
+      )
+      const promptPayload = buildPromptPayloadFromComposerBlocks(payload.blocks, composerAttachments)
 
       setTurnError(null)
       let targetSessionId = activeSessionId
@@ -863,7 +904,7 @@ export default function Home() {
             targetSessionId,
             activeWorkspaceId,
             selectedModel,
-            text
+            promptPayload.displayText
           )
           setSessionsByWorkspace((prev) => ({
             ...prev,
@@ -876,13 +917,17 @@ export default function Home() {
           throw new Error("failed to resolve session")
         }
 
-        startLiveTurn(targetSessionId, text)
+        startLiveTurn(targetSessionId, {
+          displayText: promptPayload.displayText,
+          editableText: promptPayload.editableText,
+          displayBlocks: promptPayload.displayBlocks,
+        })
         setSessionsByWorkspace((prev) =>
           updateSessionInWorkspace(prev, activeWorkspaceId, targetSessionId!, (session) => ({
             ...session,
             updatedAt: new Date().toISOString(),
             lastMessageAt: new Date().toISOString(),
-            lastMessagePreview: text,
+            lastMessagePreview: promptPayload.displayText,
             activeConnectionId: selectedModel.connectionId,
             activeModelId: selectedModel.modelId,
           }))
@@ -891,7 +936,7 @@ export default function Home() {
 
         await acpClient.request("session/prompt", {
           sessionId: targetSessionId,
-          prompt: [{ type: "text", text }],
+          prompt: promptPayload.promptBlocks,
           _meta: {
             autoAllow: options.autoAllow,
             selectedReasoningEffort: selectedReasoningEffort ?? null,
@@ -923,11 +968,24 @@ export default function Home() {
       activeDraftWorkspaceId,
       activeSessionId,
       activeWorkspaceId,
+      attachmentsBySession,
+      draftAttachmentsByWorkspace,
       hydrateSessionAfterTurn,
       selectedModel,
       selectedReasoningEffort,
       startLiveTurn,
     ]
+  )
+
+  const handleSearchWorkspaceEntries = useCallback(
+    async (query: string) => {
+      if (!activeWorkspaceId) {
+        return []
+      }
+      const response = await searchWorkspaceEntries(activeWorkspaceId, query, { limit: 8 })
+      return response.entries
+    },
+    [activeWorkspaceId]
   )
 
   const cancelSessionTurn = useCallback(
@@ -1031,7 +1089,7 @@ export default function Home() {
   )
 
   const handleEditConversationEventAndRerun = useCallback(
-    async (entryId: string, nextContent: string, options: { autoAllow: boolean }) => {
+    async (entryId: string, nextBlocks: ComposerInlineBlock[], options: { autoAllow: boolean }) => {
       if (!activeSessionId || !activeWorkspaceId || !selectedModel || !activeSession) {
         return
       }
@@ -1045,10 +1103,18 @@ export default function Home() {
       if (!editedEntry.eventId) {
         throw new Error("Message event anchor is missing")
       }
+      const editedPromptPayload = rebuildPromptPayloadForEditFromComposerBlocks(
+        nextBlocks,
+        editedEntry.promptBlocks
+      )
 
       setTurnError(null)
       setPendingSessionId(activeSessionId)
-      startLiveTurn(activeSessionId, nextContent, {
+      startLiveTurn(activeSessionId, {
+        displayText: editedPromptPayload.displayText,
+        editableText: editedPromptPayload.editableText,
+        displayBlocks: editedPromptPayload.displayBlocks,
+      }, {
         truncatedAfterSequence: editedEntry.sequenceNo,
       })
       setSessionsByWorkspace((prev) =>
@@ -1056,15 +1122,15 @@ export default function Home() {
           ...session,
           updatedAt: new Date().toISOString(),
           lastMessageAt: new Date().toISOString(),
-          lastMessagePreview: nextContent,
+          lastMessagePreview: editedPromptPayload.displayText,
         }))
       )
 
       try {
-        await acpClient.request("session/edit_and_prompt", {
+        await acpClient.request("_nsbot/session/edit_and_prompt", {
           sessionId: activeSessionId,
           eventId: editedEntry.eventId,
-          prompt: [{ type: "text", text: nextContent }],
+          prompt: editedPromptPayload.promptBlocks,
           _meta: {
             autoAllow: options.autoAllow,
             selectedReasoningEffort: selectedReasoningEffort ?? null,
@@ -1112,15 +1178,18 @@ export default function Home() {
         return next
       })
       if (activeWorkspaceId === projectId) {
-        if (pendingPermissionRequestRef.current?.sessionId) {
-          resolvePermissionRequest({ outcome: { outcome: "cancelled" } })
+        if (pendingPermissionRequest?.sessionId) {
+          resolvePermissionRequest(
+            { outcome: { outcome: "cancelled" } },
+            pendingPermissionRequest.sessionId
+          )
         }
         setActiveDraftWorkspaceId(null)
         setActiveWorkspaceId(null)
         setActiveSessionId(null)
       }
     },
-    [activeWorkspaceId, resolvePermissionRequest, sessionsByWorkspace]
+    [activeWorkspaceId, pendingPermissionRequest, resolvePermissionRequest, sessionsByWorkspace]
   )
 
   const handleRemoveSession = useCallback(
@@ -1236,6 +1305,7 @@ export default function Home() {
         isDraftSession={isDraftSessionActive}
         onSendMessage={handleSendMessage}
         onCancelTurn={handleCancelActiveTurn}
+        onSearchWorkspaceEntries={handleSearchWorkspaceEntries}
         modelOptionGroups={modelOptionGroups}
         selectedModel={selectedModel}
         selectedReasoningEffort={selectedReasoningEffort}
@@ -1334,12 +1404,12 @@ async function readAttachmentPayload(
   body: BodyInit | null | undefined
 ): Promise<{ fileName: string; mimeType: string; payloadBase64: string }> {
   if (!(body instanceof FormData)) {
-    throw new NSBotRequestError("Attachment upload requires multipart form data", 400, null)
+    throw new Error("Attachment upload requires multipart form data")
   }
   const fileValue = body.get("file")
   const file = fileValue instanceof File ? fileValue : null
   if (!file) {
-    throw new NSBotRequestError("Attachment upload is missing file payload", 400, null)
+    throw new Error("Attachment upload is missing file payload")
   }
   const arrayBuffer = await file.arrayBuffer()
   const bytes = new Uint8Array(arrayBuffer)

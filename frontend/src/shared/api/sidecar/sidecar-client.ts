@@ -7,6 +7,17 @@ import {
 } from "@/features/providers"
 import { acpClient } from "./acp-client"
 
+export type UserDisplayBlock =
+  | {
+      type: "text"
+      text: string
+    }
+  | {
+      type: "resource"
+      label: string
+      uri: string
+    }
+
 export type ConversationEventUsage = {
   inputTokens: number
   outputTokens: number
@@ -38,6 +49,9 @@ export type ConversationEventBase = {
   stepId: string | null
   stepNumber: number | null
   contentText: string | null
+  editableText?: string | null
+  displayBlocks?: UserDisplayBlock[]
+  promptBlocks?: Array<Record<string, unknown>>
   createdAt: string
 }
 
@@ -104,12 +118,77 @@ export type TimelineResponse = {
   }
 }
 
+export type WorkspaceEntrySearchResult = {
+  name: string
+  relativePath: string
+  parentPath: string
+  absolutePath: string
+  uri: string
+  entryType: "file" | "directory"
+}
+
 function asString(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value : null
 }
 
 function asNumber(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null
+}
+
+function buildUserDisplayBlocks(promptBlocks: unknown, fallbackText: string): UserDisplayBlock[] | undefined {
+  if (!Array.isArray(promptBlocks)) {
+    return fallbackText.trim() ? [{ type: "text", text: fallbackText }] : undefined
+  }
+
+  const blocks: UserDisplayBlock[] = []
+  for (const block of promptBlocks) {
+    if (!block || typeof block !== "object") {
+      continue
+    }
+    const normalized = block as Record<string, unknown>
+    const blockType = asString(normalized.type)
+    if (blockType === "text") {
+      const text = asString(normalized.text)
+      if (text) {
+        blocks.push({ type: "text", text })
+      }
+      continue
+    }
+    if (blockType === "resource") {
+      const resource = normalized.resource
+      if (!resource || typeof resource !== "object") {
+        continue
+      }
+      const resourceRecord = resource as Record<string, unknown>
+      const uri = asString(resourceRecord.uri)
+      if (!uri) {
+        continue
+      }
+      blocks.push({
+        type: "resource",
+        label: asString(resourceRecord.title) ?? uri.split("/").filter(Boolean).pop() ?? "resource",
+        uri,
+      })
+      continue
+    }
+    if (blockType === "resource_link") {
+      const uri = asString(normalized.uri)
+      if (!uri) {
+        continue
+      }
+      blocks.push({
+        type: "resource",
+        label:
+          asString(normalized.title) ??
+          asString(normalized.name) ??
+          uri.split("/").filter(Boolean).pop() ??
+          "resource",
+        uri,
+      })
+    }
+  }
+
+  return blocks.length > 0 ? blocks : fallbackText.trim() ? [{ type: "text", text: fallbackText }] : undefined
 }
 
 export function projectConversationEvents(sessionId: string, events: TimelineEvent[]): ConversationEvent[] {
@@ -136,26 +215,62 @@ export function projectConversationEvents(sessionId: string, events: TimelineEve
         update && typeof update === "object"
           ? (update as { content?: unknown }).content
           : undefined
+      const displayText =
+        content && typeof content === "object"
+          ? asString((content as { displayText?: unknown }).displayText)
+          : null
+      const editableText =
+        content && typeof content === "object"
+          ? asString((content as { editableText?: unknown }).editableText)
+          : null
+      const promptBlocks =
+        content && typeof content === "object"
+          ? (content as { promptBlocks?: unknown }).promptBlocks
+          : undefined
       const text =
         content && typeof content === "object"
           ? asString((content as { text?: unknown }).text)
           : null
-      if (!text) {
+      const projectedText = sessionUpdate === "user_message_chunk" ? displayText ?? text : text
+      if (!projectedText) {
         continue
       }
-      normalized.push({
-        id: eventId,
-        eventId,
-        sessionId,
-        turnId: event.turnId,
-        sequenceNo,
-        entryKind: sessionUpdate === "user_message_chunk" ? "user_input" : "final_answer",
-        displayRole: sessionUpdate === "user_message_chunk" ? "user" : "assistant",
-        stepId: null,
-        stepNumber: null,
-        contentText: text,
-        createdAt,
-      })
+      if (sessionUpdate === "user_message_chunk") {
+        normalized.push({
+          id: eventId,
+          eventId,
+          sessionId,
+          turnId: event.turnId,
+          sequenceNo,
+          entryKind: "user_input",
+          displayRole: "user",
+          stepId: null,
+          stepNumber: null,
+          contentText: projectedText,
+          editableText: editableText ?? projectedText,
+          displayBlocks: buildUserDisplayBlocks(promptBlocks, projectedText),
+          promptBlocks: Array.isArray(promptBlocks)
+            ? promptBlocks.filter(
+                (block): block is Record<string, unknown> => !!block && typeof block === "object"
+              )
+            : undefined,
+          createdAt,
+        })
+      } else {
+        normalized.push({
+          id: eventId,
+          eventId,
+          sessionId,
+          turnId: event.turnId,
+          sequenceNo,
+          entryKind: "final_answer",
+          displayRole: "assistant",
+          stepId: null,
+          stepNumber: null,
+          contentText: projectedText,
+          createdAt,
+        })
+      }
       continue
     }
 
@@ -329,22 +444,22 @@ export function projectConversationEvents(sessionId: string, events: TimelineEve
 }
 
 export async function getProviderCatalog(): Promise<ProviderCatalogResponse> {
-  return acpClient.request<ProviderCatalogResponse>("provider/catalog")
+  return acpClient.request<ProviderCatalogResponse>("_nsbot/provider/catalog")
 }
 
 export async function getProviders(): Promise<ProviderConnectionsResponse> {
-  return acpClient.request<ProviderConnectionsResponse>("provider/list")
+  return acpClient.request<ProviderConnectionsResponse>("_nsbot/provider/list")
 }
 
 export async function getModelOptions(): Promise<ModelOptionsResponse> {
-  return acpClient.request<ModelOptionsResponse>("provider/model_options")
+  return acpClient.request<ModelOptionsResponse>("_nsbot/provider/model_options")
 }
 
 export async function createProvider(
   payload: SaveProviderPayload
 ): Promise<ProviderConnectionDetail> {
   return acpClient.request<ProviderConnectionDetail>(
-    "provider/create",
+    "_nsbot/provider/create",
     payload as Record<string, unknown>
   )
 }
@@ -353,14 +468,14 @@ export async function updateProvider(
   providerId: string,
   payload: Partial<SaveProviderPayload>
 ): Promise<ProviderConnectionDetail> {
-  return acpClient.request<ProviderConnectionDetail>("provider/update", {
+  return acpClient.request<ProviderConnectionDetail>("_nsbot/provider/update", {
     providerId,
     ...(payload as Record<string, unknown>),
   })
 }
 
 export async function deleteProvider(providerId: string): Promise<void> {
-  await acpClient.request("provider/delete", { providerId })
+  await acpClient.request("_nsbot/provider/delete", { providerId })
 }
 
 export async function getSessionTimeline(
@@ -373,7 +488,7 @@ export async function getSessionTimeline(
       hasMore?: boolean
       nextBeforeSequence?: number | null
     }
-  }>("timeline/list", {
+  }>("_nsbot/timeline/list", {
     sessionId,
     limit: options?.limit,
     beforeSequence: options?.beforeSequence ?? null,
@@ -390,60 +505,78 @@ export async function loadSession(sessionId: string): Promise<{ configOptions: A
 }
 
 export async function listWorkspaces(): Promise<{ workspaces: Array<Record<string, unknown>> }> {
-  return acpClient.request("workspace/list")
+  return acpClient.request("_nsbot/workspace/list")
 }
 
 export async function createWorkspace(payload: Record<string, unknown>) {
-  return acpClient.request("workspace/create", payload)
+  return acpClient.request("_nsbot/workspace/create", payload)
 }
 
 export async function updateWorkspace(workspaceId: string, payload: Record<string, unknown>) {
-  return acpClient.request("workspace/update", { workspaceId, ...payload })
+  return acpClient.request("_nsbot/workspace/update", { workspaceId, ...payload })
 }
 
 export async function deleteWorkspace(workspaceId: string): Promise<void> {
-  await acpClient.request("workspace/delete", { workspaceId })
+  await acpClient.request("_nsbot/workspace/delete", { workspaceId })
 }
 
 export async function listWorkspaceSessions(workspaceId: string): Promise<{ sessions: Array<Record<string, unknown>> }> {
-  return acpClient.request("workspace/sessions/list", { workspaceId })
+  return acpClient.request("_nsbot/workspace/sessions/list", { workspaceId })
 }
 
 export async function workspaceSidecarIndexStatus(workspaceId: string) {
-  return acpClient.request("workspace/sidecar_index/status", { workspaceId })
+  return acpClient.request("_nsbot/workspace/sidecar_index/status", { workspaceId })
+}
+
+export async function searchWorkspaceEntries(
+  workspaceId: string,
+  query: string,
+  options?: { limit?: number }
+): Promise<{ entries: WorkspaceEntrySearchResult[] }> {
+  const response = await acpClient.request<{ entries?: WorkspaceEntrySearchResult[] }>(
+    "_nsbot/workspace/find_entries",
+    {
+      workspaceId,
+      query,
+      limit: options?.limit,
+    }
+  )
+  return {
+    entries: Array.isArray(response.entries) ? response.entries : [],
+  }
 }
 
 export async function listAttachments(sessionId: string): Promise<{ attachments: Array<Record<string, unknown>> }> {
-  return acpClient.request("attachment/list", { sessionId })
+  return acpClient.request("_nsbot/attachment/list", { sessionId })
 }
 
 export async function createAttachment(sessionId: string, payload: Record<string, unknown>) {
-  return acpClient.request("attachment/create", { sessionId, ...payload })
+  return acpClient.request("_nsbot/attachment/create", { sessionId, ...payload })
 }
 
 export async function deleteAttachment(sessionId: string, attachmentId: string): Promise<void> {
-  await acpClient.request("attachment/delete", { sessionId, attachmentId })
+  await acpClient.request("_nsbot/attachment/delete", { sessionId, attachmentId })
 }
 
 export async function listDraftAttachments(workspaceId: string): Promise<{ draftAttachments: Array<Record<string, unknown>> }> {
-  return acpClient.request("draft_attachment/list", { workspaceId })
+  return acpClient.request("_nsbot/draft_attachment/list", { workspaceId })
 }
 
 export async function createDraftAttachment(workspaceId: string, payload: Record<string, unknown>) {
-  return acpClient.request("draft_attachment/create", { workspaceId, ...payload })
+  return acpClient.request("_nsbot/draft_attachment/create", { workspaceId, ...payload })
 }
 
 export async function deleteDraftAttachment(
   workspaceId: string,
   draftAttachmentId: string
 ): Promise<void> {
-  await acpClient.request("draft_attachment/delete", { workspaceId, draftAttachmentId })
+  await acpClient.request("_nsbot/draft_attachment/delete", { workspaceId, draftAttachmentId })
 }
 
 export async function updateSessionMeta(sessionId: string, payload: Record<string, unknown>) {
-  return acpClient.request("session/update_meta", { sessionId, ...payload })
+  return acpClient.request("_nsbot/session/update_meta", { sessionId, ...payload })
 }
 
 export async function deleteSession(sessionId: string): Promise<void> {
-  await acpClient.request("session/delete", { sessionId })
+  await acpClient.request("_nsbot/session/delete", { sessionId })
 }

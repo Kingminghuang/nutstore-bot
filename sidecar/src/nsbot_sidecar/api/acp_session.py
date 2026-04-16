@@ -4,6 +4,11 @@ import asyncio
 import base64
 from concurrent.futures import Future
 import json
+import mimetypes
+import os
+import re
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 import threading
@@ -20,6 +25,19 @@ from nsbot_sidecar.runtime.runtime_service import (
     RuntimeCancelledError,
     RuntimeWorkerConfig,
 )
+
+
+_ATTACHMENT_TEXT_MAX_BYTES = 50 * 1024
+
+
+def _acp_debug_enabled() -> bool:
+    value = os.environ.get("NSBOT_ACP_DEBUG", "").strip().lower()
+    return value not in {"", "0", "false", "no", "off"}
+
+
+def _acp_debug_log(message: str) -> None:
+    if _acp_debug_enabled():
+        print(f"[acp-session] {message}", file=sys.stderr, flush=True)
 
 
 @dataclass
@@ -131,19 +149,19 @@ class AcpJsonRpcSession:
             if method == "session/list":
                 await self._send_result(req_id, self._handle_session_list(params))
                 return
-            if method == "workspace/list":
+            if method == "_nsbot/workspace/list":
                 await self._send_result(
                     req_id,
                     self.state.session_service.list_workspaces_payload(),
                 )
                 return
-            if method == "workspace/create":
+            if method == "_nsbot/workspace/create":
                 await self._send_result(
                     req_id,
                     self.state.session_service.create_workspace(params),
                 )
                 return
-            if method == "workspace/update":
+            if method == "_nsbot/workspace/update":
                 workspace_id = str(
                     params.get("workspaceId") or params.get("workspace_id") or ""
                 )
@@ -155,7 +173,7 @@ class AcpJsonRpcSession:
                     self.state.session_service.update_workspace(workspace_id, params),
                 )
                 return
-            if method == "workspace/delete":
+            if method == "_nsbot/workspace/delete":
                 workspace_id = str(
                     params.get("workspaceId") or params.get("workspace_id") or ""
                 )
@@ -165,7 +183,7 @@ class AcpJsonRpcSession:
                 self.state.session_service.delete_workspace(workspace_id)
                 await self._send_result(req_id, {})
                 return
-            if method == "workspace/sessions/list":
+            if method == "_nsbot/workspace/sessions/list":
                 workspace_id = str(
                     params.get("workspaceId") or params.get("workspace_id") or ""
                 )
@@ -177,7 +195,7 @@ class AcpJsonRpcSession:
                     self.state.session_service.list_sessions_payload(workspace_id),
                 )
                 return
-            if method == "workspace/sessions/create":
+            if method == "_nsbot/workspace/sessions/create":
                 workspace_id = str(
                     params.get("workspaceId") or params.get("workspace_id") or ""
                 )
@@ -189,7 +207,7 @@ class AcpJsonRpcSession:
                     self.state.session_service.create_session(workspace_id, params),
                 )
                 return
-            if method == "workspace/sidecar_index/status":
+            if method == "_nsbot/workspace/sidecar_index/status":
                 workspace_id = str(
                     params.get("workspaceId") or params.get("workspace_id") or ""
                 )
@@ -203,31 +221,37 @@ class AcpJsonRpcSession:
                     ),
                 )
                 return
-            if method == "provider/catalog":
+            if method == "_nsbot/workspace/find_entries":
+                await self._send_result(
+                    req_id,
+                    self._handle_workspace_find_entries(params),
+                )
+                return
+            if method == "_nsbot/provider/catalog":
                 await self._send_result(
                     req_id,
                     self.state.provider_service.catalog_payload(),
                 )
                 return
-            if method == "provider/list":
+            if method == "_nsbot/provider/list":
                 await self._send_result(
                     req_id,
                     self.state.provider_service.list_connections_payload(),
                 )
                 return
-            if method == "provider/model_options":
+            if method == "_nsbot/provider/model_options":
                 await self._send_result(
                     req_id,
                     self.state.provider_service.model_options_payload(),
                 )
                 return
-            if method == "provider/create":
+            if method == "_nsbot/provider/create":
                 await self._send_result(
                     req_id,
                     self.state.provider_service.create_provider(params),
                 )
                 return
-            if method == "provider/update":
+            if method == "_nsbot/provider/update":
                 provider_id = str(
                     params.get("providerId") or params.get("provider_id") or ""
                 )
@@ -239,7 +263,7 @@ class AcpJsonRpcSession:
                     self.state.provider_service.update_provider(provider_id, params),
                 )
                 return
-            if method == "provider/delete":
+            if method == "_nsbot/provider/delete":
                 provider_id = str(
                     params.get("providerId") or params.get("provider_id") or ""
                 )
@@ -255,7 +279,7 @@ class AcpJsonRpcSession:
             if method == "session/resume":
                 await self._send_result(req_id, self._handle_session_resume(params))
                 return
-            if method == "session/update_meta":
+            if method == "_nsbot/session/update_meta":
                 session_id = str(
                     params.get("sessionId") or params.get("session_id") or ""
                 )
@@ -267,7 +291,7 @@ class AcpJsonRpcSession:
                     self.state.session_service.update_session(session_id, params),
                 )
                 return
-            if method == "session/delete":
+            if method == "_nsbot/session/delete":
                 session_id = str(
                     params.get("sessionId") or params.get("session_id") or ""
                 )
@@ -277,10 +301,10 @@ class AcpJsonRpcSession:
                 self.state.session_service.delete_session(session_id)
                 await self._send_result(req_id, {})
                 return
-            if method == "timeline/list":
+            if method == "_nsbot/timeline/list":
                 await self._send_result(req_id, self._handle_timeline_list(params))
                 return
-            if method == "draft_attachment/list":
+            if method == "_nsbot/draft_attachment/list":
                 workspace_id = str(
                     params.get("workspaceId") or params.get("workspace_id") or ""
                 )
@@ -294,7 +318,7 @@ class AcpJsonRpcSession:
                     ),
                 )
                 return
-            if method == "draft_attachment/delete":
+            if method == "_nsbot/draft_attachment/delete":
                 workspace_id = str(
                     params.get("workspaceId") or params.get("workspace_id") or ""
                 )
@@ -313,7 +337,7 @@ class AcpJsonRpcSession:
                 )
                 await self._send_result(req_id, {})
                 return
-            if method == "draft_attachment/create":
+            if method == "_nsbot/draft_attachment/create":
                 workspace_id = str(
                     params.get("workspaceId") or params.get("workspace_id") or ""
                 )
@@ -344,7 +368,7 @@ class AcpJsonRpcSession:
                 )
                 await self._send_result(req_id, result)
                 return
-            if method == "attachment/list":
+            if method == "_nsbot/attachment/list":
                 session_id = str(
                     params.get("sessionId") or params.get("session_id") or ""
                 )
@@ -356,7 +380,7 @@ class AcpJsonRpcSession:
                     self.state.session_service.list_attachments_payload(session_id),
                 )
                 return
-            if method == "attachment/delete":
+            if method == "_nsbot/attachment/delete":
                 session_id = str(
                     params.get("sessionId") or params.get("session_id") or ""
                 )
@@ -371,7 +395,7 @@ class AcpJsonRpcSession:
                 self.state.session_service.delete_attachment(session_id, attachment_id)
                 await self._send_result(req_id, {})
                 return
-            if method == "attachment/create":
+            if method == "_nsbot/attachment/create":
                 session_id = str(
                     params.get("sessionId") or params.get("session_id") or ""
                 )
@@ -422,7 +446,7 @@ class AcpJsonRpcSession:
                 task = asyncio.create_task(self._handle_prompt_request(req_id, params))
                 self._prompt_tasks[session_id] = task
                 return
-            if method == "session/edit_and_prompt":
+            if method == "_nsbot/session/edit_and_prompt":
                 session_id = str(params.get("sessionId") or "")
                 if not session_id:
                     await self._send_error(req_id, -32000, "sessionId is required")
@@ -437,6 +461,7 @@ class AcpJsonRpcSession:
                 self._prompt_tasks[session_id] = task
                 return
 
+            _acp_debug_log(f"method not found during request dispatch: {method}")
             await self._send_error(req_id, -32601, f"Method not found: {method}")
         except Exception as exc:  # noqa: BLE001
             await self._send_error(req_id, -32000, str(exc))
@@ -465,6 +490,18 @@ class AcpJsonRpcSession:
                 "sessionCapabilities": {
                     "list": {},
                     "resume": {},
+                },
+                "_meta": {
+                    "nsbot": {
+                        "extensions": {
+                            "workspace": True,
+                            "provider": True,
+                            "attachment": True,
+                            "draft_attachment": True,
+                            "timeline": True,
+                            "session_edit": True,
+                        }
+                    }
                 },
             },
             "agentInfo": {
@@ -725,9 +762,37 @@ class AcpJsonRpcSession:
 
         return {"configOptions": self._config_options_for_session(session_id)}
 
-    def _client_supports_read_text_file(self) -> bool:
-        fs_cap = self._client_capabilities.get("fs")
-        return isinstance(fs_cap, dict) and bool(fs_cap.get("readTextFile"))
+    def _handle_workspace_find_entries(self, params: dict[str, Any]) -> dict[str, Any]:
+        workspace_id = str(params.get("workspaceId") or params.get("workspace_id") or "").strip()
+        query = str(params.get("query") or "").strip()
+        limit_value = params.get("limit")
+        limit = 8
+        if isinstance(limit_value, int):
+            limit = max(1, min(limit_value, 50))
+        elif isinstance(limit_value, str) and limit_value.strip().isdigit():
+            limit = max(1, min(int(limit_value), 50))
+
+        if not workspace_id:
+            raise RuntimeError("workspaceId is required")
+        if len(query) < 1:
+            raise RuntimeError("query must contain at least one character")
+
+        try:
+            workspace = self.state.repositories.workspaces.get_by_id(workspace_id)
+        except ValueError as exc:
+            raise RuntimeError("Workspace not found") from exc
+
+        workspace_root = Path(workspace.real_path).expanduser().resolve()
+        if not workspace_root.exists() or not workspace_root.is_dir():
+            raise RuntimeError("Workspace directory is unavailable")
+
+        return {
+            "entries": self._find_workspace_entries(
+                workspace_root=workspace_root,
+                query=query,
+                limit=limit,
+            )
+        }
 
     async def _extract_prompt_text(
         self, session_id: str, blocks: list[dict[str, Any]]
@@ -761,42 +826,44 @@ class AcpJsonRpcSession:
 
             if block_type == "resource":
                 resource = block.get("resource")
-                resource_text = self._resource_text_from_embedded(resource)
+                resource_text, normalized_resource = self._normalize_embedded_resource(
+                    session_id, resource
+                )
                 if resource_text:
                     parts.append(resource_text)
-                normalized_blocks.append(block)
+                normalized_blocks.append(
+                    {"type": "resource", "resource": normalized_resource}
+                    if normalized_resource is not None
+                    else block
+                )
                 continue
 
             if block_type == "resource_link":
                 uri = str(block.get("uri") or "").strip()
-                if (
-                    uri
-                    and self._client_supports_read_text_file()
-                    and self._looks_like_file_uri(uri)
-                ):
-                    try:
-                        content = await self._request_client_read_text_file(
-                            session_id, uri
-                        )
-                        if content.strip():
-                            parts.append(content)
-                        normalized_blocks.append(
-                            {
-                                "type": "resource",
-                                "resource": {
-                                    "uri": uri,
-                                    "mimeType": "text/plain",
-                                    "text": content,
-                                },
-                            }
-                        )
-                        continue
-                    except Exception:
-                        # Fallback to URI-only projection.
-                        pass
-                if uri:
-                    parts.append(uri)
-                normalized_blocks.append(block)
+                name = str(block.get("name") or "").strip()
+                if not name:
+                    name = self._resource_name_from_uri(uri)
+                normalized_link = {
+                    "type": "resource_link",
+                    "uri": uri,
+                    "name": name or "resource",
+                }
+                mime_type = block.get("mimeType") or block.get("mime_type")
+                if isinstance(mime_type, str) and mime_type.strip():
+                    normalized_link["mimeType"] = mime_type
+                for key in ("title", "description", "annotations"):
+                    value = block.get(key)
+                    if value is not None:
+                        normalized_link[key] = value
+                size_value = block.get("size")
+                if isinstance(size_value, int) and size_value >= 0:
+                    normalized_link["size"] = size_value
+                elif isinstance(size_value, str) and size_value.strip().isdigit():
+                    normalized_link["size"] = int(size_value)
+                resource_link_text = self._resource_link_prompt_text(normalized_link)
+                if resource_link_text:
+                    parts.append(resource_link_text)
+                normalized_blocks.append(normalized_link)
                 continue
 
             normalized_blocks.append(block)
@@ -804,6 +871,18 @@ class AcpJsonRpcSession:
         return "\n".join(
             [part for part in parts if part.strip()]
         ).strip(), normalized_blocks
+
+    def _normalize_embedded_resource(
+        self, session_id: str, resource: Any
+    ) -> tuple[str, dict[str, Any] | None]:
+        if not isinstance(resource, dict):
+            return "", None
+
+        uri = str(resource.get("uri") or "").strip()
+        if self._looks_like_attachment_uri(uri):
+            return self._attachment_resource_text(session_id, uri, resource)
+
+        return self._resource_text_from_embedded(resource), resource
 
     def _resource_text_from_embedded(self, resource: Any) -> str:
         if not isinstance(resource, dict):
@@ -823,11 +902,190 @@ class AcpJsonRpcSession:
 
         return ""
 
+    def _looks_like_attachment_uri(self, uri: str) -> bool:
+        return urlparse(uri).scheme == "attachment"
+
+    def _attachment_resource_text(
+        self, session_id: str, uri: str, resource: dict[str, Any]
+    ) -> tuple[str, dict[str, Any]]:
+        session = self._ensure_session_exists(session_id)
+        parsed = urlparse(uri)
+        attachment_kind = parsed.netloc.strip().lower()
+        attachment_id = parsed.path.lstrip("/").strip()
+        if not attachment_id:
+            raise RuntimeError("Attachment resource URI is invalid")
+
+        file_name = "attachment"
+        mime_type = str(resource.get("mimeType") or "").strip() or None
+        absolute_path: Path | None = None
+
+        if attachment_kind == "session":
+            try:
+                record = self.state.repositories.attachments.get_by_id(attachment_id)
+            except ValueError as exc:
+                raise RuntimeError("Attachment not found") from exc
+            if record.session_id != session_id:
+                raise RuntimeError("Attachment not found")
+            file_name = record.file_name
+            mime_type = mime_type or record.mime_type or None
+            absolute_path = self.state.session_service.attachment_store.absolute_path(
+                record.storage_path
+            )
+        elif attachment_kind == "draft":
+            try:
+                record = self.state.repositories.draft_attachments.get_by_id(
+                    attachment_id
+                )
+            except ValueError as exc:
+                raise RuntimeError("Draft attachment not found") from exc
+            if record.workspace_id != session.workspace_id:
+                raise RuntimeError("Draft attachment not found")
+            file_name = record.file_name
+            mime_type = mime_type or record.mime_type or None
+            absolute_path = self.state.session_service.attachment_store.absolute_path(
+                record.storage_path
+            )
+        else:
+            raise RuntimeError("Attachment resource URI is invalid")
+
+        if absolute_path is None or not absolute_path.exists():
+            raise RuntimeError("Attachment file is missing")
+
+        normalized_resource: dict[str, Any] = {
+            "uri": uri,
+            "mimeType": mime_type
+            or mimetypes.guess_type(str(absolute_path))[0]
+            or "application/octet-stream",
+            "title": str(resource.get("title") or "").strip() or file_name,
+        }
+
+        text_content, truncated = self._read_attachment_text(absolute_path)
+        if text_content is not None:
+            normalized_resource["text"] = text_content
+            suffix = "\n[Attachment text truncated to 50KB.]" if truncated else ""
+            return f"Attached file {file_name}:\n{text_content}{suffix}", normalized_resource
+
+        return (
+            f"Attached file {file_name} ({normalized_resource['mimeType']}) is available as an embedded resource.",
+            normalized_resource,
+        )
+
+    def _read_attachment_text(self, path: Path) -> tuple[str | None, bool]:
+        raw = path.read_bytes()
+        truncated = len(raw) > _ATTACHMENT_TEXT_MAX_BYTES
+        sample = raw[:_ATTACHMENT_TEXT_MAX_BYTES]
+        try:
+            text = sample.decode("utf-8")
+        except UnicodeDecodeError:
+            return None, False
+        return text, truncated
+
     def _looks_like_file_uri(self, uri: str) -> bool:
         if uri.startswith("file://"):
             return True
         parsed = urlparse(uri)
         return parsed.scheme == "" and (uri.startswith("/") or uri.startswith("~"))
+
+    def _pick_fd_executable(self) -> str:
+        configured = str(self.state.api_server_config.fd_executable or "").strip()
+        if configured:
+            return configured
+        return shutil.which("fd") or shutil.which("fdfind") or ""
+
+    def _find_workspace_entries(
+        self, workspace_root: Path, query: str, limit: int
+    ) -> list[dict[str, Any]]:
+        fd_executable = self._pick_fd_executable()
+        if fd_executable == "":
+            raise RuntimeError("fd executable not found")
+
+        pattern = f".*{re.escape(query)}.*"
+        cmd = [
+            fd_executable,
+            pattern,
+            ".",
+            "--regex",
+            "--color=never",
+            "--max-results",
+            str(max(limit * 4, limit)),
+            "--exclude",
+            ".git",
+            "--exclude",
+            "node_modules",
+        ]
+        result = subprocess.run(
+            cmd,
+            cwd=str(workspace_root),
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode not in {0, 1}:
+            stderr = result.stderr.strip()
+            raise RuntimeError(stderr or "fd command failed")
+
+        normalized_query = query.casefold()
+        entries: list[dict[str, Any]] = []
+        seen_paths: set[str] = set()
+        for raw_line in result.stdout.splitlines():
+            rel_path = raw_line.strip()
+            if rel_path == "":
+                continue
+            full_path = (workspace_root / rel_path).resolve()
+            if not str(full_path).startswith(str(workspace_root)):
+                continue
+            if not full_path.exists():
+                continue
+
+            relative_path = full_path.relative_to(workspace_root).as_posix()
+            dedupe_key = f"{relative_path}/" if full_path.is_dir() else relative_path
+            if dedupe_key in seen_paths:
+                continue
+            seen_paths.add(dedupe_key)
+
+            name = full_path.name or workspace_root.name
+            relative_display = f"{relative_path}/" if full_path.is_dir() else relative_path
+            parent_path = Path(relative_path).parent.as_posix()
+            if parent_path == ".":
+                parent_path = ""
+            entries.append(
+                {
+                    "name": name,
+                    "relativePath": relative_display,
+                    "parentPath": parent_path,
+                    "absolutePath": str(full_path),
+                    "uri": full_path.as_uri(),
+                    "entryType": "directory" if full_path.is_dir() else "file",
+                }
+            )
+
+        def _score(item: dict[str, Any]) -> tuple[int, int, int, int, int, str]:
+            name = str(item.get("name") or "")
+            relative_path = str(item.get("relativePath") or "")
+            name_lower = name.casefold()
+            path_lower = relative_path.casefold()
+            path_parts = [part.casefold() for part in Path(relative_path.rstrip("/")).parts]
+
+            if name_lower == normalized_query:
+                match_rank = 0
+            elif name_lower.startswith(normalized_query):
+                match_rank = 1
+            elif any(part.startswith(normalized_query) for part in path_parts):
+                match_rank = 2
+            elif normalized_query in name_lower:
+                match_rank = 3
+            else:
+                match_rank = 4
+
+            file_rank = 0 if item.get("entryType") == "file" else 1
+            name_index = name_lower.find(normalized_query)
+            path_index = path_lower.find(normalized_query)
+            first_match = name_index if name_index >= 0 else path_index if path_index >= 0 else 10_000
+            depth = relative_path.count("/")
+            return (match_rank, file_rank, first_match, depth, len(path_lower), path_lower)
+
+        entries.sort(key=_score)
+        return entries[:limit]
 
     def _uri_to_fs_path(self, uri: str) -> str:
         if uri.startswith("file://"):
@@ -837,6 +1095,84 @@ class AcpJsonRpcSession:
                 path = f"//{parsed.netloc}{path}"
             return str(Path(path).expanduser())
         return str(Path(uri).expanduser())
+
+    def _resource_name_from_uri(self, uri: str) -> str:
+        if not uri:
+            return "resource"
+        parsed = urlparse(uri)
+        path = parsed.path if parsed.scheme else uri
+        candidate = Path(unquote(path)).name.strip()
+        return candidate or "resource"
+
+    def _resource_link_prompt_text(self, block: dict[str, Any]) -> str:
+        uri = str(block.get("uri") or "").strip()
+        if not uri:
+            return ""
+
+        label = str(block.get("title") or block.get("name") or "").strip()
+        description = str(block.get("description") or "").strip()
+        mime_type = str(block.get("mimeType") or block.get("mime_type") or "").strip()
+        size_value = block.get("size")
+        size = size_value if isinstance(size_value, int) and size_value >= 0 else None
+
+        sentences: list[str] = []
+        if self._looks_like_file_uri(uri):
+            absolute_path = self._uri_to_fs_path(uri)
+            path_link = f"[{absolute_path}]({absolute_path})"
+            sentences.append(
+                f"Referenced workspace entry {path_link}. The agent can inspect this path directly if needed."
+            )
+            basename = Path(absolute_path).name.strip()
+            if label and label != absolute_path and label != basename:
+                sentences.append(f"Display label: {label}.")
+        else:
+            resource_label = label or self._resource_name_from_uri(uri)
+            sentences.append(f"Referenced resource {resource_label} at {uri}.")
+
+        if description:
+            sentences.append(description if description.endswith(".") else f"{description}.")
+        if mime_type:
+            sentences.append(f"MIME type: {mime_type}.")
+        if size is not None:
+            sentences.append(f"Size: {size} bytes.")
+
+        return " ".join(sentence.strip() for sentence in sentences if sentence.strip())
+
+    def _display_text_from_prompt_blocks(self, blocks: list[dict[str, Any]]) -> str:
+        parts: list[str] = []
+        for block in blocks:
+            if not isinstance(block, dict):
+                continue
+            block_type = str(block.get("type") or "")
+            if block_type == "text":
+                text = str(block.get("text") or "").strip()
+                if text:
+                    parts.append(text)
+                continue
+            if block_type == "resource_link":
+                label = str(block.get("title") or block.get("name") or "").strip()
+                if label:
+                    parts.append(label)
+                continue
+            if block_type == "resource":
+                resource = block.get("resource")
+                if isinstance(resource, dict):
+                    label = str(resource.get("title") or "").strip()
+                    if label:
+                        parts.append(label)
+        return "\n".join(parts).strip()
+
+    def _editable_text_from_prompt_blocks(self, blocks: list[dict[str, Any]]) -> str:
+        parts: list[str] = []
+        for block in blocks:
+            if not isinstance(block, dict):
+                continue
+            if str(block.get("type") or "") != "text":
+                continue
+            text = str(block.get("text") or "").strip()
+            if text:
+                parts.append(text)
+        return "\n".join(parts).strip()
 
     async def _handle_edit_and_prompt_request(
         self, req_id: Any, params: dict[str, Any]
@@ -919,8 +1255,42 @@ class AcpJsonRpcSession:
             raise RuntimeError("Event payload is invalid")
         if str(content.get("type") or "") != "text":
             raise RuntimeError("Only text user message events can be edited")
-        message_text = str(content.get("text") or "")
+        latest_user_event_id = self._latest_editable_user_event_id(session_id)
+        if latest_user_event_id != event.id:
+            raise RuntimeError("Only the latest user input event can be edited")
+        message_text = str(
+            content.get("editableText")
+            or content.get("displayText")
+            or content.get("text")
+            or ""
+        )
         return {"sequenceNo": event.sequence_no, "messageText": message_text}
+
+    def _latest_editable_user_event_id(self, session_id: str) -> str | None:
+        events = self.state.repositories.acp_event_log.list_by_session_id(session_id)
+        latest_event_id: str | None = None
+        for event in events:
+            try:
+                payload = json.loads(event.event_json)
+            except Exception:  # noqa: BLE001
+                continue
+            if not isinstance(payload, dict):
+                continue
+            params = payload.get("params")
+            if not isinstance(params, dict):
+                continue
+            update = params.get("update")
+            if not isinstance(update, dict):
+                continue
+            if str(update.get("sessionUpdate") or "") != "user_message_chunk":
+                continue
+            content = update.get("content")
+            if not isinstance(content, dict):
+                continue
+            if str(content.get("type") or "") != "text":
+                continue
+            latest_event_id = event.id
+        return latest_event_id
 
     async def _handle_prompt_request(self, req_id: Any, params: dict[str, Any]) -> None:
         session_id = str(params.get("sessionId") or "")
@@ -973,7 +1343,19 @@ class AcpJsonRpcSession:
                 session_id,
                 {
                     "sessionUpdate": "user_message_chunk",
-                    "content": {"type": "text", "text": user_text},
+                    "content": {
+                        "type": "text",
+                        "text": user_text,
+                        "displayText": self._display_text_from_prompt_blocks(
+                            normalized_blocks
+                        )
+                        or user_text,
+                        "editableText": self._editable_text_from_prompt_blocks(
+                            normalized_blocks
+                        )
+                        or user_text,
+                        "promptBlocks": normalized_blocks,
+                    },
                 },
                 turn_id=turn_id,
             )
@@ -1273,50 +1655,6 @@ class AcpJsonRpcSession:
             turn_id,
         )
         return "reject"
-
-    async def _request_client_rpc(
-        self, session_id: str, method: str, params: dict[str, Any]
-    ) -> Any:
-        if self.loop is None:
-            raise RuntimeError("ACP loop is unavailable")
-
-        rpc_id = self._next_client_rpc_id()
-        future: Future = Future()
-        with self._pending_lock:
-            self._pending_client_calls[rpc_id] = _ClientRequestWaiter(
-                future=future,
-                session_id=session_id,
-            )
-
-        payload = {
-            "jsonrpc": "2.0",
-            "id": rpc_id,
-            "method": method,
-            "params": params,
-        }
-        await self._send_json(payload)
-        result = await asyncio.wrap_future(future)
-        return result
-
-    async def _request_client_read_text_file(self, session_id: str, uri: str) -> str:
-        path = self._uri_to_fs_path(uri)
-        response = await self._request_client_rpc(
-            session_id,
-            "fs/read_text_file",
-            {"path": path},
-        )
-        if not isinstance(response, dict):
-            return ""
-
-        content = response.get("content")
-        if isinstance(content, str):
-            return content
-
-        text = response.get("text")
-        if isinstance(text, str):
-            return text
-
-        return ""
 
     def _send_permission_terminal_update(
         self,

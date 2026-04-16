@@ -6,6 +6,8 @@ import { fileURLToPath } from "node:url"
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const frontendDir = path.resolve(scriptDir, "..")
+const repoRoot = path.resolve(frontendDir, "..")
+const tauriConfigPath = path.join(repoRoot, "src-tauri", "tauri.conf.json")
 
 function resolveUserPath(value, homeDir) {
   const trimmed = value.trim()
@@ -14,6 +16,21 @@ function resolveUserPath(value, homeDir) {
     return path.resolve(homeDir, trimmed.slice(2))
   }
   return path.resolve(trimmed)
+}
+
+function loadTauriIdentifier() {
+  if (!existsSync(tauriConfigPath)) {
+    return null
+  }
+
+  try {
+    const raw = JSON.parse(readFileSync(tauriConfigPath, "utf-8"))
+    return typeof raw.identifier === "string" && raw.identifier.trim() !== ""
+      ? raw.identifier.trim()
+      : null
+  } catch {
+    return null
+  }
 }
 
 function resolveNsBotHome({ platform = process.platform, env = process.env, homeDir = os.homedir() } = {}) {
@@ -28,6 +45,16 @@ function resolveNsBotHome({ platform = process.platform, env = process.env, home
   }
 
   if (platform === "darwin") {
+    const tauriIdentifier = loadTauriIdentifier()
+    if (tauriIdentifier) {
+      return path.resolve(
+        homeDir,
+        "Library",
+        "Application Support",
+        tauriIdentifier,
+        "NutstoreBot"
+      )
+    }
     return path.resolve(homeDir, "Library", "Application Support", "NutstoreBot")
   }
 

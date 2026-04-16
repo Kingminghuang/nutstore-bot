@@ -136,12 +136,11 @@ Home (app/page.tsx)
 │       │   │   └── AttachmentChip[]
 │       │   │       ├── FileNameTooltip
 │       │   │       └── RemoveAttachmentButton
-│       │   ├── ComposerTextInput
-│       │   ├── MentionAwareInputField [design-only, not implemented]
+│       │   ├── MentionAwareInputField
 │       │   │   ├── PlainTextSegment[]
 │       │   │   ├── FileMentionToken[]
 │       │   │   └── Caret
-│       │   ├── FileMentionPopover [design-only, not implemented]
+│       │   ├── FileMentionPopover
 │       │   │   ├── Header: Files
 │       │   │   ├── SearchHint
 │       │   │   ├── MentionResultList
@@ -150,7 +149,7 @@ Home (app/page.tsx)
 │       │   │   │       └── ParentPathLabel
 │       │   │   ├── EmptyState
 │       │   │   └── LoadingState
-│       │   ├── MentionAssistText [design-only, not implemented]
+│       │   ├── MentionAssistText
 │       │   │   └── ShortcutHints (↑/↓, Tab, Enter, Esc)
 │       │   ├── ProviderNoticeBanner
 │       │   │   └── OpenSettingsButton
@@ -216,7 +215,7 @@ Home (app/page.tsx)
 1. `SettingsModal` 不是单一路由页面，而是由 `currentPage` 在一个 modal 内切换 `providers / provider-config` 两种视图；新建 builtin 与 custom provider 都直接进入 `provider-config`，在单页内完成首保存。
 2. `Sidebar` 内的重命名、删除工作区、删除 session 都以对话框或确认弹窗承载；添加目录在支持原生 picker 时优先走“点击加号 -> 系统目录选择框 -> 直接创建”的一步流，只有 picker 不可用、返回不可用路径或创建失败时才回退到 `AddDirectoryDialog`，因此完整 UI tree 仍需把该 fallback overlay 记入。
 3. `MainContent` 的树除了 `ConversationStream` 外，还包含完整 composer 区域；此前文档主要遗漏的是这一层和 `SettingsModal`/`Sidebar` 的细节。
-4. 根据 `git diff` 中保留的旧版设计树，`RightSidePanels`、`FileTabsPanel`、`FileTreePanel`、`MentionAwareInputField`、`FileMentionPopover`、`MentionAssistText` 已作为“设计预留，未实现”补回文档，但它们当前不在 `frontend/src` 的实际渲染路径中。
+4. 根据 `git diff` 中保留的旧版设计树，`RightSidePanels`、`FileTabsPanel`、`FileTreePanel` 仍是“设计预留，未实现”；`MentionAwareInputField`、`FileMentionPopover`、`MentionAssistText` 已在 composer 中落地，当前实现采用原生 `textarea` + inline token mirror overlay 的方式，而不是完整 contenteditable 富文本编辑器。
 
 ## 2. 消息组装流程
 

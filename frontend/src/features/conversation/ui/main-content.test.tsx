@@ -84,6 +84,7 @@ function renderMainContent(
       liveTurn={options?.liveTurn ?? null}
       isDraftSession={false}
       onSendMessage={vi.fn()}
+      onSearchWorkspaceEntries={vi.fn(async () => [])}
       modelOptionGroups={groups}
       selectedModel={selection}
       selectedReasoningEffort={null}
@@ -155,6 +156,7 @@ describe("MainContent model selector", () => {
         liveTurn={null}
         isDraftSession={false}
         onSendMessage={vi.fn()}
+        onSearchWorkspaceEntries={vi.fn(async () => [])}
         modelOptionGroups={[]}
         selectedModel={null}
         selectedReasoningEffort={null}
@@ -194,6 +196,7 @@ describe("MainContent model selector", () => {
         liveTurn={null}
         isDraftSession={false}
         onSendMessage={vi.fn()}
+        onSearchWorkspaceEntries={vi.fn(async () => [])}
         modelOptionGroups={[]}
         selectedModel={null}
         selectedReasoningEffort={null}
@@ -660,6 +663,7 @@ describe("MainContent model selector", () => {
         liveTurn={null}
         isDraftSession={false}
         onSendMessage={onSendMessage}
+        onSearchWorkspaceEntries={vi.fn(async () => [])}
         modelOptionGroups={groups}
         selectedModel={{ connectionId: "prov_openai", modelId: "gpt-5.4" }}
         selectedReasoningEffort={null}
@@ -691,13 +695,96 @@ describe("MainContent model selector", () => {
     fireEvent.click(screen.getByLabelText("Send"))
 
     await waitFor(() => {
-      expect(onSendMessage).toHaveBeenCalledWith("go", { autoAllow: true })
+      expect(onSendMessage).toHaveBeenCalledWith(
+        { blocks: [{ type: "text", text: "go" }] },
+        { autoAllow: true }
+      )
     })
     expect(screen.queryByTestId("pre-step-turn-loading")).not.toBeInTheDocument()
 
     await act(async () => {
       resolveSend?.()
       await flushMicrotasks()
+    })
+  })
+
+  it("searches file mentions and submits selected mention payloads", async () => {
+    const onSendMessage = vi.fn(async () => undefined)
+    const onSearchWorkspaceEntries = vi.fn(async () => [
+      {
+        name: "page.tsx",
+        relativePath: "src/app/page.tsx",
+        parentPath: "src/app",
+        absolutePath: "/tmp/nutstore-bot/src/app/page.tsx",
+        uri: "file:///tmp/nutstore-bot/src/app/page.tsx",
+        entryType: "file" as const,
+      },
+    ])
+
+    render(
+      <MainContent
+        activeProject={{ id: "ws_1", name: "nutstore-bot", path: "/tmp/nutstore-bot", sessions: [] }}
+        activeSession={buildSession()}
+        timelineEvents={[]}
+        liveTurn={null}
+        isDraftSession={false}
+        onSendMessage={onSendMessage}
+        onSearchWorkspaceEntries={onSearchWorkspaceEntries}
+        modelOptionGroups={groups}
+        selectedModel={{ connectionId: "prov_openai", modelId: "gpt-5.4" }}
+        selectedReasoningEffort={null}
+        onSelectedModelChange={vi.fn()}
+        onSelectedReasoningEffortChange={vi.fn()}
+        isLoadingModels={false}
+        providerError={null}
+        turnError={null}
+        hasMoreHistory={false}
+        isLoadingHistory={false}
+        onLoadEarlierTimeline={vi.fn(async () => undefined)}
+        composerAttachments={[]}
+        isUploadingAttachment={false}
+        onAttachFiles={vi.fn(async () => undefined)}
+        onRemoveAttachment={vi.fn(async () => undefined)}
+        onEditConversationEventAndRerun={vi.fn(async () => undefined)}
+        pendingPermissionRequest={null}
+        onAllowPermissionRequest={vi.fn()}
+        onAllowAlwaysPermissionRequest={vi.fn()}
+        onRejectPermissionRequest={vi.fn()}
+        onCancelPermissionRequest={vi.fn()}
+      />
+    )
+
+    fireEvent.change(screen.getByPlaceholderText("Ask for follow-up changes"), {
+      target: { value: "Inspect @pag", selectionStart: 12 },
+    })
+
+    await waitFor(() => {
+      expect(onSearchWorkspaceEntries).toHaveBeenCalledWith("pag")
+    })
+    fireEvent.click(await screen.findByText("page.tsx"))
+    expect(screen.getAllByText("@page.tsx").length).toBeGreaterThan(0)
+    fireEvent.click(screen.getByLabelText("Send"))
+
+    await waitFor(() => {
+      expect(onSendMessage).toHaveBeenCalledWith(
+        {
+          blocks: [
+            { type: "text", text: "Inspect " },
+            {
+              type: "mention",
+              mention: {
+                name: "page.tsx",
+                relativePath: "src/app/page.tsx",
+                parentPath: "src/app",
+                absolutePath: "/tmp/nutstore-bot/src/app/page.tsx",
+                uri: "file:///tmp/nutstore-bot/src/app/page.tsx",
+                entryType: "file",
+              },
+            },
+          ],
+        },
+        { autoAllow: true }
+      )
     })
   })
 
@@ -723,6 +810,8 @@ describe("MainContent model selector", () => {
             stepId: null,
             stepNumber: null,
             contentText: "please update this",
+            editableText: "please update this",
+            promptBlocks: [{ type: "text", text: "please update this" }],
             createdAt: "2026-03-24T12:00:00Z",
           },
           {
@@ -749,6 +838,8 @@ describe("MainContent model selector", () => {
             stepId: null,
             stepNumber: null,
             contentText: "please update this",
+            editableText: "please update this",
+            promptBlocks: [{ type: "text", text: "please update this" }],
             createdAt: "2026-03-24T12:00:00Z",
           },
           {
@@ -767,6 +858,7 @@ describe("MainContent model selector", () => {
         liveTurn={null}
         isDraftSession={false}
         onSendMessage={vi.fn()}
+        onSearchWorkspaceEntries={vi.fn(async () => [])}
         modelOptionGroups={groups}
         selectedModel={{ connectionId: "prov_openai", modelId: "gpt-5.4" }}
         selectedReasoningEffort={null}
@@ -804,7 +896,234 @@ describe("MainContent model selector", () => {
     await waitFor(() => {
       expect(onEditConversationEventAndRerun).toHaveBeenCalledWith(
         "msg_user",
-        "please update this now",
+        [{ type: "text", text: "please update this now" }],
+        { autoAllow: true }
+      )
+    })
+  })
+
+  it("renders existing mentions as inline tokens while editing the latest user message", async () => {
+    render(
+      <MainContent
+        activeProject={{ id: "ws_1", name: "nutstore-bot", path: "/tmp/nutstore-bot", sessions: [] }}
+        activeSession={buildSession([
+          {
+            id: "msg_user",
+            sessionId: "sess_1",
+            turnId: "turn_1",
+            sequenceNo: 1,
+            entryKind: "user_input",
+            displayRole: "user",
+            stepId: null,
+            stepNumber: null,
+            contentText: "Inspect page.tsx",
+            editableText: "Inspect ",
+            displayBlocks: [
+              { type: "text", text: "Inspect " },
+              { type: "resource_link", label: "page.tsx", uri: "file:///tmp/nutstore-bot/src/app/page.tsx" },
+            ],
+            promptBlocks: [
+              { type: "text", text: "Inspect " },
+              {
+                type: "resource_link",
+                uri: "file:///tmp/nutstore-bot/src/app/page.tsx",
+                name: "page.tsx",
+              },
+            ],
+            createdAt: "2026-03-24T12:00:00Z",
+          },
+        ])}
+        timelineEvents={[
+          {
+            id: "msg_user",
+            sessionId: "sess_1",
+            turnId: "turn_1",
+            sequenceNo: 1,
+            entryKind: "user_input",
+            displayRole: "user",
+            stepId: null,
+            stepNumber: null,
+            contentText: "Inspect page.tsx",
+            editableText: "Inspect ",
+            displayBlocks: [
+              { type: "text", text: "Inspect " },
+              { type: "resource_link", label: "page.tsx", uri: "file:///tmp/nutstore-bot/src/app/page.tsx" },
+            ],
+            promptBlocks: [
+              { type: "text", text: "Inspect " },
+              {
+                type: "resource_link",
+                uri: "file:///tmp/nutstore-bot/src/app/page.tsx",
+                name: "page.tsx",
+              },
+            ],
+            createdAt: "2026-03-24T12:00:00Z",
+          },
+        ]}
+        liveTurn={null}
+        isDraftSession={false}
+        onSendMessage={vi.fn()}
+        onSearchWorkspaceEntries={vi.fn(async () => [])}
+        modelOptionGroups={groups}
+        selectedModel={{ connectionId: "prov_openai", modelId: "gpt-5.4" }}
+        selectedReasoningEffort={null}
+        onSelectedModelChange={vi.fn()}
+        onSelectedReasoningEffortChange={vi.fn()}
+        isLoadingModels={false}
+        providerError={null}
+        turnError={null}
+        hasMoreHistory={false}
+        isLoadingHistory={false}
+        onLoadEarlierTimeline={vi.fn(async () => undefined)}
+        composerAttachments={[]}
+        isUploadingAttachment={false}
+        onAttachFiles={vi.fn(async () => undefined)}
+        onRemoveAttachment={vi.fn(async () => undefined)}
+        onEditConversationEventAndRerun={vi.fn(async () => undefined)}
+        pendingPermissionRequest={null}
+        onAllowPermissionRequest={vi.fn()}
+        onAllowAlwaysPermissionRequest={vi.fn()}
+        onRejectPermissionRequest={vi.fn()}
+        onCancelPermissionRequest={vi.fn()}
+      />
+    )
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit user message" }))
+
+    expect(screen.getAllByText("@page.tsx").length).toBeGreaterThan(0)
+    expect(screen.getByDisplayValue("Inspect @page.tsx")).toBeInTheDocument()
+  })
+
+  it("only shows edit action on the latest user message", async () => {
+    const onEditConversationEventAndRerun = vi.fn(async () => undefined)
+
+    render(
+      <MainContent
+        activeProject={{ id: "ws_1", name: "nutstore-bot", path: "/tmp/nutstore-bot", sessions: [] }}
+        activeSession={buildSession([
+          {
+            id: "msg_user_1",
+            sessionId: "sess_1",
+            turnId: "turn_1",
+            sequenceNo: 1,
+            entryKind: "user_input",
+            displayRole: "user",
+            stepId: null,
+            stepNumber: null,
+            contentText: "first prompt",
+            editableText: "first prompt",
+            promptBlocks: [{ type: "text", text: "first prompt" }],
+            createdAt: "2026-03-24T12:00:00Z",
+          },
+          {
+            id: "msg_assistant_1",
+            sessionId: "sess_1",
+            turnId: "turn_1",
+            sequenceNo: 2,
+            entryKind: "final_answer",
+            displayRole: "assistant",
+            stepId: null,
+            stepNumber: null,
+            contentText: "first answer",
+            createdAt: "2026-03-24T12:00:01Z",
+          },
+          {
+            id: "msg_user_2",
+            sessionId: "sess_1",
+            turnId: "turn_2",
+            sequenceNo: 3,
+            entryKind: "user_input",
+            displayRole: "user",
+            stepId: null,
+            stepNumber: null,
+            contentText: "second prompt",
+            editableText: "second prompt",
+            promptBlocks: [{ type: "text", text: "second prompt" }],
+            createdAt: "2026-03-24T12:01:00Z",
+          },
+        ])}
+        timelineEvents={[
+          {
+            id: "msg_user_1",
+            sessionId: "sess_1",
+            turnId: "turn_1",
+            sequenceNo: 1,
+            entryKind: "user_input",
+            displayRole: "user",
+            stepId: null,
+            stepNumber: null,
+            contentText: "first prompt",
+            editableText: "first prompt",
+            promptBlocks: [{ type: "text", text: "first prompt" }],
+            createdAt: "2026-03-24T12:00:00Z",
+          },
+          {
+            id: "msg_assistant_1",
+            sessionId: "sess_1",
+            turnId: "turn_1",
+            sequenceNo: 2,
+            entryKind: "final_answer",
+            displayRole: "assistant",
+            stepId: null,
+            stepNumber: null,
+            contentText: "first answer",
+            createdAt: "2026-03-24T12:00:01Z",
+          },
+          {
+            id: "msg_user_2",
+            sessionId: "sess_1",
+            turnId: "turn_2",
+            sequenceNo: 3,
+            entryKind: "user_input",
+            displayRole: "user",
+            stepId: null,
+            stepNumber: null,
+            contentText: "second prompt",
+            editableText: "second prompt",
+            promptBlocks: [{ type: "text", text: "second prompt" }],
+            createdAt: "2026-03-24T12:01:00Z",
+          },
+        ]}
+        liveTurn={null}
+        isDraftSession={false}
+        onSendMessage={vi.fn()}
+        onSearchWorkspaceEntries={vi.fn(async () => [])}
+        modelOptionGroups={groups}
+        selectedModel={{ connectionId: "prov_openai", modelId: "gpt-5.4" }}
+        selectedReasoningEffort={null}
+        onSelectedModelChange={vi.fn()}
+        onSelectedReasoningEffortChange={vi.fn()}
+        isLoadingModels={false}
+        providerError={null}
+        turnError={null}
+        hasMoreHistory={false}
+        isLoadingHistory={false}
+        onLoadEarlierTimeline={vi.fn(async () => undefined)}
+        composerAttachments={[]}
+        isUploadingAttachment={false}
+        onAttachFiles={vi.fn(async () => undefined)}
+        onRemoveAttachment={vi.fn(async () => undefined)}
+        onEditConversationEventAndRerun={onEditConversationEventAndRerun}
+        pendingPermissionRequest={null}
+        onAllowPermissionRequest={vi.fn()}
+        onAllowAlwaysPermissionRequest={vi.fn()}
+        onRejectPermissionRequest={vi.fn()}
+        onCancelPermissionRequest={vi.fn()}
+      />
+    )
+
+    expect(screen.getAllByRole("button", { name: "Copy user message" })).toHaveLength(2)
+    expect(screen.getAllByRole("button", { name: "Edit user message" })).toHaveLength(1)
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit user message" }))
+    const editor = screen.getByDisplayValue("second prompt")
+    fireEvent.change(editor, { target: { value: "second prompt updated" } })
+    fireEvent.click(screen.getByText("Send"))
+
+    await waitFor(() => {
+      expect(onEditConversationEventAndRerun).toHaveBeenCalledWith(
+        "msg_user_2",
+        [{ type: "text", text: "second prompt updated" }],
         { autoAllow: true }
       )
     })
@@ -1044,5 +1363,34 @@ describe("MainContent model selector", () => {
     expect(
       screen.getByText((content) => content.includes("### 计划标题") && content.includes("- 第一项"))
     ).toBeInTheDocument()
+  })
+
+  it("renders user attachment display blocks without exposing extracted attachment text", () => {
+    renderMainContent(
+      { connectionId: "prov_openai", modelId: "gpt-5.4" },
+      [
+        {
+          id: "entry_user_attachment",
+          sessionId: "sess_1",
+          turnId: "turn_1",
+          sequenceNo: 1,
+          entryKind: "user_input",
+          displayRole: "user",
+          stepId: null,
+          stepNumber: null,
+          contentText: "Summarize this\nnotes.txt",
+          editableText: "Summarize this",
+          displayBlocks: [
+            { type: "text", text: "Summarize this" },
+            { type: "resource", label: "notes.txt", uri: "attachment://session/att_1" },
+          ],
+          createdAt: "2026-03-24T12:00:00Z",
+        },
+      ]
+    )
+
+    expect(screen.getByText("Summarize this")).toBeInTheDocument()
+    expect(screen.getByText("notes.txt")).toBeInTheDocument()
+    expect(screen.queryByText("hello from attachment")).not.toBeInTheDocument()
   })
 })
