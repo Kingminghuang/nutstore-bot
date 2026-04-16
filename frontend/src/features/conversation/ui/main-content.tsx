@@ -952,6 +952,20 @@ export function MainContent({
               </div>
             )}
 
+            {mentionPopoverOpen && (
+              <div className="mb-3" data-testid="file-mention-popover-stack">
+                <FileMentionPopover
+                  query={activeMentionMatch?.query ?? ""}
+                  results={mentionResults}
+                  activeIndex={mentionActiveIndex}
+                  isLoading={isSearchingMentions}
+                  error={mentionSearchError}
+                  onSelect={handleMentionSelection}
+                />
+                <MentionAssistText />
+              </div>
+            )}
+
             <div className="relative">
               {inputValue.length > 0 && (
                 <div
@@ -978,20 +992,6 @@ export function MainContent({
               />
             </div>
           </div>
-
-          {mentionPopoverOpen && (
-            <div className="px-4 pb-2">
-              <FileMentionPopover
-                query={activeMentionMatch?.query ?? ""}
-                results={mentionResults}
-                activeIndex={mentionActiveIndex}
-                isLoading={isSearchingMentions}
-                error={mentionSearchError}
-                onSelect={handleMentionSelection}
-              />
-              <MentionAssistText />
-            </div>
-          )}
 
           {showProviderNotice && (
             <div className="px-4 pb-2">
@@ -1324,7 +1324,9 @@ function FileMentionPopover({
             >
               <div className="min-w-0 flex-1">
                 <div className="truncate text-sm text-foreground/85">{result.name}</div>
-                <div className="truncate text-xs text-muted-foreground">{result.parentPath || "/"}</div>
+                {result.parentPath ? (
+                  <div className="truncate text-xs text-muted-foreground">{result.parentPath}</div>
+                ) : null}
               </div>
               <span className="rounded-full bg-[#f1ede8] px-2 py-0.5 text-[11px] text-foreground/55">
                 {result.entryType === "directory" ? "Dir" : "File"}

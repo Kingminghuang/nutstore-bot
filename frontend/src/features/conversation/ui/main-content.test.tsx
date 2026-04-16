@@ -712,6 +712,14 @@ describe("MainContent model selector", () => {
     const onSendMessage = vi.fn(async () => undefined)
     const onSearchWorkspaceEntries = vi.fn(async () => [
       {
+        name: "README.md",
+        relativePath: "README.md",
+        parentPath: "",
+        absolutePath: "/tmp/nutstore-bot/README.md",
+        uri: "file:///tmp/nutstore-bot/README.md",
+        entryType: "file" as const,
+      },
+      {
         name: "page.tsx",
         relativePath: "src/app/page.tsx",
         parentPath: "src/app",
@@ -761,6 +769,13 @@ describe("MainContent model selector", () => {
     await waitFor(() => {
       expect(onSearchWorkspaceEntries).toHaveBeenCalledWith("pag")
     })
+
+    const popoverStack = await screen.findByTestId("file-mention-popover-stack")
+    const textarea = screen.getByPlaceholderText("Ask for follow-up changes")
+    expect(popoverStack.compareDocumentPosition(textarea) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(screen.getByText("src/app")).toBeInTheDocument()
+    expect(screen.queryByText("/")).not.toBeInTheDocument()
+
     fireEvent.click(await screen.findByText("page.tsx"))
     expect(screen.getAllByText("@page.tsx").length).toBeGreaterThan(0)
     fireEvent.click(screen.getByLabelText("Send"))
