@@ -43,7 +43,7 @@ uv sync
 npm run tauri dev
 ```
 
-当前仓库只支持桌面端 Tauri 联调。前端与 sidecar 的业务交互只通过 Tauri IPC 转发 ACP JSON-RPC；sidecar 对外 HTTP 仅保留 `/health`。
+当前仓库只支持桌面端 Tauri 联调。前端与 sidecar 的业务交互只通过 Tauri IPC 转发 ACP JSON-RPC；独立 HTTP sidecar server 已移除。
 
 补充说明：
 
@@ -213,6 +213,32 @@ cd sidecar
 uv run pytest
 ```
 
+构建独立 packaged CLI（Rust launcher + Python payload）：
+
+```bash
+bash sidecar/scripts/build_packaged_cli.sh
+```
+
+默认产物位于：
+
+```text
+sidecar/dist/nsbot
+```
+
+打包 CLI 冒烟测试（真实可执行文件）：
+
+```bash
+bash sidecar/tests/e2e_packaged_cli.sh
+```
+
+该脚本验证真实 packaged CLI 的最小闭环：帮助信息、`init` 对 `NS_BOT_HOME` 的引导、只读命令、`run --diagnose`，以及 `--acp` 的初始化往返。
+
+如果打包产物不在默认路径，可显式指定：
+
+```bash
+NSBOT_PACKAGED_CLI_BIN=/absolute/path/to/nsbot bash sidecar/tests/e2e_packaged_cli.sh
+```
+
 ## Dev E2E Smoke Test（桌面联调冒烟）
 
 1. 启动桌面联调环境
@@ -224,20 +250,14 @@ npm run tauri dev
 
 首次运行如果桌面 runtime 产物缺失，脚本会自动准备 `src-tauri/runtime` 和 `src-tauri/binaries`，因此启动可能会比平时更久。
 
-2. 检查 sidecar 健康状态（新开终端）
-
-```bash
-curl http://127.0.0.1:18765/health
-```
-
-3. 在桌面窗口手工验证
+2. 在桌面窗口手工验证
 
 - workspace 列表可加载
 - session history 可加载
 - 发送一条消息可收到 stream / tool call / permission 卡片
 - edit rerun 正常工作
 
-说明：前端不会直连 `ws://.../acp/ws`，也不会直连 sidecar 业务 REST。
+说明：前端不会直连 `ws://.../acp/ws`，也不会直连 sidecar 业务 REST；运行链路完全走桌面 ACP stdio bridge。
 
 ## 常见问题
 

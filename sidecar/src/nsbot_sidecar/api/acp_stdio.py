@@ -8,14 +8,8 @@ from typing import Any
 from acp import RequestError, run_agent
 from acp.interfaces import Client
 
+from nsbot_sidecar.api.acp_app import AcpAppConfig, create_acp_app
 from nsbot_sidecar.api.acp_session import AcpJsonRpcSession
-from nsbot_sidecar.api.api_server import (
-    ApiServerConfig,
-    DEFAULT_HOST,
-    DEFAULT_PORT,
-    create_app,
-)
-from nsbot_sidecar.infrastructure.client_config import load_or_create_client_config
 
 
 def _acp_debug_enabled() -> bool:
@@ -350,32 +344,22 @@ class _AcpSdkAgent:
         await self._transport.dispatch_notification(f"_{method}", params)
 
 
-def _config_from_env() -> ApiServerConfig:
-    host = os.environ.get("NS_BOT_HOST", DEFAULT_HOST)
-    port = int(os.environ.get("NS_BOT_PORT", str(DEFAULT_PORT)))
+def _config_from_env() -> AcpAppConfig:
     ns_bot_home_value = os.environ.get("NS_BOT_HOME")
-    client_config = load_or_create_client_config(
-        ns_bot_home_value,
-        host=host,
-        port=port,
-    )
-    return ApiServerConfig(
-        host=host,
-        port=port,
-        auth_header_value=client_config.auth_header_value,
+    return AcpAppConfig(
         ns_bot_home=ns_bot_home_value,
         fd_executable=os.environ.get("NSBOT_FD_EXECUTABLE") or None,
         rg_executable=os.environ.get("NSBOT_RG_EXECUTABLE") or None,
     )
 
 
-async def run_stdio(config: ApiServerConfig) -> None:
-    app = create_app(config)
+async def run_stdio(config: AcpAppConfig) -> None:
+    app = create_acp_app(config)
     _acp_debug_log("starting ACP SDK stdio session")
     await run_agent(_AcpSdkAgent(app.state))
 
 
-def main(config: ApiServerConfig | None = None) -> int:
+def main(config: AcpAppConfig | None = None) -> int:
     asyncio.run(run_stdio(config or _config_from_env()))
     return 0
 

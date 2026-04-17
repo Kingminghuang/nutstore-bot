@@ -11,8 +11,8 @@ from typing import Any
 from unittest.mock import patch
 import subprocess
 
+from nsbot_sidecar.api.acp_app import AcpAppConfig, create_acp_app
 from nsbot_sidecar.api.acp_session import AcpJsonRpcSession
-from nsbot_sidecar.api.api_server import ApiServerConfig, create_app
 from nsbot_sidecar.infrastructure.secret_store import ProviderSecretPayload
 from nsbot_sidecar.runtime.runtime_service import RuntimeCancelledError
 
@@ -87,14 +87,7 @@ class _BlockingCancellableEngine:
 class AcpSessionTests(unittest.TestCase):
     def setUp(self) -> None:
         temp_dir = Path(tempfile.mkdtemp(prefix="acp-session-"))
-        app = create_app(
-            ApiServerConfig(
-                host="127.0.0.1",
-                port=18765,
-                auth_header_value="Bearer test-token",
-                ns_bot_home=str(temp_dir),
-            )
-        )
+        app = create_acp_app(AcpAppConfig(ns_bot_home=str(temp_dir)))
         self.app_state = app.state
         self.workspace = self.app_state.repositories.workspaces.create(
             name="ws",

@@ -148,7 +148,7 @@ echo "    - Custom: demo-model-alpha, demo-model-beta"
 
 run_cli providers list
 run_cli models status
-run_cli models list --provider openai
+run_cli models list --provider-id openai
 run_cli run "diagnose default selection" --diagnose
 
 echo
@@ -159,18 +159,18 @@ run_cli run "diagnose after providers use" --diagnose
 
 echo
 echo "[*] Disable one builtin model then list OpenAI models"
-run_cli models disable --connection-id prov_openai_demo --model "$OPENAI_MODEL_2"
-run_cli models list --connection-id prov_openai_demo
-run_cli run "diagnose explicit connection" --diagnose --connection-id prov_openai_demo --selected-model-id "$OPENAI_MODEL_1"
+run_cli models disable --provider-id openai --model "$OPENAI_MODEL_2"
+run_cli models list --provider-id openai
+run_cli run "diagnose explicit provider" --diagnose --provider-id openai --selected-model-id "$OPENAI_MODEL_1"
 
 echo
 echo "[*] Remove one custom model then inspect custom models"
-run_cli models remove --connection-id prov_custom_demo --model demo-model-alpha
-run_cli models list --connection-id prov_custom_demo
+run_cli models remove --provider-id prov_custom_demo --model demo-model-alpha
+run_cli models list --provider-id prov_custom_demo
 
 echo
-echo "[*] Delete custom provider connection and verify"
-run_cli providers delete --connection-id prov_custom_demo
+echo "[*] Delete custom provider and verify"
+run_cli providers delete --provider-id prov_custom_demo
 run_cli providers list
 
 echo

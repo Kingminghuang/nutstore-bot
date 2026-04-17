@@ -8,7 +8,6 @@ from unittest.mock import patch
 
 from nsbot_sidecar.infrastructure.local_paths import (
     database_file_path,
-    discovery_file_path,
     master_key_path,
     nsbot_home,
     secrets_dir_path,
@@ -19,9 +18,6 @@ class LocalPathsTests(unittest.TestCase):
     def test_ns_bot_home_override_has_highest_priority(self) -> None:
         custom = tempfile.mkdtemp(prefix="nsbot-home-")
         self.assertEqual(nsbot_home(custom), Path(custom).resolve())
-        self.assertEqual(
-            discovery_file_path(custom), Path(custom).resolve() / "service.json"
-        )
         self.assertEqual(
             database_file_path(custom), Path(custom).resolve() / "sidecar.db"
         )

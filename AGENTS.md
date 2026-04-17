@@ -2,7 +2,7 @@
 
 ## Project Structure & Module Organization
 - `frontend/`: Vite + React + TypeScript UI. Main app code is under `frontend/src/` with feature slices in `features/`, shared utilities in `shared/`, and app entry in `app/page.tsx`.
-- `sidecar/`: Python 3.11+ FastAPI service (`src/nsbot_sidecar/`) with layered modules: `api/`, `application/`, `domain/`, `infrastructure/`, and `runtime/`.
+- `sidecar/`: Python 3.11+ ACP stdio sidecar (`src/nsbot_sidecar/`) with layered modules: `api/`, `application/`, `domain/`, `infrastructure/`, and `runtime/`.
 - `src-tauri/`: Rust desktop shell for packaging and runtime orchestration.
 - `scripts/`: macOS desktop build/smoke scripts. `templates/` contains runtime template resources.
 
@@ -14,7 +14,7 @@
 - Frontend tests: `cd frontend && npm test`
 - Frontend lint: `cd frontend && npm run lint`
 - Sidecar setup: `cd sidecar && uv sync`
-- Sidecar API locally: `cd sidecar && uv run python -m nsbot_sidecar.api.api_server`
+- Sidecar ACP stdio locally: `cd sidecar && uv run python -m nsbot_sidecar.api.acp_stdio`
 - Sidecar tests: `cd sidecar && uv run pytest`
 - macOS desktop build: `bash ./scripts/build-desktop-macos.sh` (add `--dmg` or `--debug` as needed)
 
@@ -65,10 +65,10 @@
 - Runtime call sites (`sidecar/src/nsbot_sidecar/api/acp_session.py`, `sidecar/src/nsbot_sidecar/cli.py`, and `sidecar/src/nsbot_sidecar/runtime/worker.py`) must use the `nsbot_sidecar.runtime.engine` interface and must not directly instantiate `AgentRuntimeService`.
 - Keep `execute_runtime_turn` as the thin application entry point to RuntimeEngine.
 - Runtime interaction is ACP-only over stdio (desktop path: Frontend IPC -> Tauri bridge -> sidecar stdio JSON-RPC). Do not add or restore `/runs*` endpoints, `run.*` event streams, HTTP `edit-and-run` style paths, or frontend-facing ACP websocket routes.
-- `sidecar` HTTP surface is probe-only (`/health`). Any new business capability must go through ACP methods, not REST.
+- `sidecar` has no standalone HTTP server surface. Any new business capability must go through ACP methods, not REST.
 - For transport-layer changes, do not stop at in-process app tests; verify real stdio ACP handshake and request/notification flow through the bridge.
 - For runtime-layer changes, run at minimum:
-  - `cd sidecar && uv run pytest tests/test_runtime_service.py tests/test_worker.py tests/test_api_server.py`
+  - `cd sidecar && uv run pytest tests/test_runtime_service.py tests/test_worker.py tests/test_acp_stdio.py`
 - When adding a new runtime backend, prefer injecting via `runtime_engine_factory` instead of branching at business call sites.
 
 ## ACP Hard-Cut Rules
@@ -95,7 +95,7 @@
 - Main-agent tool priority is a default strategy (not a hard requirement): prefer `read -> grep -> find -> ls`, and only use `edit/write` after sufficient evidence is collected.
 - Managed `CodeAgent` is a fallback path for tasks that cannot be completed efficiently or reliably with standard workspace tools (`read/grep/find/ls`), including but not limited to computation, data transformation, and script-style workflows.
 - For runtime/tooling changes, run at minimum:
-  - `cd sidecar && uv run pytest tests/test_runtime_service.py tests/test_worker.py tests/test_api_server.py tests/test_tools.py`
+  - `cd sidecar && uv run pytest tests/test_runtime_service.py tests/test_worker.py tests/test_acp_stdio.py tests/test_tools.py`
 - In `sidecar/src/nsbot_sidecar/runtime/tools.py`, keep tool metadata unambiguous:
   - no duplicate keys in `inputs`;
   - include practical default/range semantics in parameter descriptions where relevant.

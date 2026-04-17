@@ -4,7 +4,6 @@ import json
 import os
 from pathlib import Path
 import platform
-import re
 import shutil
 import subprocess
 import sys
@@ -16,9 +15,8 @@ import click
 from fastapi import HTTPException
 import typer
 
-from nsbot_sidecar.api.api_server import ApiServerConfig, DEFAULT_HOST, DEFAULT_PORT
+from nsbot_sidecar.api.acp_app import AcpAppConfig
 from nsbot_sidecar.infrastructure.attachment_store import AttachmentStore
-from nsbot_sidecar.infrastructure.client_config import load_or_create_client_config
 from nsbot_sidecar.infrastructure.local_paths import nsbot_home
 from nsbot_sidecar.application.provider_service import ProviderService
 from nsbot_sidecar.infrastructure.repositories import create_repositories
@@ -180,8 +178,8 @@ def _handle_init_command(args: SimpleNamespace) -> int:
     return 0
 
 
-def _build_services(ns_bot_home_value: str, db_path: str | None = None):
-    database = connect_database(ns_bot_home_value, db_path=db_path)
+def _build_services(ns_bot_home_value: str):
+    database = connect_database(ns_bot_home_value)
     repositories = create_repositories(cast(Any, database))
     secret_store = LocalSecretStore(ns_bot_home_value)
     provider_service = ProviderService(
@@ -290,139 +288,6 @@ def _resolve_catalog_model_ids(bundle) -> list[str]:
     return []
 
 
-class _ModelsNotFoundError(click.ClickException):
-    exit_code = 3
-
-
-def _slugify_provider_id(text: str) -> str:
-    normalized = re.sub(r"[^a-zA-Z0-9._-]+", "-", text.strip().lower())
-    normalized = normalized.strip("-._")
-    return normalized or "custom"
-
-
-def _infer_provider_id_from_model_ref(model_ref: str) -> str:
-    ref = str(model_ref or "").strip()
-    if ref == "":
-        return ""
-    if "/" in ref:
-        prefix = ref.split("/", 1)[0].strip()
-        if prefix:
-            return prefix
-
-    from nsbot_sidecar.providers.provider_catalog import list_providers
-
-    for provider in list_providers():
-        provider_id = str(provider.get("id") or "").strip()
-        models = provider.get("models")
-        if provider_id == "" or not isinstance(models, list):
-            continue
-        for model in models:
-            if not isinstance(model, dict):
-                continue
-            if str(model.get("id") or "").strip() == ref:
-                return provider_id
-    return ref
-
-
-def _iter_active_models(bundle) -> list[Any]:
-    return [model for model in bundle.models if model.model_id]
-
-
-def _find_matching_models(
-    repositories,
-    *,
-    model_ref: str,
-    provider_id: str | None = None,
-) -> list[tuple[Any, Any]]:
-    ref = str(model_ref or "").strip()
-    if ref == "":
-        return []
-    keys = {ref}
-    if "/" in ref:
-        tail = ref.split("/", 1)[1].strip()
-        if tail:
-            keys.add(tail)
-
-    bundles = repositories.providers.list_bundles()
-    if provider_id:
-        bundles = [bundle for bundle in bundles if bundle.provider.id == provider_id]
-
-    matches: list[tuple[Any, Any]] = []
-    for bundle in bundles:
-        for model in _iter_active_models(bundle):
-            display_name = str(model.display_name or "").strip()
-            if keys.intersection({model.id, model.model_id, display_name}):
-                matches.append((bundle, model))
-    return matches
-
-
-def _resolve_model_target(
-    repositories,
-    *,
-    model_ref: str,
-    provider_id: str | None,
-) -> tuple[Any, Any]:
-    ref = str(model_ref or "").strip()
-    explicit_provider_id = str(provider_id or "").strip()
-
-    if explicit_provider_id:
-        matches = _find_matching_models(
-            repositories,
-            model_ref=ref,
-            provider_id=explicit_provider_id,
-        )
-        if len(matches) == 1:
-            return matches[0]
-        if len(matches) > 1:
-            raise ValueError(
-                f"Model reference '{ref}' is ambiguous in provider '{explicit_provider_id}'"
-            )
-        raise _ModelsNotFoundError(
-            f"Model '{ref}' not found in provider '{explicit_provider_id}'"
-        )
-
-    id_matches = [
-        item for item in _find_matching_models(repositories, model_ref=ref) if item[1].id == ref
-    ]
-    if len(id_matches) == 1:
-        return id_matches[0]
-
-    inferred_provider_id = _infer_provider_id_from_model_ref(ref)
-    inferred_matches = _find_matching_models(
-        repositories,
-        model_ref=ref,
-        provider_id=inferred_provider_id,
-    )
-    if len(inferred_matches) == 1:
-        return inferred_matches[0]
-    if len(inferred_matches) > 1:
-        raise ValueError(
-            f"Model reference '{ref}' is ambiguous in provider '{inferred_provider_id}'"
-        )
-
-    global_matches = _find_matching_models(repositories, model_ref=ref)
-    if len(global_matches) == 1:
-        return global_matches[0]
-    if len(global_matches) > 1:
-        providers = ", ".join(sorted({bundle.provider.id for bundle, _model in global_matches}))
-        raise ValueError(
-            f"Model reference '{ref}' is ambiguous across providers: {providers}. Pass --provider-id."
-        )
-
-    raise _ModelsNotFoundError(f"Model '{ref}' not found")
-
-
-def _serialize_model_record(bundle, model) -> dict[str, Any]:
-    return {
-        "id": model.id,
-        "name": model.display_name or model.model_id,
-        "providerId": bundle.provider.id,
-        "modelId": model.model_id,
-        "enabled": bool(model.enabled),
-        "source": model.source,
-    }
-
-
 def _handle_providers_command(args: SimpleNamespace) -> int:
     database, repositories, _secret_store, provider_service = _build_services(
         args.ns_bot_home
@@ -491,103 +356,20 @@ def _handle_providers_command(args: SimpleNamespace) -> int:
 
 def _handle_models_command(args: SimpleNamespace) -> int:
     database, repositories, _secret_store, provider_service = _build_services(
-        args.ns_bot_home,
-        db_path=(str(args.db_path).strip() or None),
+        args.ns_bot_home
     )
     try:
-        if args.models_command == "create":
-            provider_id = str(args.provider_id or "").strip() or _slugify_provider_id(
-                str(args.name or "")
-            )
-            payload = {
-                "id": provider_id,
-                "kind": "custom",
-                "customSlug": provider_id,
-                "displayName": str(args.name or "").strip(),
-                "baseUrl": str(args.base_url or "").strip(),
-                "apiKey": str(args.api_key or "").strip(),
-                "customModels": [
-                    {
-                        "modelId": str(args.model_id or "").strip(),
-                        "displayName": str(args.name or "").strip(),
-                        "enabled": True,
-                    }
-                ],
-                "preferredModelId": str(args.model_id or "").strip(),
-                "isEnabled": True,
-            }
-            provider_service.create_provider(payload)
-            created_bundle = repositories.providers.get_bundle_by_id_or_raise(provider_id)
-            created_model = next(
-                (
-                    model
-                    for model in created_bundle.models
-                    if model.source == "custom"
-                    and model.model_id == str(args.model_id or "").strip()
-                ),
-                None,
-            )
-            if created_model is None:
-                raise RuntimeError("Created model was not found after persistence")
-            _print_json(
-                {
-                    "ok": True,
-                    **_serialize_model_record(created_bundle, created_model),
-                    "baseUrl": created_bundle.provider.base_url,
-                }
-            )
-            return 0
-
         if args.models_command == "list":
             payload = provider_service.model_options_payload()
             groups = payload.get("groups")
             filtered = []
-            provider_filter = str(
-                args.provider_id or getattr(args, "provider", "") or ""
-            ).strip()
+            provider_filter = str(args.provider_id or args.provider or "").strip()
             for group in groups if isinstance(groups, list) else []:
                 provider_id = str(group.get("providerId") or "")
                 if provider_filter and provider_filter != provider_id:
                     continue
                 filtered.append(group)
-
-            serialized_models = []
-            for bundle in repositories.providers.list_bundles():
-                for model in _iter_active_models(bundle):
-                    if provider_filter and bundle.provider.id != provider_filter:
-                        continue
-                    serialized_models.append(_serialize_model_record(bundle, model))
-
-            _print_json({"groups": filtered, "models": serialized_models})
-            return 0
-
-        if args.models_command == "get":
-            bundle, model = _resolve_model_target(
-                repositories,
-                model_ref=str(args.model_ref or "").strip(),
-                provider_id=str(args.provider_id or "").strip() or None,
-            )
-            _print_json(_serialize_model_record(bundle, model))
-            return 0
-
-        if args.models_command == "set-default":
-            bundle, model = _resolve_model_target(
-                repositories,
-                model_ref=str(args.model_ref or "").strip(),
-                provider_id=str(args.provider_id or "").strip() or None,
-            )
-            provider_service.update_provider(
-                bundle.provider.id,
-                {"preferredModelId": model.model_id},
-            )
-            _print_json(
-                {
-                    "ok": True,
-                    "providerId": bundle.provider.id,
-                    "modelId": model.model_id,
-                    "action": "set-default",
-                }
-            )
+            _print_json({"groups": filtered})
             return 0
 
         if args.models_command == "status":
@@ -610,30 +392,11 @@ def _handle_models_command(args: SimpleNamespace) -> int:
             )
             return 0
 
-        model_ref = str(args.model or "").strip()
-        explicit_provider_id = str(args.provider_id or "").strip()
-        normalized_model_id = model_ref.split("/", 1)[1].strip() if "/" in model_ref else model_ref
-
-        if explicit_provider_id:
-            bundle = repositories.providers.get_bundle_by_id(explicit_provider_id)
-            if bundle is None:
-                raise ValueError(f"Provider not found: {explicit_provider_id}")
-            provider_id = bundle.provider.id
-            model_id = normalized_model_id
-        else:
-            inferred_provider_id = _infer_provider_id_from_model_ref(model_ref)
-            bundle = repositories.providers.get_bundle_by_id(inferred_provider_id)
-            if bundle is not None:
-                provider_id = bundle.provider.id
-                model_id = normalized_model_id
-            else:
-                bundle, resolved_model = _resolve_model_target(
-                    repositories,
-                    model_ref=model_ref,
-                    provider_id=None,
-                )
-                provider_id = bundle.provider.id
-                model_id = resolved_model.model_id
+        provider_id = str(args.provider_id or "").strip()
+        model_id = str(args.model or "").strip()
+        bundle = repositories.providers.get_bundle_by_id(provider_id)
+        if bundle is None:
+            raise ValueError(f"Provider not found: {provider_id}")
 
         if args.models_command == "remove":
             if bundle.provider.kind != "custom":
@@ -1114,18 +877,8 @@ def _ns_bot_home_from_ctx(ctx: typer.Context) -> str:
     return str(ctx.obj.get("ns_bot_home") if isinstance(ctx.obj, dict) else nsbot_home())
 
 
-def _build_api_server_config(ns_bot_home_value: str) -> ApiServerConfig:
-    host = os.environ.get("NS_BOT_HOST", DEFAULT_HOST)
-    port = int(os.environ.get("NS_BOT_PORT", str(DEFAULT_PORT)))
-    client_config = load_or_create_client_config(
-        ns_bot_home_value,
-        host=host,
-        port=port,
-    )
-    return ApiServerConfig(
-        host=host,
-        port=port,
-        auth_header_value=client_config.auth_header_value,
+def _build_acp_app_config(ns_bot_home_value: str) -> AcpAppConfig:
+    return AcpAppConfig(
         ns_bot_home=ns_bot_home_value,
         fd_executable=os.environ.get("NSBOT_FD_EXECUTABLE") or None,
         rg_executable=os.environ.get("NSBOT_RG_EXECUTABLE") or None,
@@ -1135,7 +888,7 @@ def _build_api_server_config(ns_bot_home_value: str) -> ApiServerConfig:
 def _run_acp_mode(ns_bot_home_value: str) -> int:
     from nsbot_sidecar.api import acp_stdio
 
-    return acp_stdio.main(config=_build_api_server_config(ns_bot_home_value))
+    return acp_stdio.main(config=_build_acp_app_config(ns_bot_home_value))
 
 
 def _parse_root_mode_arguments(argv: list[str]) -> tuple[bool, str | None, bool, bool]:
@@ -1173,6 +926,8 @@ def _parse_root_mode_arguments(argv: list[str]) -> tuple[bool, str | None, bool,
 def _run_with_error_handling(fn) -> int:
     try:
         code = int(fn())
+        if code != 0:
+            raise RuntimeError(f"Command failed with exit code {code}")
         return code
     except Exception:
         raise
@@ -1249,108 +1004,23 @@ def providers_delete(
 def models_list(
     ctx: typer.Context,
     provider_id: str = typer.Option("", "--provider-id", help="Filter by provider id"),
-    db_path: str = typer.Option("", "--db-path", help="Override database path"),
-    json_output: bool = typer.Option(False, "--json", help="Output JSON payload"),
 ) -> None:
-    _ = json_output
     _run_with_error_handling(
         lambda: _handle_models_command(
             SimpleNamespace(
                 ns_bot_home=_ns_bot_home_from_ctx(ctx),
                 models_command="list",
                 provider_id=provider_id,
-                db_path=db_path,
             )
         )
     )
 
 
 @models_app.command("status")
-def models_status(
-    ctx: typer.Context,
-    db_path: str = typer.Option("", "--db-path", help="Override database path"),
-    json_output: bool = typer.Option(False, "--json", help="Output JSON payload"),
-) -> None:
-    _ = json_output
+def models_status(ctx: typer.Context) -> None:
     _run_with_error_handling(
         lambda: _handle_models_command(
-            SimpleNamespace(
-                ns_bot_home=_ns_bot_home_from_ctx(ctx),
-                models_command="status",
-                db_path=db_path,
-            )
-        )
-    )
-
-
-@models_app.command("create")
-def models_create(
-    ctx: typer.Context,
-    name: str = typer.Option(..., "--name"),
-    base_url: str = typer.Option(..., "--base-url"),
-    model_id: str = typer.Option(..., "--model-id"),
-    api_key: str = typer.Option(..., "--api-key"),
-    provider_id: str = typer.Option("", "--provider-id"),
-    db_path: str = typer.Option("", "--db-path", help="Override database path"),
-    json_output: bool = typer.Option(False, "--json", help="Output JSON payload"),
-) -> None:
-    _ = json_output
-    _run_with_error_handling(
-        lambda: _handle_models_command(
-            SimpleNamespace(
-                ns_bot_home=_ns_bot_home_from_ctx(ctx),
-                models_command="create",
-                name=name,
-                base_url=base_url,
-                model_id=model_id,
-                api_key=api_key,
-                provider_id=provider_id,
-                db_path=db_path,
-            )
-        )
-    )
-
-
-@models_app.command("get")
-def models_get(
-    ctx: typer.Context,
-    model_ref: str = typer.Argument(..., help="Model id, model record id, or model name"),
-    provider_id: str = typer.Option("", "--provider-id"),
-    db_path: str = typer.Option("", "--db-path", help="Override database path"),
-    json_output: bool = typer.Option(False, "--json", help="Output JSON payload"),
-) -> None:
-    _ = json_output
-    _run_with_error_handling(
-        lambda: _handle_models_command(
-            SimpleNamespace(
-                ns_bot_home=_ns_bot_home_from_ctx(ctx),
-                models_command="get",
-                model_ref=model_ref,
-                provider_id=provider_id,
-                db_path=db_path,
-            )
-        )
-    )
-
-
-@models_app.command("set-default")
-def models_set_default(
-    ctx: typer.Context,
-    model_ref: str = typer.Argument(..., help="Model id, model record id, or model name"),
-    provider_id: str = typer.Option("", "--provider-id"),
-    db_path: str = typer.Option("", "--db-path", help="Override database path"),
-    json_output: bool = typer.Option(False, "--json", help="Output JSON payload"),
-) -> None:
-    _ = json_output
-    _run_with_error_handling(
-        lambda: _handle_models_command(
-            SimpleNamespace(
-                ns_bot_home=_ns_bot_home_from_ctx(ctx),
-                models_command="set-default",
-                model_ref=model_ref,
-                provider_id=provider_id,
-                db_path=db_path,
-            )
+            SimpleNamespace(ns_bot_home=_ns_bot_home_from_ctx(ctx), models_command="status")
         )
     )
 
@@ -1358,12 +1028,9 @@ def models_set_default(
 @models_app.command("enable")
 def models_enable(
     ctx: typer.Context,
-    provider_id: str = typer.Option("", "--provider-id"),
+    provider_id: str = typer.Option(..., "--provider-id"),
     model: str = typer.Option(..., "--model"),
-    db_path: str = typer.Option("", "--db-path", help="Override database path"),
-    json_output: bool = typer.Option(False, "--json", help="Output JSON payload"),
 ) -> None:
-    _ = json_output
     _run_with_error_handling(
         lambda: _handle_models_command(
             SimpleNamespace(
@@ -1371,7 +1038,6 @@ def models_enable(
                 models_command="enable",
                 provider_id=provider_id,
                 model=model,
-                db_path=db_path,
             )
         )
     )
@@ -1380,12 +1046,9 @@ def models_enable(
 @models_app.command("disable")
 def models_disable(
     ctx: typer.Context,
-    provider_id: str = typer.Option("", "--provider-id"),
+    provider_id: str = typer.Option(..., "--provider-id"),
     model: str = typer.Option(..., "--model"),
-    db_path: str = typer.Option("", "--db-path", help="Override database path"),
-    json_output: bool = typer.Option(False, "--json", help="Output JSON payload"),
 ) -> None:
-    _ = json_output
     _run_with_error_handling(
         lambda: _handle_models_command(
             SimpleNamespace(
@@ -1393,7 +1056,6 @@ def models_disable(
                 models_command="disable",
                 provider_id=provider_id,
                 model=model,
-                db_path=db_path,
             )
         )
     )
@@ -1402,12 +1064,9 @@ def models_disable(
 @models_app.command("remove")
 def models_remove(
     ctx: typer.Context,
-    provider_id: str = typer.Option("", "--provider-id"),
+    provider_id: str = typer.Option(..., "--provider-id"),
     model: str = typer.Option(..., "--model"),
-    db_path: str = typer.Option("", "--db-path", help="Override database path"),
-    json_output: bool = typer.Option(False, "--json", help="Output JSON payload"),
 ) -> None:
-    _ = json_output
     _run_with_error_handling(
         lambda: _handle_models_command(
             SimpleNamespace(
@@ -1415,7 +1074,6 @@ def models_remove(
                 models_command="remove",
                 provider_id=provider_id,
                 model=model,
-                db_path=db_path,
             )
         )
     )

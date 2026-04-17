@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 from urllib.parse import unquote, urlparse
 
-from nsbot_sidecar.api.discovery import nsbot_home
+from nsbot_sidecar.infrastructure.local_paths import nsbot_home
 from nsbot_sidecar.infrastructure.repositories import create_id
 from nsbot_sidecar.infrastructure.storage import transaction
 from nsbot_sidecar.runtime.engine import create_runtime_engine
@@ -987,7 +987,7 @@ class AcpJsonRpcSession:
         return parsed.scheme == "" and (uri.startswith("/") or uri.startswith("~"))
 
     def _pick_fd_executable(self) -> str:
-        configured = str(self.state.api_server_config.fd_executable or "").strip()
+        configured = str(self.state.acp_app_config.fd_executable or "").strip()
         if configured:
             return configured
         return shutil.which("fd") or shutil.which("fdfind") or ""
@@ -1385,10 +1385,10 @@ class AcpJsonRpcSession:
                 api_key=api_key,
                 model=model_id,
                 direct_reasoning_effort=thought_level,
-                ns_bot_home=str(nsbot_home(self.state.api_server_config.ns_bot_home)),
+                ns_bot_home=str(nsbot_home(self.state.acp_app_config.ns_bot_home)),
                 workspace_path_default=workspace.real_path,
-                fd_executable=self.state.api_server_config.fd_executable,
-                rg_executable=self.state.api_server_config.rg_executable,
+                fd_executable=self.state.acp_app_config.fd_executable,
+                rg_executable=self.state.acp_app_config.rg_executable,
             )
             metadata = RunMetadata(
                 workspace_path=workspace.real_path, session_key=session_id

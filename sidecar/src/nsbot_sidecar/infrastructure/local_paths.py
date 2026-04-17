@@ -24,10 +24,6 @@ def nsbot_home(ns_bot_home: str | None = None) -> Path:
     return (Path.home() / LEGACY_ROOT_NAME).resolve()
 
 
-def discovery_file_path(ns_bot_home_override: str | None = None) -> Path:
-    return nsbot_home(ns_bot_home_override) / "service.json"
-
-
 def database_file_path(ns_bot_home_override: str | None = None) -> Path:
     return nsbot_home(ns_bot_home_override) / "sidecar.db"
 
