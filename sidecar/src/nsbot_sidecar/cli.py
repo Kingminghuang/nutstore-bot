@@ -1308,7 +1308,7 @@ HELP_OPTION_NAMES = {"help_option_names": ["-h", "--help"]}
 
 
 app = typer.Typer(
-    help="NSBot CLI for provider/model management and runtime execution",
+    help="nsbot CLI",
     context_settings=HELP_OPTION_NAMES,
 )
 providers_app = typer.Typer(
@@ -1887,11 +1887,11 @@ def main(argv: list[str] | None = None) -> int:
         if acp_mode and not help_requested:
             if has_command:
                 raise click.UsageError(
-                    "ACP mode cannot be combined with subcommands. Use 'nsbot-sidecar --acp'."
+                    "ACP mode cannot be combined with subcommands. Use 'nsbot --acp'."
                 )
             resolved_ns_bot_home = ns_bot_home_value or str(nsbot_home())
             return _run_acp_mode(resolved_ns_bot_home)
-        command.main(args=effective_argv, prog_name="nsbot-sidecar", standalone_mode=False)
+        command.main(args=effective_argv, prog_name="nsbot", standalone_mode=False)
         return 0
     except click.ClickException as exc:
         exc.show(file=sys.stderr)

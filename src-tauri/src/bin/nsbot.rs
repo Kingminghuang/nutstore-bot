@@ -3,8 +3,12 @@ use nutstore_bot_desktop::runtime::{
 };
 use std::env;
 use std::ffi::OsString;
+#[cfg(test)]
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
+#[cfg(test)]
+use std::time::{SystemTime, UNIX_EPOCH};
 
 const PAYLOAD_BASENAME: &str = "nsbot-sidecar-cli-payload";
 
@@ -60,8 +64,8 @@ fn resolve_payload_path(dist_root: &Path) -> Result<PathBuf, String> {
         ));
     }
 
-    let binary_name = payload_binary_name();
-    let candidate = dist_root.join("binaries").join(binary_name);
+    let payload_dir = dist_root.join("binaries").join(PAYLOAD_BASENAME);
+    let candidate = payload_dir.join(payload_binary_name());
     if candidate.is_file() {
         return Ok(candidate);
     }
@@ -74,4 +78,59 @@ fn resolve_payload_path(dist_root: &Path) -> Result<PathBuf, String> {
 
 fn payload_binary_name() -> String {
     executable_name(PAYLOAD_BASENAME)
+}
+
+#[cfg(test)]
+fn unique_temp_dir(label: &str) -> PathBuf {
+    let suffix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time")
+        .as_nanos();
+    std::env::temp_dir().join(format!("nsbot-cli-{label}-{suffix}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolve_payload_path_prefers_override_file() {
+        let override_path = unique_temp_dir("override");
+        fs::create_dir_all(&override_path).expect("mkdir");
+        let payload = override_path.join(payload_binary_name());
+        fs::write(&payload, "payload").expect("payload");
+        std::env::set_var("NSBOT_CLI_PAYLOAD_PATH", &payload);
+
+        let resolved = resolve_payload_path(Path::new("/unused")).expect("resolve override");
+
+        std::env::remove_var("NSBOT_CLI_PAYLOAD_PATH");
+        assert_eq!(resolved, payload);
+        let _ = fs::remove_dir_all(&override_path);
+    }
+
+    #[test]
+    fn resolve_payload_path_uses_onedir_layout() {
+        let dist_root = unique_temp_dir("dist-root");
+        let payload_dir = dist_root.join("binaries").join(PAYLOAD_BASENAME);
+        fs::create_dir_all(&payload_dir).expect("mkdir payload dir");
+        let payload = payload_dir.join(payload_binary_name());
+        fs::write(&payload, "payload").expect("write payload");
+
+        let resolved = resolve_payload_path(&dist_root).expect("resolve payload");
+
+        assert_eq!(resolved, payload);
+        let _ = fs::remove_dir_all(&dist_root);
+    }
+
+    #[test]
+    fn resolve_payload_path_errors_when_onedir_layout_missing_executable() {
+        let dist_root = unique_temp_dir("dist-root-missing");
+        let payload_dir = dist_root.join("binaries").join(PAYLOAD_BASENAME);
+        fs::create_dir_all(&payload_dir).expect("mkdir payload dir");
+
+        let error = resolve_payload_path(&dist_root).expect_err("expected missing executable");
+
+        assert!(error.contains("missing CLI payload executable"));
+        let _ = fs::remove_dir_all(&dist_root);
+    }
 }

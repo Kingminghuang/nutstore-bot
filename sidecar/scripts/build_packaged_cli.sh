@@ -461,7 +461,7 @@ copy_runtime_tree() {
 
 build_python_cli_payload() {
   mkdir -p "${DIST_ROOT}" "${BUILD_ROOT}" "${SPEC_ROOT}"
-  rm -f "${DIST_ROOT}/${PAYLOAD_NAME}" "${DIST_ROOT}/${PAYLOAD_NAME}.exe"
+  rm -rf "${DIST_ROOT}/${PAYLOAD_NAME}" "${DIST_ROOT}/${PAYLOAD_NAME}.exe"
 
   local pyi_config_dir="${BUILD_ROOT}/pyinstaller-config"
   rm -rf "${pyi_config_dir}"
@@ -488,7 +488,7 @@ build_python_cli_payload() {
     --exclude-module sentence_transformers
     --exclude-module cv2
     --exclude-module scipy
-    --onefile
+    --onedir
     --name "${PAYLOAD_NAME}"
     --distpath "${DIST_ROOT}"
     --workpath "${BUILD_ROOT}"
@@ -517,24 +517,29 @@ build_rust_launcher() {
 }
 
 main() {
-  local target_triple payload_path
+  local target_triple payload_dir payload_executable staged_payload_dir payload_binary_name
   target_triple="$(resolve_target_triple)"
 
   mkdir -p "${DIST_ROOT}/binaries"
   build_python_cli_payload
 
-  payload_path="${DIST_ROOT}/${PAYLOAD_NAME}"
-  if [[ ! -f "${payload_path}" && -f "${payload_path}.exe" ]]; then
-    payload_path="${payload_path}.exe"
-  fi
-  [[ -f "${payload_path}" ]] || {
-    echo "missing CLI payload after PyInstaller build: ${payload_path}" >&2
+  payload_dir="${DIST_ROOT}/${PAYLOAD_NAME}"
+  payload_binary_name="$(resolve_tool_binary_name "${PAYLOAD_NAME}")"
+  payload_executable="${payload_dir}/${payload_binary_name}"
+  [[ -d "${payload_dir}" ]] || {
+    echo "missing CLI payload directory after PyInstaller build: ${payload_dir}" >&2
+    exit 1
+  }
+  [[ -f "${payload_executable}" ]] || {
+    echo "missing CLI payload executable after PyInstaller build: ${payload_executable}" >&2
     exit 1
   }
 
-  rm -f "${DIST_ROOT}/binaries/${PAYLOAD_NAME}" "${DIST_ROOT}/binaries/${PAYLOAD_NAME}.exe"
-  cp "${payload_path}" "${DIST_ROOT}/binaries/$(basename "${payload_path}")"
-  chmod +x "${DIST_ROOT}/binaries/$(basename "${payload_path}")"
+  staged_payload_dir="${DIST_ROOT}/binaries/${PAYLOAD_NAME}"
+  rm -rf "${staged_payload_dir}" "${DIST_ROOT}/binaries/${PAYLOAD_NAME}.exe"
+  cp -R "${payload_dir}" "${staged_payload_dir}"
+  chmod +x "${staged_payload_dir}/${payload_binary_name}"
+  rm -rf "${payload_dir}"
 
   copy_runtime_tree "${target_triple}"
   build_rust_launcher

@@ -7,7 +7,9 @@ This document explains how to build the packaged Sidecar CLI binary for differen
 Running the packaged build script creates:
 
 - Launcher binary: `sidecar/dist/nsbot`
-- Python payload binary: `sidecar/dist/binaries/nsbot-sidecar-cli-payload` (or `.exe` on Windows)
+- Python payload directory: `sidecar/dist/binaries/nsbot-sidecar-cli-payload/`
+  - macOS/Linux entrypoint: `sidecar/dist/binaries/nsbot-sidecar-cli-payload/nsbot-sidecar-cli-payload`
+  - Windows entrypoint: `sidecar/dist/binaries/nsbot-sidecar-cli-payload/nsbot-sidecar-cli-payload.exe`
 - Runtime assets:
   - `sidecar/dist/runtime/templates`
   - `sidecar/dist/runtime/search-tools/{fd,rg}`
@@ -93,6 +95,7 @@ From repository root:
 ```bash
 ls -la sidecar/dist
 ls -la sidecar/dist/binaries
+ls -la sidecar/dist/binaries/nsbot-sidecar-cli-payload
 ls -la sidecar/dist/runtime/search-tools
 sidecar/dist/nsbot --help
 ```
@@ -123,6 +126,11 @@ bash sidecar/scripts/build_packaged_cli.sh
 ```
 
 Then inspect logs for failing stage (`PyInstaller`, `prepare_search_tools.py`, or `cargo build`).
+If launcher exists but payload cannot start, verify the onedir payload layout:
+
+```bash
+ls -la sidecar/dist/binaries/nsbot-sidecar-cli-payload
+```
 
 ## Linux build fails while preparing search tools
 

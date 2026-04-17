@@ -55,6 +55,18 @@ build_packaged_cli_if_possible() {
   [[ -x "${BIN_PATH}" ]] || fail "packaged CLI binary is still missing after build: ${BIN_PATH}"
 }
 
+verify_packaged_payload_layout() {
+  local payload_dir payload_entry
+  payload_dir="${SIDECAR_ROOT}/dist/binaries/nsbot-sidecar-cli-payload"
+  if [[ "${OSTYPE:-}" == msys* || "${OSTYPE:-}" == cygwin* || "${OSTYPE:-}" == win32* ]]; then
+    payload_entry="${payload_dir}/nsbot-sidecar-cli-payload.exe"
+  else
+    payload_entry="${payload_dir}/nsbot-sidecar-cli-payload"
+  fi
+  [[ -d "${payload_dir}" ]] || fail "packaged payload directory missing: ${payload_dir}"
+  [[ -f "${payload_entry}" ]] || fail "packaged payload entrypoint missing: ${payload_entry}"
+}
+
 seed_default_provider() {
   require_file "${PYTHON_BIN}"
   PYTHONPATH="${SIDECAR_ROOT}/src" "${PYTHON_BIN}" - "${NS_BOT_HOME}" <<'PY'
@@ -180,6 +192,7 @@ echo "NS_BOT_HOME=${NS_BOT_HOME}"
 
 mkdir -p "${WORKSPACE_DIR}"
 build_packaged_cli_if_possible
+verify_packaged_payload_layout
 
 run_cmd "${BIN_PATH}" --help
 run_cmd "${BIN_PATH}" init --help
