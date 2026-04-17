@@ -168,7 +168,7 @@ class CliProviderModelTests(unittest.TestCase):
         )
         self.assertEqual(refreshed.provider.preferred_model_id, "model-b")
 
-    def test_run_diagnose_uses_default_selection(self) -> None:
+    def test_agent_run_diagnose_uses_default_selection(self) -> None:
         connection_id = self._create_builtin_openai()
         openai_entry = next(
             item for item in list_providers() if str(item.get("id") or "") == "openai"
@@ -189,7 +189,9 @@ class CliProviderModelTests(unittest.TestCase):
             [
                 "--ns-bot-home",
                 self.temp_dir,
+                "agent",
                 "run",
+                "--prompt",
                 "diagnose test",
                 "--diagnose",
             ]
@@ -201,7 +203,7 @@ class CliProviderModelTests(unittest.TestCase):
         self.assertEqual(payload["resolved"]["modelId"], expected_model_id)
         self.assertEqual(payload["runtime"]["provider"], "openai")
 
-    def test_run_diagnose_uses_explicit_provider_selection(self) -> None:
+    def test_agent_run_diagnose_uses_explicit_provider_selection(self) -> None:
         connection_id = self._create_builtin_openai()
         openai_entry = next(
             item for item in list_providers() if str(item.get("id") or "") == "openai"
@@ -212,7 +214,9 @@ class CliProviderModelTests(unittest.TestCase):
             [
                 "--ns-bot-home",
                 self.temp_dir,
+                "agent",
                 "run",
+                "--prompt",
                 "diagnose configured",
                 "--diagnose",
                 "--provider-id",
@@ -228,12 +232,14 @@ class CliProviderModelTests(unittest.TestCase):
         self.assertEqual(payload["resolved"]["modelId"], selected_model_id)
         self.assertEqual(payload["runtime"]["provider"], "openai")
 
-    def test_run_rejects_removed_direct_runtime_flags(self) -> None:
+    def test_agent_run_rejects_removed_direct_runtime_flags(self) -> None:
         code, stdout, stderr = _run_cli(
             [
                 "--ns-bot-home",
                 self.temp_dir,
+                "agent",
                 "run",
+                "--prompt",
                 "diagnose configured",
                 "--diagnose",
                 "--api-key",
@@ -245,7 +251,7 @@ class CliProviderModelTests(unittest.TestCase):
         self.assertEqual(stdout, "")
         self.assertIn("No such option: --api-key", stderr)
 
-    def test_run_diagnose_uses_fd_rg_from_env_when_flags_absent(self) -> None:
+    def test_agent_run_diagnose_uses_fd_rg_from_env_when_flags_absent(self) -> None:
         with mock.patch.dict(
             "os.environ",
             {
@@ -262,7 +268,9 @@ class CliProviderModelTests(unittest.TestCase):
                 [
                     "--ns-bot-home",
                     self.temp_dir,
+                    "agent",
                     "run",
+                    "--prompt",
                     "diagnose configured",
                     "--diagnose",
                 ]
@@ -272,7 +280,7 @@ class CliProviderModelTests(unittest.TestCase):
         self.assertEqual(stdout, "")
         self.assertIn("No default provider/model available", _stderr)
 
-    def test_run_diagnose_ignores_removed_direct_runtime_env_vars(self) -> None:
+    def test_agent_run_diagnose_ignores_removed_direct_runtime_env_vars(self) -> None:
         connection_id = self._create_builtin_openai()
         _run_cli(
             [
@@ -299,7 +307,9 @@ class CliProviderModelTests(unittest.TestCase):
                 [
                     "--ns-bot-home",
                     self.temp_dir,
+                    "agent",
                     "run",
+                    "--prompt",
                     "diagnose configured",
                     "--diagnose",
                 ]
@@ -328,13 +338,29 @@ class CliProviderModelTests(unittest.TestCase):
         config = acp_main.call_args.kwargs["config"]
         self.assertEqual(config.ns_bot_home, self.temp_dir)
 
+    def test_help_short_option_supported_for_root(self) -> None:
+        code, stdout, stderr = _run_cli(["-h"])
+
+        self.assertEqual(code, 0)
+        self.assertIn("Usage:", stdout)
+        self.assertEqual(stderr, "")
+
+    def test_help_short_option_supported_for_subcommand(self) -> None:
+        code, stdout, stderr = _run_cli(["agent", "-h"])
+
+        self.assertEqual(code, 0)
+        self.assertIn("Usage:", stdout)
+        self.assertEqual(stderr, "")
+
     def test_root_acp_mode_rejects_subcommands(self) -> None:
         with mock.patch("nsbot_sidecar.api.acp_stdio.main") as acp_main:
             code, stdout, stderr = _run_cli([
                 "--ns-bot-home",
                 self.temp_dir,
                 "--acp",
+                "agent",
                 "run",
+                "--prompt",
                 "hello",
             ])
 
@@ -343,14 +369,16 @@ class CliProviderModelTests(unittest.TestCase):
         self.assertIn("ACP mode cannot be combined with subcommands", stderr)
         acp_main.assert_not_called()
 
-    def test_run_diagnose_does_not_route_to_acp_stdio_bootstrap(self) -> None:
+    def test_agent_run_diagnose_does_not_route_to_acp_stdio_bootstrap(self) -> None:
         connection_id = self._create_builtin_openai()
         with mock.patch("nsbot_sidecar.api.acp_stdio.main") as acp_main:
             code, stdout, _stderr = _run_cli(
                 [
                     "--ns-bot-home",
                     self.temp_dir,
+                    "agent",
                     "run",
+                    "--prompt",
                     "diagnose configured",
                     "--diagnose",
                     "--provider-id",

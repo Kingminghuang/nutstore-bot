@@ -933,11 +933,33 @@ def _run_with_error_handling(fn) -> int:
         raise
 
 
-app = typer.Typer(help="NSBot CLI for provider/model management and runtime execution")
-providers_app = typer.Typer(help="Manage providers")
-models_app = typer.Typer(help="Manage model options")
-workspaces_app = typer.Typer(help="Manage workspaces")
-sessions_app = typer.Typer(help="Manage sessions")
+HELP_OPTION_NAMES = {"help_option_names": ["-h", "--help"]}
+
+
+app = typer.Typer(
+    help="NSBot CLI for provider/model management and runtime execution",
+    context_settings=HELP_OPTION_NAMES,
+)
+providers_app = typer.Typer(
+    help="Manage providers",
+    context_settings=HELP_OPTION_NAMES,
+)
+models_app = typer.Typer(
+    help="Manage model options",
+    context_settings=HELP_OPTION_NAMES,
+)
+workspaces_app = typer.Typer(
+    help="Manage workspaces",
+    context_settings=HELP_OPTION_NAMES,
+)
+sessions_app = typer.Typer(
+    help="Manage sessions",
+    context_settings=HELP_OPTION_NAMES,
+)
+agent_app = typer.Typer(
+    help="Agent runtime commands",
+    context_settings=HELP_OPTION_NAMES,
+)
 
 
 @app.callback()
@@ -1259,10 +1281,10 @@ def init_command(ctx: typer.Context) -> None:
     )
 
 
-@app.command("run")
-def run_command(
+@agent_app.command("run")
+def agent_run_command(
     ctx: typer.Context,
-    user_input: str = typer.Argument(..., help="Task prompt"),
+    prompt: str = typer.Option(..., "--prompt", help="Task prompt"),
     turn_id: str = typer.Option(str(uuid.uuid4()), "--turn-id"),
     workspace_path: str = typer.Option(os.getcwd(), "--workspace-path"),
     provider_id: str = typer.Option("", "--provider-id"),
@@ -1281,7 +1303,7 @@ def run_command(
         lambda: _handle_run_command(
             SimpleNamespace(
                 ns_bot_home=_ns_bot_home_from_ctx(ctx),
-                user_input=user_input,
+                user_input=prompt,
                 turn_id=turn_id,
                 workspace_path=workspace_path,
                 provider_id=provider_id,
@@ -1304,6 +1326,7 @@ app.add_typer(providers_app, name="providers")
 app.add_typer(models_app, name="models")
 app.add_typer(workspaces_app, name="workspaces")
 app.add_typer(sessions_app, name="sessions")
+app.add_typer(agent_app, name="agent")
 
 
 def main(argv: list[str] | None = None) -> int:
