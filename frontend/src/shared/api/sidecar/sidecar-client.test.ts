@@ -24,6 +24,36 @@ describe("sidecar-client ACP resource requests", () => {
     expect(requestMock).toHaveBeenCalledWith("_nsbot/provider/catalog")
   })
 
+  it("loads provider connections when ACP returns connections", async () => {
+    requestMock.mockResolvedValueOnce({ connections: [] })
+
+    const { getProviders } = await import("@/shared/api/sidecar")
+    const response = await getProviders()
+
+    expect(response).toEqual({ connections: [] })
+    expect(requestMock).toHaveBeenCalledWith("_nsbot/provider/list")
+  })
+
+  it("loads provider connections when ACP returns providers", async () => {
+    requestMock.mockResolvedValueOnce({ providers: [] })
+
+    const { getProviders } = await import("@/shared/api/sidecar")
+    const response = await getProviders()
+
+    expect(response).toEqual({ connections: [] })
+    expect(requestMock).toHaveBeenCalledWith("_nsbot/provider/list")
+  })
+
+  it("normalizes missing model options arrays", async () => {
+    requestMock.mockResolvedValueOnce({ defaultSelection: null })
+
+    const { getModelOptions } = await import("@/shared/api/sidecar")
+    const response = await getModelOptions()
+
+    expect(response).toEqual({ groups: [], defaultSelection: null })
+    expect(requestMock).toHaveBeenCalledWith("_nsbot/provider/model_options")
+  })
+
   it("requests timeline through ACP _nsbot/timeline/list", async () => {
     requestMock.mockResolvedValueOnce({
       events: [

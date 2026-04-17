@@ -88,7 +88,7 @@ export function SettingsModal({
   isOpen,
   onClose,
   providerCatalog,
-  providerConnections,
+  providerConnections = [],
   onSaveProvider,
   onRemoveProvider,
 }: SettingsModalProps) {

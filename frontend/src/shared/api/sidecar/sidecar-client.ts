@@ -444,15 +444,36 @@ export function projectConversationEvents(sessionId: string, events: TimelineEve
 }
 
 export async function getProviderCatalog(): Promise<ProviderCatalogResponse> {
-  return acpClient.request<ProviderCatalogResponse>("_nsbot/provider/catalog")
+  const response = await acpClient.request<{ providers?: ProviderCatalogResponse["providers"] }>(
+    "_nsbot/provider/catalog"
+  )
+  return {
+    providers: Array.isArray(response?.providers) ? response.providers : [],
+  }
 }
 
 export async function getProviders(): Promise<ProviderConnectionsResponse> {
-  return acpClient.request<ProviderConnectionsResponse>("_nsbot/provider/list")
+  const response = await acpClient.request<{
+    connections?: ProviderConnectionsResponse["connections"]
+    providers?: ProviderConnectionsResponse["connections"]
+  }>("_nsbot/provider/list")
+  const connections = Array.isArray(response?.connections)
+    ? response.connections
+    : Array.isArray(response?.providers)
+      ? response.providers
+      : []
+  return { connections }
 }
 
 export async function getModelOptions(): Promise<ModelOptionsResponse> {
-  return acpClient.request<ModelOptionsResponse>("_nsbot/provider/model_options")
+  const response = await acpClient.request<{
+    groups?: ModelOptionsResponse["groups"]
+    defaultSelection?: ModelOptionsResponse["defaultSelection"]
+  }>("_nsbot/provider/model_options")
+  return {
+    groups: Array.isArray(response?.groups) ? response.groups : [],
+    defaultSelection: response?.defaultSelection ?? null,
+  }
 }
 
 export async function createProvider(

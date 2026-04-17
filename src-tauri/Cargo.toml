@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "NutstoreBot desktop shell"
 authors = ["NutstoreBot"]
 edition = "2021"
+default-run = "nutstore-bot-desktop"
 
 [[bin]]
 name = "nsbot"
