@@ -351,7 +351,7 @@ PY
   openai_model_2="$(uv run --project "${SIDECAR_ROOT}" python -c 'import json,sys; print(json.loads(sys.argv[1])["openai_model_2"])' "${seed_json}")"
 
   out_use="${smoke_root}/providers-use.json"
-  out_status="${smoke_root}/models-status.json"
+  out_status="${smoke_root}/models-openai-status.json"
   out_disable="${smoke_root}/models-disable.json"
   out_openai_list="${smoke_root}/models-openai-list.json"
   out_custom_list="${smoke_root}/models-custom-list.json"
@@ -365,9 +365,8 @@ PY
   assert_json_path_equals "${out_use}" "providerId" "openai"
   assert_json_path_equals "${out_use}" "modelId" "${openai_model_1}"
 
-  run_capture "${out_status}" "${launcher_path}" --ns-bot-home "${ns_bot_home}" models status
-  assert_json_path_equals "${out_status}" "defaultSelection.providerId" "openai"
-  assert_json_path_equals "${out_status}" "defaultSelection.modelId" "${openai_model_1}"
+  run_capture "${out_status}" "${launcher_path}" --ns-bot-home "${ns_bot_home}" models list --provider-id openai
+  assert_model_enabled_state "${out_status}" "openai" "${openai_model_1}" true
 
   echo "[smoke] models disable on OpenAI second model"
   run_capture "${out_disable}" "${launcher_path}" --ns-bot-home "${ns_bot_home}" models disable --provider-id openai --model "${openai_model_2}"

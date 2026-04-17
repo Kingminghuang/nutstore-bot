@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import io
 import json
+import os
+from pathlib import Path
 import shutil
 import tempfile
 import unittest
@@ -182,6 +184,209 @@ class CliProviderModelTests(unittest.TestCase):
             connection_id
         )
         self.assertEqual(refreshed.provider.preferred_model_id, model_ids[0])
+
+    def test_models_list_works_without_provider_filter(self) -> None:
+        self._create_builtin_openai()
+
+        code, stdout, _stderr = _run_cli(
+            [
+                "--ns-bot-home",
+                self.temp_dir,
+                "models",
+                "list",
+            ]
+        )
+
+        self.assertEqual(code, 0)
+        payload = json.loads(stdout)
+        self.assertIn("groups", payload)
+        self.assertIsInstance(payload["groups"], list)
+
+    def test_cli_bootstraps_templates_into_ns_bot_home(self) -> None:
+        source_dir = Path(tempfile.mkdtemp(prefix="sidecar-templates-"))
+        try:
+            for filename in ("IDENTITFY.md", "SOUL.md", "USER.md", "TOOLS.md"):
+                (source_dir / filename).write_text(f"{filename} content", encoding="utf-8")
+
+            templates_dir = Path(self.temp_dir) / "templates"
+            shutil.rmtree(templates_dir, ignore_errors=True)
+
+            with mock.patch.dict(
+                os.environ,
+                {"NSBOT_TEMPLATES_SOURCE": str(source_dir)},
+                clear=False,
+            ):
+                code, _stdout, _stderr = _run_cli(
+                    [
+                        "--ns-bot-home",
+                        self.temp_dir,
+                        "providers",
+                        "list",
+                    ]
+                )
+
+            self.assertEqual(code, 0)
+            self.assertTrue((templates_dir / "IDENTITFY.md").exists())
+            self.assertTrue((templates_dir / "SOUL.md").exists())
+            self.assertTrue((templates_dir / "USER.md").exists())
+            self.assertTrue((templates_dir / "TOOLS.md").exists())
+        finally:
+            shutil.rmtree(source_dir, ignore_errors=True)
+
+    def test_models_status_command_is_removed(self) -> None:
+        code, stdout, stderr = _run_cli(
+            [
+                "--ns-bot-home",
+                self.temp_dir,
+                "models",
+                "status",
+            ]
+        )
+        self.assertEqual(code, 2)
+        self.assertEqual(stdout, "")
+        self.assertIn("No such command 'status'", stderr)
+
+    def test_models_remove_can_infer_provider_id_when_unique(self) -> None:
+        bundle = self.repositories.providers.save_bundle(
+            provider_data={
+                "kind": "custom",
+                "runtime_provider": "custom",
+                "catalog_provider_id": None,
+                "custom_slug": "demo-gateway",
+                "display_name": "Demo Gateway",
+                "base_url": "https://llm.example.com/v1",
+                "secret_ref": "sec_test_custom",
+                "api_key_configured": True,
+                "model_policy": "custom_only",
+                "preferred_model_id": "demo-model-alpha",
+                "is_enabled": True,
+            },
+            models=[
+                {
+                    "source": "custom",
+                    "model_id": "demo-model-alpha",
+                    "display_name": "Demo Model Alpha",
+                    "enabled": True,
+                    "sort_order": 0,
+                },
+                {
+                    "source": "custom",
+                    "model_id": "demo-model-beta",
+                    "display_name": "Demo Model Beta",
+                    "enabled": True,
+                    "sort_order": 1,
+                },
+            ],
+        )
+
+        code, stdout, _stderr = _run_cli(
+            [
+                "--ns-bot-home",
+                self.temp_dir,
+                "models",
+                "remove",
+                "--model",
+                "demo-model-alpha",
+            ]
+        )
+
+        self.assertEqual(code, 0)
+        payload = json.loads(stdout)
+        self.assertEqual(payload["providerId"], bundle.provider.id)
+        self.assertEqual(payload["modelId"], "demo-model-alpha")
+
+    def test_sessions_group_is_removed(self) -> None:
+        code, stdout, stderr = _run_cli(
+            [
+                "--ns-bot-home",
+                self.temp_dir,
+                "sessions",
+                "--help",
+            ]
+        )
+        self.assertEqual(code, 2)
+        self.assertEqual(stdout, "")
+        self.assertIn("No such command 'sessions'", stderr)
+
+    def test_threads_get_help_uses_thread_id_flag(self) -> None:
+        code, stdout, _stderr = _run_cli(
+            [
+                "--ns-bot-home",
+                self.temp_dir,
+                "threads",
+                "get",
+                "--help",
+            ]
+        )
+        self.assertEqual(code, 0)
+        self.assertIn("--thread-id", stdout)
+
+    def test_agent_threads_and_thread_get_commands_are_removed(self) -> None:
+        code_threads, stdout_threads, stderr_threads = _run_cli(
+            [
+                "--ns-bot-home",
+                self.temp_dir,
+                "agent",
+                "threads",
+            ]
+        )
+        self.assertEqual(code_threads, 2)
+        self.assertEqual(stdout_threads, "")
+        self.assertIn("No such command 'threads'", stderr_threads)
+
+        code_get, stdout_get, stderr_get = _run_cli(
+            [
+                "--ns-bot-home",
+                self.temp_dir,
+                "agent",
+                "thread-get",
+            ]
+        )
+        self.assertEqual(code_get, 2)
+        self.assertEqual(stdout_get, "")
+        self.assertIn("No such command 'thread-get'", stderr_get)
+
+    def test_agent_run_background_returns_workspace_and_thread_ids(self) -> None:
+        with mock.patch.object(
+            cli_module,
+            "_resolve_run_target",
+            return_value=(
+                object(),
+                {"mode": "default-provider"},
+                "provider_x",
+                "model_x",
+            ),
+        ), mock.patch.object(
+            cli_module,
+            "_resolve_thread_context",
+            return_value=(
+                "thread_x",
+                cli_module.RunMetadata(workspace_path="/tmp/workspace", session_key=None),
+                {"workspaceId": "workspace_x"},
+            ),
+        ), mock.patch.object(
+            cli_module.subprocess,
+            "Popen",
+            return_value=mock.Mock(pid=12345),
+        ):
+            code, stdout, stderr = _run_cli(
+                [
+                    "--ns-bot-home",
+                    self.temp_dir,
+                    "agent",
+                    "run",
+                    "--prompt",
+                    "hello",
+                    "--background",
+                    "--json",
+                ]
+            )
+
+        self.assertEqual(code, 0)
+        self.assertEqual(stderr, "")
+        payload = json.loads(stdout)
+        self.assertEqual(payload["workspace_id"], "workspace_x")
+        self.assertEqual(payload["thread_id"], "thread_x")
 
     def test_models_enable_is_removed(self) -> None:
         code, stdout, stderr = _run_cli(

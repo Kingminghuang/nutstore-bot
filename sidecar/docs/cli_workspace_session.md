@@ -1,4 +1,4 @@
-## CLI workspace/session quick start
+## CLI workspace/thread quick start
 
 ### ACP stdio mode
 
@@ -37,35 +37,29 @@ uv run python -m nsbot_sidecar.cli workspaces sidecar-index-status --workspace-i
 uv run python -m nsbot_sidecar.cli workspaces delete --workspace-id ws_xxx
 ```
 
-### Session commands
+### Thread commands
 
 ```bash
-# List sessions by workspace
-uv run python -m nsbot_sidecar.cli sessions list --workspace-id ws_xxx
+# List recent threads
+uv run python -m nsbot_sidecar.cli threads list
 
-# Create session (optionally pin provider/model)
-uv run python -m nsbot_sidecar.cli sessions create \
-  --workspace-id ws_xxx \
-  --provider-id prov_xxx \
-  --model-id openai/gpt-5.4
+# Read thread details
+uv run python -m nsbot_sidecar.cli threads get --thread-id thread_xxx
 
-# Rename session
-uv run python -m nsbot_sidecar.cli sessions update \
-  --session-id sess_xxx \
+# Rename thread
+uv run python -m nsbot_sidecar.cli threads update \
+  --thread-id thread_xxx \
   --title "new title"
 
-# Read timeline
-uv run python -m nsbot_sidecar.cli sessions timeline --session-id sess_xxx --limit 50
-
-# Delete session
-uv run python -m nsbot_sidecar.cli sessions delete --session-id sess_xxx
+# Delete thread
+uv run python -m nsbot_sidecar.cli threads delete --thread-id thread_xxx
 ```
 
-### Run with persisted session
+### Run with persisted thread
 
-When `--session-id` is provided, CLI resolves `session_key` and workspace path from DB,
-then executes runtime in that session context.
+When `--thread-id` is provided, agent run resolves thread session metadata and workspace
+path from DB, then executes runtime in that existing thread context.
 
 ```bash
-uv run python -m nsbot_sidecar.cli run "your prompt" --session-id sess_xxx --diagnose
+uv run python -m nsbot_sidecar.cli agent run --prompt "your prompt" --thread-id thread_xxx
 ```

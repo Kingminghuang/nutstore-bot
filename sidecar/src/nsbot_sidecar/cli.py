@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import time
@@ -43,6 +44,83 @@ def _normalize_provider_ref(bundle: dict[str, Any]) -> str:
 
 def _print_json(payload: Any) -> None:
     print(json.dumps(payload, ensure_ascii=False, indent=2))
+
+
+TEMPLATE_REQUIRED_FILES = (
+    "IDENTITFY.md",
+    "SOUL.md",
+    "USER.md",
+    "TOOLS.md",
+)
+
+
+def _templates_complete(templates_dir: Path) -> bool:
+    return all((templates_dir / filename).exists() for filename in TEMPLATE_REQUIRED_FILES)
+
+
+def _iter_template_source_candidates() -> list[Path]:
+    candidates: list[Path] = []
+
+    env_source = str(os.environ.get("NSBOT_TEMPLATES_SOURCE") or "").strip()
+    if env_source:
+        candidates.append(Path(env_source).expanduser().resolve())
+
+    seeds: list[Path] = []
+    for raw in (Path(__file__), Path(sys.argv[0]), Path(sys.executable)):
+        try:
+            seeds.append(raw.expanduser().resolve())
+        except Exception:
+            continue
+
+    seen: set[Path] = set()
+    for seed in seeds:
+        for parent in [seed.parent, *seed.parents]:
+            for candidate in (parent / "templates", parent / "runtime" / "templates"):
+                if candidate in seen:
+                    continue
+                seen.add(candidate)
+                candidates.append(candidate)
+
+    return candidates
+
+
+def _resolve_template_source() -> Path | None:
+    for candidate in _iter_template_source_candidates():
+        if not candidate.exists() or not candidate.is_dir():
+            continue
+        if _templates_complete(candidate):
+            return candidate
+    return None
+
+
+def _copy_missing_tree_entries(source: Path, destination: Path) -> None:
+    for entry in source.rglob("*"):
+        relative = entry.relative_to(source)
+        target = destination / relative
+        if entry.is_dir():
+            target.mkdir(parents=True, exist_ok=True)
+            continue
+        if not target.exists():
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(entry, target)
+
+
+def _ensure_templates_in_ns_bot_home(ns_bot_home_value: str) -> None:
+    home = Path(ns_bot_home_value).expanduser().resolve()
+    templates_target = home / "templates"
+    if _templates_complete(templates_target):
+        return
+
+    source = _resolve_template_source()
+    if source is None:
+        return
+
+    home.mkdir(parents=True, exist_ok=True)
+    if not templates_target.exists():
+        shutil.copytree(source, templates_target)
+        return
+
+    _copy_missing_tree_entries(source, templates_target)
 
 
 def _build_services(ns_bot_home_value: str, db_path: str | None = None):
@@ -144,6 +222,35 @@ def _first_model_id(group: dict[str, Any]) -> str | None:
         return None
     model_id = str(models[0].get("modelId") or "").strip()
     return model_id or None
+
+
+def _find_provider_id_by_model_id(
+    model_options: dict[str, Any], *, model_id: str
+) -> str:
+    groups = model_options.get("groups")
+    if not isinstance(groups, list):
+        raise ValueError("No model groups available")
+
+    matches: list[str] = []
+    for group in groups:
+        provider_id = str(group.get("providerId") or "").strip()
+        models = group.get("models")
+        if provider_id == "" or not isinstance(models, list):
+            continue
+        for model in models:
+            if str(model.get("modelId") or "").strip() == model_id:
+                matches.append(provider_id)
+                break
+
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        raise ValueError(
+            "Model id is ambiguous. Use --provider-id to disambiguate the target provider."
+        )
+    raise ValueError(
+        f"Model '{model_id}' was not found in available providers. Use --provider-id to specify the target provider."
+    )
 
 
 def _build_runtime_worker_config(
@@ -316,7 +423,9 @@ def _handle_models_command(args: SimpleNamespace) -> int:
             payload = provider_service.model_options_payload()
             groups = payload.get("groups")
             filtered = []
-            provider_filter = str(args.provider_id or args.provider or "").strip()
+            provider_filter = str(
+                args.provider_id or getattr(args, "provider", "") or ""
+            ).strip()
             for group in groups if isinstance(groups, list) else []:
                 provider_id = str(group.get("providerId") or "")
                 if provider_filter and provider_filter != provider_id:
@@ -385,28 +494,20 @@ def _handle_models_command(args: SimpleNamespace) -> int:
             )
             return 0
 
-        if args.models_command == "status":
-            payload = provider_service.model_options_payload()
-            default_selection = payload.get("defaultSelection")
-            groups = payload.get("groups")
-            default_group = None
-            if isinstance(default_selection, dict):
-                selected_provider = str(default_selection.get("providerId") or "")
-                for group in groups if isinstance(groups, list) else []:
-                    if str(group.get("providerId") or "") == selected_provider:
-                        default_group = group
-                        break
-            _print_json(
-                {
-                    "defaultSelection": default_selection,
-                    "defaultGroup": default_group,
-                    "groupCount": len(groups) if isinstance(groups, list) else 0,
-                }
-            )
-            return 0
-
-        provider_id = str(args.provider_id or "").strip()
         model_id = str(args.model or "").strip()
+        provider_id = str(args.provider_id or "").strip()
+        if args.models_command == "remove" and provider_id == "":
+            if model_id == "":
+                raise ValueError("Model id is required")
+            model_options = provider_service.model_options_payload()
+            provider_id = _find_provider_id_by_model_id(
+                model_options,
+                model_id=model_id,
+            )
+
+        if provider_id == "":
+            raise ValueError("Provider id is required")
+
         bundle = repositories.providers.get_bundle_by_id(provider_id)
         if bundle is None:
             raise ValueError(f"Provider not found: {provider_id}")
@@ -534,67 +635,33 @@ def _handle_workspaces_command(args: SimpleNamespace) -> int:
         database.close()
 
 
-def _handle_sessions_command(args: SimpleNamespace) -> int:
-    database, _repositories, session_service = _build_session_service(
-        args.ns_bot_home,
-        db_path=args.db_path,
-    )
-    try:
-        if args.sessions_command == "list":
-            try:
-                payload = session_service.list_sessions_payload(args.workspace_id)
-            except HTTPException as exc:
-                raise ValueError(_http_detail(exc)) from exc
-            _print_json(payload)
-            return 0
+def _handle_threads_command(args: SimpleNamespace) -> int:
+    if args.threads_command == "list":
+        return _handle_threads_list_command(args)
 
-        if args.sessions_command == "create":
-            payload: dict[str, Any] = {}
-            provider_id = str(args.provider_id or "").strip()
-            model_id = str(args.model_id or "").strip()
-            if provider_id:
-                payload["providerId"] = provider_id
-            if model_id:
-                payload["modelId"] = model_id
-            try:
-                created = session_service.create_session(args.workspace_id, payload)
-            except HTTPException as exc:
-                raise ValueError(_http_detail(exc)) from exc
-            _print_json(created)
-            return 0
+    if args.threads_command == "get":
+        return _handle_thread_get_command(args)
 
-        if args.sessions_command == "update":
+    if args.threads_command == "delete":
+        return _handle_thread_delete_command(args)
+
+    if args.threads_command == "update":
+        database, _repositories, session_service = _build_session_service(
+            args.ns_bot_home,
+            db_path=args.db_path,
+        )
+        try:
             payload = {"title": str(args.title or "").strip()}
             try:
-                updated = session_service.update_session(args.session_id, payload)
+                updated = session_service.update_session(args.thread_id, payload)
             except HTTPException as exc:
                 raise ValueError(_http_detail(exc)) from exc
             _print_json(updated)
             return 0
+        finally:
+            database.close()
 
-        if args.sessions_command == "delete":
-            try:
-                session_service.delete_session(args.session_id)
-            except HTTPException as exc:
-                raise ValueError(_http_detail(exc)) from exc
-            _print_json({"ok": True, "sessionId": args.session_id, "action": "deleted"})
-            return 0
-
-        if args.sessions_command == "timeline":
-            try:
-                payload = session_service.list_timeline_payload(
-                    args.session_id,
-                    limit=args.limit,
-                    before_sequence=args.before_sequence,
-                )
-            except HTTPException as exc:
-                raise ValueError(_http_detail(exc)) from exc
-            _print_json(payload)
-            return 0
-
-        raise ValueError(f"Unknown sessions command: {args.sessions_command}")
-    finally:
-        database.close()
+    raise ValueError(f"Unknown threads command: {args.threads_command}")
 
 
 def _resolve_run_target(
@@ -879,6 +946,7 @@ def _handle_run_command(args: SimpleNamespace) -> int:
         active_provider_id=provider_id,
         active_model_id=model_id,
     )
+    workspace_id = str(resolved_thread.get("workspaceId") or "")
     run_id = f"run_{uuid.uuid4().hex}"
     _write_run_record(
         args.ns_bot_home,
@@ -886,6 +954,7 @@ def _handle_run_command(args: SimpleNamespace) -> int:
         {
             "run_id": run_id,
             "thread_id": thread_id,
+            "workspace_id": workspace_id,
             "prompt": str(args.user_input or ""),
             "workspace": str(metadata.workspace_path or args.workspace),
             "model": str(args.model or "").strip() or None,
@@ -928,6 +997,7 @@ def _handle_run_command(args: SimpleNamespace) -> int:
         _print_json(
             {
                 "run_id": run_id,
+                "workspace_id": workspace_id,
                 "thread_id": thread_id,
                 "pid": child.pid,
                 "status": "pending",
@@ -983,8 +1053,25 @@ def _handle_run_command(args: SimpleNamespace) -> int:
         database.close()
 
     if args.json:
-        _print_json({"run_id": run_id, "thread_id": thread_id, "events": rows})
+        _print_json(
+            {
+                "run_id": run_id,
+                "workspace_id": workspace_id,
+                "thread_id": thread_id,
+                "events": rows,
+            }
+        )
     else:
+        print(
+            json.dumps(
+                {
+                    "run_id": run_id,
+                    "workspace_id": workspace_id,
+                    "thread_id": thread_id,
+                },
+                ensure_ascii=False,
+            )
+        )
         for row in rows:
             print(
                 f"[{row['thread_id']}] {row['event_type']}: "
@@ -1063,7 +1150,7 @@ def _handle_worker_command(args: SimpleNamespace) -> int:
         _unlink_pid_file_if_matches(run_pid_file, os.getpid())
 
 
-def _handle_threads_command(args: SimpleNamespace) -> int:
+def _handle_threads_list_command(args: SimpleNamespace) -> int:
     database, repositories, _session_service = _build_session_service(
         args.ns_bot_home,
         db_path=args.db_path,
@@ -1323,8 +1410,8 @@ workspaces_app = typer.Typer(
     help="Manage workspaces",
     context_settings=HELP_OPTION_NAMES,
 )
-sessions_app = typer.Typer(
-    help="Manage sessions",
+threads_app = typer.Typer(
+    help="Manage threads",
     context_settings=HELP_OPTION_NAMES,
 )
 agent_app = typer.Typer(
@@ -1348,6 +1435,7 @@ def root(
         help="Start the sidecar in ACP stdio mode.",
     ),
 ) -> None:
+    _ensure_templates_in_ns_bot_home(ns_bot_home_value)
     ctx.obj = {
         "ns_bot_home": ns_bot_home_value,
         "db_path": str(db_path or "").strip(),
@@ -1490,23 +1578,10 @@ def models_set_default(
     )
 
 
-@models_app.command("status")
-def models_status(ctx: typer.Context) -> None:
-    _run_with_error_handling(
-        lambda: _handle_models_command(
-            SimpleNamespace(
-                ns_bot_home=_ns_bot_home_from_ctx(ctx),
-                db_path=_db_path_from_ctx(ctx),
-                models_command="status",
-            )
-        )
-    )
-
-
 @models_app.command("remove")
 def models_remove(
     ctx: typer.Context,
-    provider_id: str = typer.Option(..., "--provider-id"),
+    provider_id: str = typer.Option("", "--provider-id"),
     model: str = typer.Option(..., "--model"),
 ) -> None:
     _run_with_error_handling(
@@ -1613,96 +1688,83 @@ def workspaces_sidecar_index_status(
     )
 
 
-@sessions_app.command("list")
-def sessions_list(
+@threads_app.command("list")
+def threads_list(
     ctx: typer.Context,
-    workspace_id: str = typer.Option(..., "--workspace-id"),
+    archived: bool = typer.Option(False, "--archived"),
+    limit: int = typer.Option(20, "--limit"),
+    json_mode: bool = typer.Option(False, "--json"),
+    db_path: str = typer.Option("", "--db-path"),
 ) -> None:
     _run_with_error_handling(
-        lambda: _handle_sessions_command(
+        lambda: _handle_threads_command(
             SimpleNamespace(
                 ns_bot_home=_ns_bot_home_from_ctx(ctx),
-                db_path=_db_path_from_ctx(ctx),
-                sessions_command="list",
-                workspace_id=workspace_id,
+                db_path=str(db_path or "").strip() or _db_path_from_ctx(ctx),
+                threads_command="list",
+                archived=archived,
+                limit=limit,
+                json=json_mode,
             )
         )
     )
 
 
-@sessions_app.command("create")
-def sessions_create(
+@threads_app.command("get")
+def threads_get(
     ctx: typer.Context,
-    workspace_id: str = typer.Option(..., "--workspace-id"),
-    provider_id: str = typer.Option("", "--provider-id"),
-    model_id: str = typer.Option("", "--model-id"),
+    thread_id: str = typer.Option(..., "--thread-id"),
+    json_mode: bool = typer.Option(False, "--json"),
+    db_path: str = typer.Option("", "--db-path"),
 ) -> None:
     _run_with_error_handling(
-        lambda: _handle_sessions_command(
+        lambda: _handle_threads_command(
             SimpleNamespace(
                 ns_bot_home=_ns_bot_home_from_ctx(ctx),
-                db_path=_db_path_from_ctx(ctx),
-                sessions_command="create",
-                workspace_id=workspace_id,
-                provider_id=provider_id,
-                model_id=model_id,
+                db_path=str(db_path or "").strip() or _db_path_from_ctx(ctx),
+                threads_command="get",
+                thread_id=thread_id,
+                json=json_mode,
             )
         )
     )
 
 
-@sessions_app.command("update")
-def sessions_update(
+@threads_app.command("update")
+def threads_update(
     ctx: typer.Context,
-    session_id: str = typer.Option(..., "--session-id"),
+    thread_id: str = typer.Option(..., "--thread-id"),
     title: str = typer.Option(..., "--title"),
+    db_path: str = typer.Option("", "--db-path"),
 ) -> None:
     _run_with_error_handling(
-        lambda: _handle_sessions_command(
+        lambda: _handle_threads_command(
             SimpleNamespace(
                 ns_bot_home=_ns_bot_home_from_ctx(ctx),
-                db_path=_db_path_from_ctx(ctx),
-                sessions_command="update",
-                session_id=session_id,
+                db_path=str(db_path or "").strip() or _db_path_from_ctx(ctx),
+                threads_command="update",
+                thread_id=thread_id,
                 title=title,
             )
         )
     )
 
 
-@sessions_app.command("delete")
-def sessions_delete(
+@threads_app.command("delete")
+def threads_delete(
     ctx: typer.Context,
-    session_id: str = typer.Option(..., "--session-id"),
+    thread_id: str = typer.Option(..., "--thread-id"),
+    json_mode: bool = typer.Option(False, "--json"),
+    db_path: str = typer.Option("", "--db-path"),
 ) -> None:
     _run_with_error_handling(
-        lambda: _handle_sessions_command(
+        lambda: _handle_threads_command(
             SimpleNamespace(
                 ns_bot_home=_ns_bot_home_from_ctx(ctx),
-                db_path=_db_path_from_ctx(ctx),
-                sessions_command="delete",
-                session_id=session_id,
-            )
-        )
-    )
-
-
-@sessions_app.command("timeline")
-def sessions_timeline(
-    ctx: typer.Context,
-    session_id: str = typer.Option(..., "--session-id"),
-    limit: int | None = typer.Option(None, "--limit"),
-    before_sequence: int | None = typer.Option(None, "--before-sequence"),
-) -> None:
-    _run_with_error_handling(
-        lambda: _handle_sessions_command(
-            SimpleNamespace(
-                ns_bot_home=_ns_bot_home_from_ctx(ctx),
-                db_path=_db_path_from_ctx(ctx),
-                sessions_command="timeline",
-                session_id=session_id,
-                limit=limit,
-                before_sequence=before_sequence,
+                db_path=str(db_path or "").strip() or _db_path_from_ctx(ctx),
+                threads_command="delete",
+                thread_id=thread_id,
+                json=json_mode,
             )
         )
     )
@@ -1792,27 +1854,6 @@ def agent_cancel_command(
     )
 
 
-@agent_app.command("threads")
-def agent_threads_command(
-    ctx: typer.Context,
-    archived: bool = typer.Option(False, "--archived"),
-    limit: int = typer.Option(20, "--limit"),
-    json_mode: bool = typer.Option(False, "--json"),
-    db_path: str = typer.Option("", "--db-path"),
-) -> None:
-    _run_with_error_handling(
-        lambda: _handle_threads_command(
-            SimpleNamespace(
-                ns_bot_home=_ns_bot_home_from_ctx(ctx),
-                db_path=str(db_path or "").strip() or _db_path_from_ctx(ctx),
-                archived=archived,
-                limit=limit,
-                json=json_mode,
-            )
-        )
-    )
-
-
 @agent_app.command("thread-snapshot")
 def agent_thread_snapshot_command(
     ctx: typer.Context,
@@ -1822,25 +1863,6 @@ def agent_thread_snapshot_command(
 ) -> None:
     _run_with_error_handling(
         lambda: _handle_thread_snapshot_command(
-            SimpleNamespace(
-                ns_bot_home=_ns_bot_home_from_ctx(ctx),
-                db_path=str(db_path or "").strip() or _db_path_from_ctx(ctx),
-                thread_id=thread_id,
-                json=json_mode,
-            )
-        )
-    )
-
-
-@agent_app.command("thread-get")
-def agent_thread_get_command(
-    ctx: typer.Context,
-    thread_id: str = typer.Option(..., "--thread-id"),
-    json_mode: bool = typer.Option(False, "--json"),
-    db_path: str = typer.Option("", "--db-path"),
-) -> None:
-    _run_with_error_handling(
-        lambda: _handle_thread_get_command(
             SimpleNamespace(
                 ns_bot_home=_ns_bot_home_from_ctx(ctx),
                 db_path=str(db_path or "").strip() or _db_path_from_ctx(ctx),
@@ -1873,7 +1895,7 @@ def agent_thread_delete_command(
 app.add_typer(providers_app, name="providers")
 app.add_typer(models_app, name="models")
 app.add_typer(workspaces_app, name="workspaces")
-app.add_typer(sessions_app, name="sessions")
+app.add_typer(threads_app, name="threads")
 app.add_typer(agent_app, name="agent")
 
 

@@ -195,24 +195,16 @@ build_packaged_cli_if_possible
 verify_packaged_payload_layout
 
 run_cmd "${BIN_PATH}" --help
-run_cmd "${BIN_PATH}" init --help
 run_cmd "${BIN_PATH}" agent --help
 run_cmd "${BIN_PATH}" agent run --help
 run_cmd "${BIN_PATH}" providers --help
 run_cmd "${BIN_PATH}" models --help
 run_cmd "${BIN_PATH}" workspaces --help
-run_cmd "${BIN_PATH}" sessions --help
+run_cmd "${BIN_PATH}" threads --help
 pass "help commands"
 
-INIT_OUT="${TMP_DIR}/init.json"
-run_capture "${INIT_OUT}" "${BIN_PATH}" --ns-bot-home "${NS_BOT_HOME}" init
-require_file "${NS_BOT_HOME}/templates"
-require_file "${NS_BOT_HOME}/bin"
-assert_json_path_equals "${INIT_OUT}" "ok" "True"
-pass "init bootstraps NS_BOT_HOME"
-
 run_cmd "${BIN_PATH}" --ns-bot-home "${NS_BOT_HOME}" providers list
-run_cmd "${BIN_PATH}" --ns-bot-home "${NS_BOT_HOME}" models status
+run_cmd "${BIN_PATH}" --ns-bot-home "${NS_BOT_HOME}" models list
 run_cmd "${BIN_PATH}" --ns-bot-home "${NS_BOT_HOME}" workspaces list
 pass "read-only commands on empty state"
 
@@ -238,7 +230,7 @@ print(payload.get("id") or payload.get("workspaceId") or "")
 PY
 )"
 [[ -n "${WORKSPACE_ID}" ]] || fail "failed to parse workspace id from packaged CLI output"
-run_cmd "${BIN_PATH}" --ns-bot-home "${NS_BOT_HOME}" sessions list --workspace-id "${WORKSPACE_ID}"
+run_cmd "${BIN_PATH}" --ns-bot-home "${NS_BOT_HOME}" threads list
 pass "workspace lifecycle baseline"
 
 seed_default_provider
@@ -249,10 +241,10 @@ run_capture \
   "${DIAGNOSE_OUT}" \
   "${BIN_PATH}" \
   --ns-bot-home "${NS_BOT_HOME}" \
-  agent run --prompt "diagnose test" --diagnose
-assert_json_path_equals "${DIAGNOSE_OUT}" "resolved.mode" "default-provider"
-assert_json_path_equals "${DIAGNOSE_OUT}" "runtime.provider" "openai"
-pass "agent run --diagnose uses packaged CLI state"
+  agent run --prompt "diagnose test" --workspace "${WORKSPACE_DIR}" --background --json
+assert_json_path_equals "${DIAGNOSE_OUT}" "status" "pending"
+assert_json_path_equals "${DIAGNOSE_OUT}" "workspace_id" "${WORKSPACE_ID}"
+pass "agent run background returns workspace/thread ids"
 
 verify_acp_initialize_round_trip
 pass "ACP initialize round trip"
