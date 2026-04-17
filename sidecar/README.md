@@ -74,6 +74,12 @@ Run from repository root:
 bash sidecar/scripts/build_packaged_cli.sh
 ```
 
+Optional: run provider/model smoke checks during the build:
+
+```bash
+NSBOT_RUN_PROVIDER_MODEL_SMOKE=1 bash sidecar/scripts/build_packaged_cli.sh
+```
+
 Or run from `sidecar`:
 
 ```bash
