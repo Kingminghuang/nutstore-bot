@@ -12,29 +12,43 @@ from acp import spawn_agent_process, text_block
 from acp.interfaces import Client
 
 
+async def _write_jsonrpc_payload(
+    proc: asyncio.subprocess.Process,
+    payload: dict,
+) -> None:
+    assert proc.stdin is not None
+    proc.stdin.write((json.dumps(payload) + "\n").encode("utf-8"))
+    await proc.stdin.drain()
+
+
+async def _read_jsonrpc_message(
+    proc: asyncio.subprocess.Process,
+    *,
+    timeout: float = 5,
+) -> dict:
+    assert proc.stdout is not None
+    line = await asyncio.wait_for(proc.stdout.readline(), timeout=timeout)
+    if not line:
+        raise AssertionError("ACP stdio process closed before sending message")
+    return json.loads(line)
+
+
 async def _send_jsonrpc_request(
     proc: asyncio.subprocess.Process,
     request_id: int,
     method: str,
     params: dict,
 ) -> dict:
-    assert proc.stdin is not None
-    assert proc.stdout is not None
-
     payload = {
         "jsonrpc": "2.0",
         "id": request_id,
         "method": method,
         "params": params,
     }
-    proc.stdin.write((json.dumps(payload) + "\n").encode("utf-8"))
-    await proc.stdin.drain()
+    await _write_jsonrpc_payload(proc, payload)
 
     while True:
-        line = await asyncio.wait_for(proc.stdout.readline(), timeout=5)
-        if not line:
-            raise AssertionError("ACP stdio process closed before responding")
-        message = json.loads(line)
+        message = await _read_jsonrpc_message(proc)
         if message.get("id") == request_id:
             return message
 
@@ -122,6 +136,62 @@ class AcpStdioIntegrationTests(unittest.TestCase):
 
         asyncio.run(_run())
 
+    def test_cli_root_acp_mode_supports_prompt_round_trip(self) -> None:
+        temp_dir = Path(tempfile.mkdtemp(prefix="acp-cli-stdio-"))
+        workspace = temp_dir / "workspace"
+        workspace.mkdir(parents=True, exist_ok=True)
+
+        async def _run() -> None:
+            client = _RecordingClient()
+            env = {
+                **os.environ,
+                "NS_BOT_HOME": str(temp_dir),
+            }
+            async with spawn_agent_process(
+                client,
+                sys.executable,
+                "-m",
+                "nsbot_sidecar.cli",
+                "--acp",
+                env=env,
+                cwd=str(workspace),
+            ) as (conn, _proc):
+                init = await conn.initialize(protocol_version=1)
+                self.assertEqual(init.protocol_version, 1)
+
+                await conn.ext_method(
+                    "nsbot/provider/create",
+                    {
+                        "kind": "builtin",
+                        "catalogProviderId": "openai",
+                        "displayName": "OpenAI",
+                        "apiKey": "sk-test",
+                        "preferredModelId": "gpt-5.4",
+                    },
+                )
+
+                session = await conn.new_session(cwd=str(workspace))
+
+                try:
+                    await conn.prompt(
+                        session_id=session.session_id,
+                        prompt=[text_block("ping from cli acp mode")],
+                    )
+                except Exception:
+                    pass
+
+                self.assertTrue(
+                    any(
+                        sid == session.session_id
+                        and str((update.get("sessionUpdate") or "")) == "user_message_chunk"
+                        and str((update.get("content") or {}).get("text") or "")
+                        == "ping from cli acp mode"
+                        for sid, update in client.session_updates
+                    )
+                )
+
+        asyncio.run(_run())
+
     def test_raw_jsonrpc_session_requests_accept_frontend_bridge_shape(self) -> None:
         temp_dir = Path(tempfile.mkdtemp(prefix="acp-stdio-raw-"))
         workspace = temp_dir / "workspace"
@@ -203,7 +273,6 @@ class AcpStdioIntegrationTests(unittest.TestCase):
                     await proc.wait()
 
         asyncio.run(_run())
-
 
 if __name__ == "__main__":
     unittest.main()

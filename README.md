@@ -70,6 +70,17 @@ uv run python -m nsbot_sidecar.cli sessions update --session-id <session_id> --t
 uv run python -m nsbot_sidecar.cli sessions delete --session-id <session_id>
 ```
 
+如需把 CLI 作为 ACP stdio 入口启动，使用根级 `--acp`：
+
+```bash
+uv run python -m nsbot_sidecar.cli --acp
+```
+
+说明：
+
+- `--acp` 是根级模式切换，不和 `run`、`providers`、`sessions`、`workspaces` 等子命令混用。
+- `run` 仍然是一次性执行入口；`--acp` 启动的是长连接 ACP stdio server。
+
 运行任务时，可直接绑定数据库里的 session：
 
 ```bash

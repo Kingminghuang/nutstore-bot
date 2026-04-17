@@ -15,7 +15,9 @@ import click
 from fastapi import HTTPException
 import typer
 
+from nsbot_sidecar.api.api_server import ApiServerConfig, DEFAULT_HOST, DEFAULT_PORT
 from nsbot_sidecar.infrastructure.attachment_store import AttachmentStore
+from nsbot_sidecar.infrastructure.client_config import load_or_create_client_config
 from nsbot_sidecar.infrastructure.local_paths import nsbot_home
 from nsbot_sidecar.application.provider_service import ProviderService
 from nsbot_sidecar.infrastructure.repositories import create_repositories
@@ -905,6 +907,62 @@ def _ns_bot_home_from_ctx(ctx: typer.Context) -> str:
     return str(ctx.obj.get("ns_bot_home") if isinstance(ctx.obj, dict) else nsbot_home())
 
 
+def _build_api_server_config(ns_bot_home_value: str) -> ApiServerConfig:
+    host = os.environ.get("NS_BOT_HOST", DEFAULT_HOST)
+    port = int(os.environ.get("NS_BOT_PORT", str(DEFAULT_PORT)))
+    client_config = load_or_create_client_config(
+        ns_bot_home_value,
+        host=host,
+        port=port,
+    )
+    return ApiServerConfig(
+        host=host,
+        port=port,
+        auth_header_value=client_config.auth_header_value,
+        ns_bot_home=ns_bot_home_value,
+        fd_executable=os.environ.get("NSBOT_FD_EXECUTABLE") or None,
+        rg_executable=os.environ.get("NSBOT_RG_EXECUTABLE") or None,
+    )
+
+
+def _run_acp_mode(ns_bot_home_value: str) -> int:
+    from nsbot_sidecar.api import acp_stdio
+
+    return acp_stdio.main(config=_build_api_server_config(ns_bot_home_value))
+
+
+def _parse_root_mode_arguments(argv: list[str]) -> tuple[bool, str | None, bool, bool]:
+    acp = False
+    ns_bot_home_value: str | None = None
+    help_requested = False
+    index = 0
+    while index < len(argv):
+        token = argv[index]
+        if token in {"--help", "-h"}:
+            help_requested = True
+            index += 1
+            continue
+        if token == "--acp":
+            acp = True
+            index += 1
+            continue
+        if token.startswith("--ns-bot-home="):
+            ns_bot_home_value = token.split("=", 1)[1]
+            index += 1
+            continue
+        if token == "--ns-bot-home":
+            if index + 1 >= len(argv):
+                raise click.UsageError("Option '--ns-bot-home' requires an argument.")
+            ns_bot_home_value = argv[index + 1]
+            index += 2
+            continue
+        if token.startswith("-"):
+            index += 1
+            continue
+        return acp, ns_bot_home_value, help_requested, True
+    return acp, ns_bot_home_value, help_requested, False
+
+
 def _run_with_error_handling(fn) -> int:
     try:
         code = int(fn())
@@ -930,8 +988,13 @@ def root(
         "--ns-bot-home",
         help="Path to NSBot data directory.",
     ),
+    acp_mode: bool = typer.Option(
+        False,
+        "--acp",
+        help="Start the sidecar in ACP stdio mode.",
+    ),
 ) -> None:
-    ctx.obj = {"ns_bot_home": ns_bot_home_value}
+    ctx.obj = {"ns_bot_home": ns_bot_home_value, "acp": acp_mode}
 
 
 @providers_app.command("list")
@@ -1299,6 +1362,16 @@ def main(argv: list[str] | None = None) -> int:
     command = typer.main.get_command(app)
     effective_argv = list(argv) if argv is not None else sys.argv[1:]
     try:
+        acp_mode, ns_bot_home_value, help_requested, has_command = _parse_root_mode_arguments(
+            effective_argv
+        )
+        if acp_mode and not help_requested:
+            if has_command:
+                raise click.UsageError(
+                    "ACP mode cannot be combined with subcommands. Use 'nsbot-sidecar --acp'."
+                )
+            resolved_ns_bot_home = ns_bot_home_value or str(nsbot_home())
+            return _run_acp_mode(resolved_ns_bot_home)
         command.main(args=effective_argv, prog_name="nsbot-sidecar", standalone_mode=False)
         return 0
     except click.ClickException as exc:

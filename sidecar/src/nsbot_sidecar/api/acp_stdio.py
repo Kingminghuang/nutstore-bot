@@ -369,14 +369,14 @@ def _config_from_env() -> ApiServerConfig:
     )
 
 
-async def _run_stdio() -> None:
-    app = create_app(_config_from_env())
+async def run_stdio(config: ApiServerConfig) -> None:
+    app = create_app(config)
     _acp_debug_log("starting ACP SDK stdio session")
     await run_agent(_AcpSdkAgent(app.state))
 
 
-def main() -> int:
-    asyncio.run(_run_stdio())
+def main(config: ApiServerConfig | None = None) -> int:
+    asyncio.run(run_stdio(config or _config_from_env()))
     return 0
 
 

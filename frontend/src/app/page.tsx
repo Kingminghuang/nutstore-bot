@@ -120,6 +120,19 @@ function mergeSessionWithLocalHistory(
   }
 }
 
+function toServerSession(session: Session): ServerSession {
+  const {
+    timelineEvents: _timelineEvents,
+    hasMoreHistory: _hasMoreHistory,
+    nextBeforeSequence: _nextBeforeSequence,
+    isLoadingHistory: _isLoadingHistory,
+    timelineHydrationStatus: _timelineHydrationStatus,
+    ...serverSession
+  } = session
+
+  return serverSession
+}
+
 function updateSessionInWorkspace(
   prev: Record<string, Session[]>,
   workspaceId: string,
@@ -315,21 +328,27 @@ export default function Home() {
       getSessionTimeline(sessionId, { limit: TIMELINE_PAGE_SIZE }),
       listWorkspaceSessions(workspaceId) as Promise<{ sessions: ServerSession[] }>,
     ])
-    const refreshedSession = sessionsPayload.sessions.find((session) => session.id === sessionId)
-    if (!refreshedSession) {
-      throw new Error("session not found after prompt")
-    }
 
+    let nextHydratedSession: Session | null = null
     setSessionsByWorkspace((prev) => {
       const existing = (prev[workspaceId] ?? []).find((session) => session.id === sessionId)
-      const nextSession = mergeSessionWithLocalHistory(refreshedSession, existing, refreshedTimeline.events)
+      const refreshedSession = sessionsPayload.sessions.find((session) => session.id === sessionId)
+      const sourceSession = refreshedSession ?? (existing ? toServerSession(existing) : null)
+      if (!sourceSession) {
+        return prev
+      }
+      const nextSession = mergeSessionWithLocalHistory(sourceSession, existing, refreshedTimeline.events)
+      nextHydratedSession = nextSession
       return {
         ...prev,
         [workspaceId]: upsertSession(prev[workspaceId] ?? [], nextSession),
       }
     })
+    if (!nextHydratedSession) {
+      throw new Error("session not found after prompt")
+    }
     setLiveTurnBySession((prev) => updateLiveTurnBySession(prev, sessionId, () => null))
-    return refreshedSession
+    return nextHydratedSession
   }, [])
 
   useEffect(() => {
@@ -900,11 +919,6 @@ export default function Home() {
             mcpServers: [],
           })
           targetSessionId = createdSession.sessionId
-          await acpClient.request("session/set_config_option", {
-            sessionId: targetSessionId,
-            configId: "model",
-            value: selectedModel.modelId,
-          })
           const localSession = createLocalSession(
             targetSessionId,
             activeWorkspaceId,
@@ -938,6 +952,14 @@ export default function Home() {
           }))
         )
         setPendingSessionId(targetSessionId)
+
+        if (isDraftMode) {
+          await acpClient.request("session/set_config_option", {
+            sessionId: targetSessionId,
+            configId: "model",
+            value: selectedModel.modelId,
+          })
+        }
 
         await acpClient.request("session/prompt", {
           sessionId: targetSessionId,

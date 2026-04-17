@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from typing import Any
@@ -12,6 +14,7 @@ import subprocess
 from nsbot_sidecar.api.acp_session import AcpJsonRpcSession
 from nsbot_sidecar.api.api_server import ApiServerConfig, create_app
 from nsbot_sidecar.infrastructure.secret_store import ProviderSecretPayload
+from nsbot_sidecar.runtime.runtime_service import RuntimeCancelledError
 
 
 class _InMemoryTransport:
@@ -56,6 +59,29 @@ class _FakeEngine:
         if event_callback is not None:
             event_callback({"type": "delta", "payload": {"text": "chunk"}})
         return {"final_answer": f"ok: {user_input}"}
+
+
+class _BlockingCancellableEngine:
+    def __init__(self) -> None:
+        self.started = threading.Event()
+
+    def process(
+        self,
+        turn_id,
+        user_input,
+        auth_context,
+        metadata,
+        event_callback=None,
+        is_cancelled=None,
+        permission_requester=None,
+    ):
+        del turn_id, user_input, auth_context, metadata, permission_requester
+        self.started.set()
+        if event_callback is not None:
+            event_callback({"type": "delta", "payload": {"text": "working"}})
+        while is_cancelled is not None and not is_cancelled():
+            time.sleep(0.01)
+        raise RuntimeCancelledError()
 
 
 class AcpSessionTests(unittest.TestCase):
@@ -419,6 +445,54 @@ class AcpSessionTests(unittest.TestCase):
             asyncio.run(_invoke_prompt())
         response = _response_for(transport.outgoing, 3)
         self.assertEqual(response["result"]["stopReason"], "end_turn")
+
+    def test_prompt_can_be_cancelled(self) -> None:
+        session = self.app_state.repositories.sessions.create(
+            workspace_id=self.workspace.id,
+            active_connection_id=self.provider.connection.id,
+            active_model_id="gpt-5.4",
+        )
+        transport = _InMemoryTransport([])
+        engine = _BlockingCancellableEngine()
+
+        with patch(
+            "nsbot_sidecar.api.acp_session.create_runtime_engine",
+            return_value=engine,
+        ):
+
+            async def _invoke_prompt_then_cancel() -> None:
+                session_runner = AcpJsonRpcSession(transport, self.app_state)
+                prompt_task = asyncio.create_task(
+                    session_runner._handle_prompt_request(
+                        6,
+                        {
+                            "sessionId": session.id,
+                            "prompt": [{"type": "text", "text": "cancel me"}],
+                        },
+                    )
+                )
+                await asyncio.to_thread(engine.started.wait, 1)
+                await session_runner._handle_notification(
+                    {
+                        "jsonrpc": "2.0",
+                        "method": "session/cancel",
+                        "params": {"sessionId": session.id},
+                    }
+                )
+                await prompt_task
+
+            asyncio.run(_invoke_prompt_then_cancel())
+
+        response = _response_for(transport.outgoing, 6)
+        self.assertEqual(response["result"]["stopReason"], "cancelled")
+        self.assertTrue(
+            any(
+                payload.get("method") == "session/update"
+                and payload.get("params", {}).get("update", {}).get("sessionUpdate")
+                == "user_message_chunk"
+                for payload in transport.outgoing
+            )
+        )
 
     def test_edit_and_prompt_rejects_non_latest_user_event(self) -> None:
         session = self.app_state.repositories.sessions.create(

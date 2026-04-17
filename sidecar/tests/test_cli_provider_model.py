@@ -258,6 +258,61 @@ class CliProviderModelTests(unittest.TestCase):
         self.assertEqual(payload["runtime"]["fdExecutable"], "/opt/tools/fd")
         self.assertEqual(payload["runtime"]["rgExecutable"], "/opt/tools/rg")
 
+    def test_root_acp_mode_routes_to_acp_stdio_bootstrap(self) -> None:
+        with mock.patch("nsbot_sidecar.api.acp_stdio.main", return_value=17) as acp_main:
+            code, stdout, stderr = _run_cli([
+                "--ns-bot-home",
+                self.temp_dir,
+                "--acp",
+            ])
+
+        self.assertEqual(code, 17)
+        self.assertEqual(stdout, "")
+        self.assertEqual(stderr, "")
+        acp_main.assert_called_once()
+        config = acp_main.call_args.kwargs["config"]
+        self.assertEqual(config.ns_bot_home, self.temp_dir)
+
+    def test_root_acp_mode_rejects_subcommands(self) -> None:
+        with mock.patch("nsbot_sidecar.api.acp_stdio.main") as acp_main:
+            code, stdout, stderr = _run_cli([
+                "--ns-bot-home",
+                self.temp_dir,
+                "--acp",
+                "run",
+                "hello",
+            ])
+
+        self.assertEqual(code, 2)
+        self.assertEqual(stdout, "")
+        self.assertIn("ACP mode cannot be combined with subcommands", stderr)
+        acp_main.assert_not_called()
+
+    def test_run_diagnose_does_not_route_to_acp_stdio_bootstrap(self) -> None:
+        with mock.patch("nsbot_sidecar.api.acp_stdio.main") as acp_main:
+            code, stdout, _stderr = _run_cli(
+                [
+                    "--ns-bot-home",
+                    self.temp_dir,
+                    "run",
+                    "diagnose direct",
+                    "--diagnose",
+                    "--provider",
+                    "custom",
+                    "--base-url",
+                    "https://llm.example.com/v1",
+                    "--api-key",
+                    "sk-direct",
+                    "--model",
+                    "demo-direct-model",
+                ]
+            )
+
+        self.assertEqual(code, 0)
+        payload = json.loads(stdout)
+        self.assertEqual(payload["resolved"]["mode"], "direct")
+        acp_main.assert_not_called()
+
     def test_init_creates_ns_bot_home_and_copies_resources_from_cache(self) -> None:
         runtime_root = Path(tempfile.mkdtemp(prefix="sidecar-runtime-"))
         try:

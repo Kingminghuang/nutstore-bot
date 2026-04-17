@@ -1,5 +1,18 @@
 ## CLI workspace/session quick start
 
+### ACP stdio mode
+
+Use the root-level `--acp` flag when the CLI should run as an ACP stdio server:
+
+```bash
+uv run python -m nsbot_sidecar.cli --acp
+```
+
+Notes:
+
+- `--acp` is a top-level mode switch and should not be combined with subcommands.
+- `run` remains the one-shot execution path; `--acp` keeps the process alive for ACP JSON-RPC over stdio.
+
 ### Workspace commands
 
 ```bash

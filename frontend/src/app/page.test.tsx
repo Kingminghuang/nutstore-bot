@@ -9,6 +9,8 @@ const sidecarApiMocks = vi.hoisted(() => {
     | ((request: { id: number; method: string; params?: Record<string, unknown> }) => Promise<unknown>)
     | null = null
   let pendingPromptResolves: Array<(value: unknown) => void> = []
+  let holdSetConfigOption = false
+  let pendingSetConfigOptionResolves: Array<(value: unknown) => void> = []
 
   return {
     acpRequest: vi.fn((method: string) => {
@@ -52,6 +54,11 @@ const sidecarApiMocks = vi.hoisted(() => {
         return Promise.resolve({ sessionId: "sess_1" })
       }
       if (method === "session/set_config_option") {
+        if (holdSetConfigOption) {
+          return new Promise((resolve) => {
+            pendingSetConfigOptionResolves.push(resolve)
+          })
+        }
         return Promise.resolve({ configOptions: [] })
       }
       return Promise.resolve({})
@@ -75,10 +82,21 @@ const sidecarApiMocks = vi.hoisted(() => {
     resolvePrompt(result: unknown = { stopReason: "end_turn" }) {
       pendingPromptResolves.shift()?.(result)
     },
+    holdSetConfigOption() {
+      holdSetConfigOption = true
+    },
+    resolveSetConfigOption(result: unknown = { configOptions: [] }) {
+      pendingSetConfigOptionResolves.shift()?.(result)
+      if (pendingSetConfigOptionResolves.length === 0) {
+        holdSetConfigOption = false
+      }
+    },
     reset() {
       notificationHandler = null
       serverRequestHandler = null
       pendingPromptResolves = []
+      holdSetConfigOption = false
+      pendingSetConfigOptionResolves = []
     },
     getSessionTimeline: vi.fn(),
     loadSession: vi.fn(async () => ({ configOptions: [] })),
@@ -468,6 +486,107 @@ describe("Home page ACP bootstrap", () => {
         mcpServers: [],
       })
     })
+  })
+
+  it("shows the first draft-mode user message and sidebar session before config resolves", async () => {
+    sidecarApiMocks.holdSetConfigOption()
+    sidecarApiMocks.getSessionTimeline.mockResolvedValue({
+      events: [],
+      pagination: { hasMore: false, nextBeforeSequence: null },
+    })
+
+    render(<Home />)
+    await screen.findAllByText("Project 1")
+
+    fireEvent.click(screen.getByRole("button", { name: "New session" }))
+    const newSessionLabelsBeforeSend = screen.getAllByText("New session").length
+
+    const input = await screen.findByPlaceholderText("Ask for follow-up changes")
+    fireEvent.change(input, { target: { value: "Open a fresh session" } })
+    fireEvent.click(screen.getByLabelText("Send"))
+
+    await waitFor(() => {
+      expect(sidecarApiMocks.acpRequest).toHaveBeenCalledWith("session/new", {
+        cwd: "/tmp/project",
+        mcpServers: [],
+      })
+    })
+
+    expect(screen.getByText("Open a fresh session")).toBeInTheDocument()
+    expect(screen.getAllByText("New session").length).toBe(newSessionLabelsBeforeSend + 1)
+    expect(sidecarApiMocks.acpRequest).not.toHaveBeenCalledWith(
+      "session/prompt",
+      expect.anything()
+    )
+
+    await act(async () => {
+      sidecarApiMocks.resolveSetConfigOption()
+    })
+
+    await waitFor(() => {
+      expect(sidecarApiMocks.acpRequest).toHaveBeenCalledWith(
+        "session/prompt",
+        expect.objectContaining({
+          sessionId: "sess_1",
+        })
+      )
+    })
+  })
+
+  it("keeps the locally created session visible when hydration lags behind session listing", async () => {
+    const sidecarApi = await import("@/shared/api/sidecar")
+
+    vi.mocked(sidecarApi.listWorkspaceSessions)
+      .mockResolvedValueOnce({ sessions: [baseSession] })
+      .mockResolvedValueOnce({ sessions: [] })
+    sidecarApiMocks.getSessionTimeline
+      .mockResolvedValueOnce({ events: [], pagination: { hasMore: false, nextBeforeSequence: null } })
+      .mockResolvedValueOnce({
+        events: [
+          {
+            id: "entry_user_1",
+            eventId: "evt_user_1",
+            sessionId: "sess_1",
+            turnId: null,
+            sequenceNo: 1,
+            entryKind: "user_input",
+            displayRole: "user",
+            stepId: null,
+            stepNumber: null,
+            contentText: "Open a fresh session",
+            createdAt: "2026-01-01T00:00:01Z",
+          },
+        ],
+        pagination: { hasMore: false, nextBeforeSequence: null },
+      })
+
+    render(<Home />)
+    await screen.findAllByText("Project 1")
+
+    fireEvent.click(screen.getByRole("button", { name: "New session" }))
+
+    const input = await screen.findByPlaceholderText("Ask for follow-up changes")
+    fireEvent.change(input, { target: { value: "Open a fresh session" } })
+    fireEvent.click(screen.getByLabelText("Send"))
+
+    await waitFor(() => {
+      expect(sidecarApiMocks.acpRequest).toHaveBeenCalledWith(
+        "session/prompt",
+        expect.objectContaining({ sessionId: "sess_1" })
+      )
+    })
+
+    expect(screen.getByText("Open a fresh session")).toBeInTheDocument()
+
+    await act(async () => {
+      sidecarApiMocks.resolvePrompt()
+    })
+
+    await waitFor(() => {
+      expect(screen.queryByText("session not found after prompt")).not.toBeInTheDocument()
+    })
+    expect(screen.getByText("Open a fresh session")).toBeInTheDocument()
+    expect(screen.getAllByText("New session").length).toBeGreaterThan(1)
   })
 
   it("merges tool_call_update payload details into ACP tool call card", async () => {
