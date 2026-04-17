@@ -43,10 +43,10 @@ uv run python -m nsbot_sidecar.cli workspaces delete --workspace-id ws_xxx
 # List sessions by workspace
 uv run python -m nsbot_sidecar.cli sessions list --workspace-id ws_xxx
 
-# Create session (optionally pin connection/model)
+# Create session (optionally pin provider/model)
 uv run python -m nsbot_sidecar.cli sessions create \
   --workspace-id ws_xxx \
-  --connection-id prov_xxx \
+  --provider-id prov_xxx \
   --model-id openai/gpt-5.4
 
 # Rename session

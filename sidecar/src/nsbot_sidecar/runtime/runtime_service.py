@@ -130,40 +130,27 @@ class AgentRuntimeService:
         base_url = str(self.config.base_url or "").strip()
         api_key = str(self.config.api_key or "").strip()
         model = str(self.config.model or self.config.model_id).strip()
-        use_direct_model = self.model_factory is None or any(
-            [
-                self.config.provider,
-                self.config.base_url,
-                self.config.api_key,
-                self.config.model,
-                self.config.direct_reasoning_effort,
-            ]
-        )
-        direct_model_config = None
-        if use_direct_model:
-            if provider not in BUILTIN_PROVIDERS and base_url == "":
-                raise RuntimeProcessError(
-                    "invalid_base_url", "direct base url is missing"
-                )
-            if api_key == "":
-                raise RuntimeProcessError(
-                    "missing_api_key", "direct api key is missing"
-                )
-            if model == "":
-                raise RuntimeProcessError(
-                    "missing_model_id", "direct model id is missing"
-                )
-
-            direct_model_config = DirectModelConfig(
-                provider=str(self.config.provider or "custom"),
-                base_url=base_url,
-                api_key=api_key,
-                model_id=model,
-                reasoning_effort=self.config.direct_reasoning_effort,
-                timeout_seconds=max(
-                    1.0, float(self.config.request_timeout_ms) / 1000.0
-                ),
+        if provider not in BUILTIN_PROVIDERS and base_url == "":
+            raise RuntimeProcessError(
+                "invalid_base_url", "configured base url is missing"
             )
+        if api_key == "":
+            raise RuntimeProcessError(
+                "missing_api_key", "configured api key is missing"
+            )
+        if model == "":
+            raise RuntimeProcessError(
+                "missing_model_id", "configured model id is missing"
+            )
+
+        resolved_model_config = DirectModelConfig(
+            provider=str(self.config.provider or "custom"),
+            base_url=base_url,
+            api_key=api_key,
+            model_id=model,
+            reasoning_effort=self.config.direct_reasoning_effort,
+            timeout_seconds=max(1.0, float(self.config.request_timeout_ms) / 1000.0),
+        )
         consolidation_provider = None
 
         if self.consolidator_factory:
@@ -215,9 +202,7 @@ class AgentRuntimeService:
             raise RuntimeProcessError("context_build_failed", str(exc)) from exc
 
         try:
-            model = self._create_model(
-                direct_model_config if use_direct_model else None
-            )
+            model = self._create_model(resolved_model_config)
         except DirectModelError as exc:
             raise RuntimeProcessError(exc.code, exc.message) from exc
         except Exception as exc:
@@ -510,11 +495,9 @@ class AgentRuntimeService:
             return []
         return [line for line in raw.splitlines() if line.strip() != ""]
 
-    def _create_model(self, direct_model_config: DirectModelConfig | None):
+    def _create_model(self, model_config: DirectModelConfig):
         if self.model_factory is None:
-            if direct_model_config is None:
-                return None
-            return DirectModel(direct_model_config)
+            return DirectModel(model_config)
 
         signature = inspect.signature(self.model_factory)
         accepts_argument = any(
@@ -530,7 +513,7 @@ class AgentRuntimeService:
             for parameter in signature.parameters.values()
         )
         if accepts_argument:
-            return self.model_factory(direct_model_config)
+            return self.model_factory(model_config)
         return self.model_factory()
 
 

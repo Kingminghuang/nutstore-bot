@@ -236,7 +236,7 @@ class AcpJsonRpcSession:
             if method == "_nsbot/provider/list":
                 await self._send_result(
                     req_id,
-                    self.state.provider_service.list_connections_payload(),
+                    self.state.provider_service.list_providers_payload(),
                 )
                 return
             if method == "_nsbot/provider/model_options":
@@ -540,12 +540,12 @@ class AcpJsonRpcSession:
         if not isinstance(selection, dict):
             raise RuntimeError("No default provider/model available")
 
-        connection_id = str(selection.get("connectionId") or "")
+        provider_id = str(selection.get("providerId") or "")
         model_id = str(selection.get("modelId") or "")
-        if not connection_id or not model_id:
+        if not provider_id or not model_id:
             raise RuntimeError("No default provider/model available")
 
-        return {"connectionId": connection_id, "modelId": model_id}
+        return {"providerId": provider_id, "modelId": model_id}
 
     def _config_options_for_session(self, session_id: str) -> list[dict[str, Any]]:
         session = self.state.repositories.sessions.get_by_id(session_id)
@@ -556,8 +556,8 @@ class AcpJsonRpcSession:
         reasoning_values: list[str] = []
         if isinstance(groups, list):
             for group in groups:
-                if str(group.get("connectionId") or "") != str(
-                    session.active_connection_id or ""
+                if str(group.get("providerId") or "") != str(
+                    session.active_provider_id or ""
                 ):
                     continue
                 models = group.get("models")
@@ -641,7 +641,7 @@ class AcpJsonRpcSession:
         selection = self._default_selection()
         session = self.state.repositories.sessions.create(
             workspace_id=workspace.id,
-            active_connection_id=selection["connectionId"],
+            active_provider_id=selection["providerId"],
             active_model_id=selection["modelId"],
         )
 
@@ -1205,7 +1205,7 @@ class AcpJsonRpcSession:
                 )
                 self.state.session_service.timeline_service.refresh_session_summary(
                     session_id,
-                    active_connection_id=session.active_connection_id,
+                    active_provider_id=session.active_provider_id,
                     active_model_id=session.active_model_id,
                 )
 
@@ -1335,7 +1335,7 @@ class AcpJsonRpcSession:
 
             self.state.session_service.timeline_service.refresh_session_summary(
                 session_id,
-                active_connection_id=session.active_connection_id,
+                active_provider_id=session.active_provider_id,
                 active_model_id=session.active_model_id,
             )
 
@@ -1361,14 +1361,14 @@ class AcpJsonRpcSession:
             )
 
             bundle = self.state.repositories.providers.get_bundle_by_id_or_raise(
-                str(session.active_connection_id or "")
+                str(session.active_provider_id or "")
             )
             secret_payload = self.state.secret_store.load_provider_secret(
-                bundle.connection.secret_ref
+                bundle.provider.secret_ref
             )
             api_key = secret_payload.api_key if secret_payload is not None else None
             if not api_key:
-                raise RuntimeError("Provider connection is missing an API key")
+                raise RuntimeError("Provider is missing an API key")
 
             thought_level = self._session_thought_levels.get(session_id)
             if not thought_level and isinstance(meta, dict):
@@ -1380,8 +1380,8 @@ class AcpJsonRpcSession:
             config = RuntimeWorkerConfig(
                 model_id=model_id,
                 allow_console_output=False,
-                provider=bundle.connection.runtime_provider,
-                base_url=bundle.connection.base_url,
+                provider=bundle.provider.runtime_provider,
+                base_url=bundle.provider.base_url,
                 api_key=api_key,
                 model=model_id,
                 direct_reasoning_effort=thought_level,
@@ -1546,7 +1546,7 @@ class AcpJsonRpcSession:
             if final_answer:
                 self.state.session_service.timeline_service.refresh_session_summary(
                     session_id,
-                    active_connection_id=session.active_connection_id,
+                    active_provider_id=session.active_provider_id,
                     active_model_id=session.active_model_id,
                     trigger_title_generation=True,
                 )

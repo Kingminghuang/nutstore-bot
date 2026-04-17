@@ -33,7 +33,7 @@ class ProviderServiceModelOptionsTests(unittest.TestCase):
         )
 
         bundle = self.repositories.providers.save_bundle(
-            connection_data={
+            provider_data={
                 "kind": "builtin",
                 "runtime_provider": "openai",
                 "catalog_provider_id": "openai",
@@ -51,9 +51,9 @@ class ProviderServiceModelOptionsTests(unittest.TestCase):
         payload = self.service.model_options_payload()
 
         self.assertEqual(len(payload["groups"]), 1)
-        self.assertEqual(payload["groups"][0]["connectionId"], bundle.connection.id)
+        self.assertEqual(payload["groups"][0]["providerId"], bundle.provider.id)
         self.assertEqual(payload["groups"][0]["models"][0]["modelId"], openai_model_id)
         self.assertEqual(
             payload["defaultSelection"],
-            {"connectionId": bundle.connection.id, "modelId": openai_model_id},
+            {"providerId": bundle.provider.id, "modelId": openai_model_id},
         )

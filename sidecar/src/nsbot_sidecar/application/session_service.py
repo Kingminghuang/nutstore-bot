@@ -187,8 +187,8 @@ class SessionService:
         self, workspace_id: str, payload: dict[str, Any]
     ) -> dict[str, Any]:
         self._get_workspace_or_404(workspace_id)
-        connection_id = _normalize_optional_string(
-            payload.get("connectionId", payload.get("connection_id"))
+        provider_id = _normalize_optional_string(
+            payload.get("providerId", payload.get("provider_id"))
         )
         model_id = _normalize_optional_string(
             payload.get("modelId", payload.get("model_id"))
@@ -196,7 +196,7 @@ class SessionService:
 
         session = self.sessions.create(
             workspace_id=workspace_id,
-            active_connection_id=connection_id,
+            active_provider_id=provider_id,
             active_model_id=model_id,
         )
         return serialize_session(session)
@@ -403,7 +403,7 @@ class SessionService:
         session_id: str,
         text: str,
         *,
-        active_connection_id: str | None = None,
+        active_provider_id: str | None = None,
         active_model_id: str | None = None,
     ) -> None:
         session = self._get_session_or_404(session_id)
@@ -415,7 +415,7 @@ class SessionService:
             session_id,
             title=heuristic_title,
             title_source="heuristic",
-            active_connection_id=active_connection_id,
+            active_provider_id=active_provider_id,
             active_model_id=active_model_id,
         )
 
@@ -493,7 +493,7 @@ def serialize_session(session) -> dict[str, Any]:
         "lastMessageAt": session.last_message_at,
         "messageCount": session.message_count,
         "lastMessagePreview": session.last_message_preview,
-        "activeConnectionId": session.active_connection_id,
+        "activeProviderId": session.active_provider_id,
         "activeModelId": session.active_model_id,
     }
 

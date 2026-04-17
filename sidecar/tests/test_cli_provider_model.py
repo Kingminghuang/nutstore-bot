@@ -36,7 +36,7 @@ class CliProviderModelTests(unittest.TestCase):
 
     def _create_builtin_openai(self) -> str:
         bundle = self.repositories.providers.save_bundle(
-            connection_data={
+            provider_data={
                 "kind": "builtin",
                 "runtime_provider": "openai",
                 "catalog_provider_id": "openai",
@@ -50,7 +50,7 @@ class CliProviderModelTests(unittest.TestCase):
             },
             models=[],
         )
-        return bundle.connection.id
+        return bundle.provider.id
 
     def test_providers_use_auto_selects_first_model(self) -> None:
         connection_id = self._create_builtin_openai()
@@ -70,13 +70,13 @@ class CliProviderModelTests(unittest.TestCase):
         )
         self.assertEqual(code, 0)
         payload = json.loads(stdout)
-        self.assertEqual(payload["connectionId"], connection_id)
+        self.assertEqual(payload["providerId"], connection_id)
         self.assertEqual(payload["modelId"], expected_model_id)
 
         refreshed = self.repositories.providers.get_bundle_by_id_or_raise(connection_id)
-        self.assertEqual(refreshed.connection.preferred_model_id, expected_model_id)
+        self.assertEqual(refreshed.provider.preferred_model_id, expected_model_id)
 
-    def test_providers_delete_requires_connection_id(self) -> None:
+    def test_providers_delete_requires_provider_id(self) -> None:
         connection_id = self._create_builtin_openai()
         code, stdout, _stderr = _run_cli(
             [
@@ -84,13 +84,13 @@ class CliProviderModelTests(unittest.TestCase):
                 self.temp_dir,
                 "providers",
                 "delete",
-                "--connection-id",
+                "--provider-id",
                 connection_id,
             ]
         )
         self.assertEqual(code, 0)
         payload = json.loads(stdout)
-        self.assertEqual(payload["deletedConnectionId"], connection_id)
+        self.assertEqual(payload["deletedProviderId"], connection_id)
         self.assertIsNone(self.repositories.providers.get_bundle_by_id(connection_id))
 
     def test_models_remove_rejected_for_builtin_connection(self) -> None:
@@ -101,7 +101,7 @@ class CliProviderModelTests(unittest.TestCase):
                 self.temp_dir,
                 "models",
                 "remove",
-                "--connection-id",
+                "--provider-id",
                 connection_id,
                 "--model",
                 "gpt-5.4",
@@ -112,7 +112,7 @@ class CliProviderModelTests(unittest.TestCase):
 
     def test_models_remove_custom_deletes_model(self) -> None:
         bundle = self.repositories.providers.save_bundle(
-            connection_data={
+            provider_data={
                 "kind": "custom",
                 "runtime_provider": "custom",
                 "catalog_provider_id": None,
@@ -149,8 +149,8 @@ class CliProviderModelTests(unittest.TestCase):
                 self.temp_dir,
                 "models",
                 "remove",
-                "--connection-id",
-                bundle.connection.id,
+                "--provider-id",
+                bundle.provider.id,
                 "--model",
                 "model-a",
             ]
@@ -160,13 +160,160 @@ class CliProviderModelTests(unittest.TestCase):
         self.assertEqual(payload["action"], "removed")
 
         refreshed = self.repositories.providers.get_bundle_by_id_or_raise(
-            bundle.connection.id
+            bundle.provider.id
         )
         self.assertEqual(
             [model.model_id for model in refreshed.models if model.source == "custom"],
             ["model-b"],
         )
-        self.assertEqual(refreshed.connection.preferred_model_id, "model-b")
+        self.assertEqual(refreshed.provider.preferred_model_id, "model-b")
+
+    def test_models_create_get_list_set_default_with_db_path(self) -> None:
+        db_path = str(Path(self.temp_dir) / "models.db")
+
+        code, stdout, _stderr = _run_cli(
+            [
+                "--ns-bot-home",
+                self.temp_dir,
+                "models",
+                "create",
+                "--name",
+                "demo",
+                "--base-url",
+                "https://example.com/v1/",
+                "--model-id",
+                "gpt-5.4",
+                "--api-key",
+                "sk-test-1234567890",
+                "--db-path",
+                db_path,
+                "--json",
+            ]
+        )
+        self.assertEqual(code, 0)
+        created = json.loads(stdout)
+        model_record_id = str(created["id"])
+        self.assertTrue(model_record_id.startswith("model_"))
+        self.assertEqual(created["name"], "demo")
+        self.assertEqual(created["modelId"], "gpt-5.4")
+
+        code, stdout, _stderr = _run_cli(
+            [
+                "--ns-bot-home",
+                self.temp_dir,
+                "models",
+                "get",
+                model_record_id,
+                "--db-path",
+                db_path,
+                "--json",
+            ]
+        )
+        self.assertEqual(code, 0)
+        got_by_id = json.loads(stdout)
+        self.assertEqual(got_by_id["id"], model_record_id)
+        self.assertEqual(got_by_id["name"], "demo")
+
+        code, stdout, _stderr = _run_cli(
+            [
+                "--ns-bot-home",
+                self.temp_dir,
+                "models",
+                "get",
+                "demo",
+                "--db-path",
+                db_path,
+                "--json",
+            ]
+        )
+        self.assertEqual(code, 0)
+        got_by_name = json.loads(stdout)
+        self.assertEqual(got_by_name["id"], model_record_id)
+
+        code, stdout, _stderr = _run_cli(
+            [
+                "--ns-bot-home",
+                self.temp_dir,
+                "models",
+                "list",
+                "--db-path",
+                db_path,
+                "--json",
+            ]
+        )
+        self.assertEqual(code, 0)
+        listed = json.loads(stdout)
+        names = {str(item.get("name") or "") for item in listed.get("models", [])}
+        self.assertIn("demo", names)
+
+        code, stdout, _stderr = _run_cli(
+            [
+                "--ns-bot-home",
+                self.temp_dir,
+                "models",
+                "set-default",
+                model_record_id,
+                "--db-path",
+                db_path,
+                "--json",
+            ]
+        )
+        self.assertEqual(code, 0)
+        set_default_payload = json.loads(stdout)
+        self.assertEqual(set_default_payload["action"], "set-default")
+
+        code, stdout, _stderr = _run_cli(
+            [
+                "--ns-bot-home",
+                self.temp_dir,
+                "models",
+                "status",
+                "--db-path",
+                db_path,
+                "--json",
+            ]
+        )
+        self.assertEqual(code, 0)
+        status_payload = json.loads(stdout)
+        self.assertEqual(
+            status_payload["defaultSelection"]["modelId"],
+            "gpt-5.4",
+        )
+
+    def test_models_get_not_found_returns_exit_code_3(self) -> None:
+        db_path = str(Path(self.temp_dir) / "models-not-found.db")
+        code, _stdout, stderr = _run_cli(
+            [
+                "--ns-bot-home",
+                self.temp_dir,
+                "models",
+                "get",
+                "not-exist",
+                "--db-path",
+                db_path,
+                "--json",
+            ]
+        )
+        self.assertEqual(code, 3)
+        self.assertIn("not found", stderr.lower())
+
+    def test_models_disable_without_provider_uses_prefixed_model_ref(self) -> None:
+        connection_id = self._create_builtin_openai()
+        code, stdout, _stderr = _run_cli(
+            [
+                "--ns-bot-home",
+                self.temp_dir,
+                "models",
+                "disable",
+                "--model",
+                "openai/gpt-5.4",
+                "--json",
+            ]
+        )
+        self.assertEqual(code, 0)
+        payload = json.loads(stdout)
+        self.assertEqual(payload["providerId"], connection_id)
+        self.assertEqual(payload["modelId"], "gpt-5.4")
 
     def test_run_diagnose_uses_default_selection(self) -> None:
         connection_id = self._create_builtin_openai()
@@ -196,40 +343,63 @@ class CliProviderModelTests(unittest.TestCase):
         )
         self.assertEqual(code, 0)
         payload = json.loads(stdout)
-        self.assertEqual(payload["resolved"]["mode"], "default-selection")
-        self.assertEqual(payload["resolved"]["connectionId"], connection_id)
+        self.assertEqual(payload["resolved"]["mode"], "default-provider")
+        self.assertEqual(payload["resolved"]["providerId"], connection_id)
         self.assertEqual(payload["resolved"]["modelId"], expected_model_id)
         self.assertEqual(payload["runtime"]["provider"], "openai")
 
-    def test_run_diagnose_direct_mode(self) -> None:
+    def test_run_diagnose_uses_explicit_provider_selection(self) -> None:
+        connection_id = self._create_builtin_openai()
+        openai_entry = next(
+            item for item in list_providers() if str(item.get("id") or "") == "openai"
+        )
+        selected_model_id = str(openai_entry["models"][0]["id"])
+
         code, stdout, _stderr = _run_cli(
             [
                 "--ns-bot-home",
                 self.temp_dir,
                 "run",
-                "diagnose direct",
+                "diagnose configured",
                 "--diagnose",
-                "--provider",
-                "custom",
-                "--base-url",
-                "https://llm.example.com/v1",
-                "--api-key",
-                "sk-direct",
-                "--model",
-                "demo-direct-model",
+                "--provider-id",
+                connection_id,
+                "--selected-model-id",
+                selected_model_id,
             ]
         )
         self.assertEqual(code, 0)
         payload = json.loads(stdout)
-        self.assertEqual(payload["resolved"]["mode"], "direct")
-        self.assertEqual(payload["resolved"]["runtimeProvider"], "custom")
-        self.assertEqual(payload["resolved"]["modelId"], "demo-direct-model")
-        self.assertEqual(payload["runtime"]["hasApiKey"], True)
+        self.assertEqual(payload["resolved"]["mode"], "provider")
+        self.assertEqual(payload["resolved"]["providerId"], connection_id)
+        self.assertEqual(payload["resolved"]["modelId"], selected_model_id)
+        self.assertEqual(payload["runtime"]["provider"], "openai")
+
+    def test_run_rejects_removed_direct_runtime_flags(self) -> None:
+        code, stdout, stderr = _run_cli(
+            [
+                "--ns-bot-home",
+                self.temp_dir,
+                "run",
+                "diagnose configured",
+                "--diagnose",
+                "--api-key",
+                "sk-direct",
+            ]
+        )
+
+        self.assertEqual(code, 2)
+        self.assertEqual(stdout, "")
+        self.assertIn("No such option: --api-key", stderr)
 
     def test_run_diagnose_uses_fd_rg_from_env_when_flags_absent(self) -> None:
         with mock.patch.dict(
             "os.environ",
             {
+                "PROVIDER": "anthropic",
+                "BASE_URL": "https://llm.example.com/v1",
+                "API_KEY": "sk-direct",
+                "MODEL": "demo-direct-model",
                 "NSBOT_FD_EXECUTABLE": "/opt/tools/fd",
                 "NSBOT_RG_EXECUTABLE": "/opt/tools/rg",
             },
@@ -240,16 +410,45 @@ class CliProviderModelTests(unittest.TestCase):
                     "--ns-bot-home",
                     self.temp_dir,
                     "run",
-                    "diagnose direct",
+                    "diagnose configured",
                     "--diagnose",
-                    "--provider",
-                    "custom",
-                    "--base-url",
-                    "https://llm.example.com/v1",
-                    "--api-key",
-                    "sk-direct",
-                    "--model",
-                    "demo-direct-model",
+                ]
+            )
+
+        self.assertEqual(code, 1)
+        self.assertEqual(stdout, "")
+        self.assertIn("No default provider/model available", _stderr)
+
+    def test_run_diagnose_ignores_removed_direct_runtime_env_vars(self) -> None:
+        connection_id = self._create_builtin_openai()
+        _run_cli(
+            [
+                "--ns-bot-home",
+                self.temp_dir,
+                "providers",
+                "use",
+                "openai",
+            ]
+        )
+
+        with mock.patch.dict(
+            "os.environ",
+            {
+                "BASE_URL": "https://llm.example.com/v1",
+                "API_KEY": "sk-direct",
+                "MODEL": "demo-direct-model",
+                "NSBOT_FD_EXECUTABLE": "/opt/tools/fd",
+                "NSBOT_RG_EXECUTABLE": "/opt/tools/rg",
+            },
+            clear=False,
+        ):
+            code, stdout, _stderr = _run_cli(
+                [
+                    "--ns-bot-home",
+                    self.temp_dir,
+                    "run",
+                    "diagnose configured",
+                    "--diagnose",
                 ]
             )
 
@@ -257,6 +456,9 @@ class CliProviderModelTests(unittest.TestCase):
         payload = json.loads(stdout)
         self.assertEqual(payload["runtime"]["fdExecutable"], "/opt/tools/fd")
         self.assertEqual(payload["runtime"]["rgExecutable"], "/opt/tools/rg")
+        self.assertEqual(payload["resolved"]["mode"], "default-provider")
+        self.assertEqual(payload["resolved"]["providerId"], connection_id)
+        self.assertEqual(payload["runtime"]["provider"], "openai")
 
     def test_root_acp_mode_routes_to_acp_stdio_bootstrap(self) -> None:
         with mock.patch("nsbot_sidecar.api.acp_stdio.main", return_value=17) as acp_main:
@@ -289,28 +491,23 @@ class CliProviderModelTests(unittest.TestCase):
         acp_main.assert_not_called()
 
     def test_run_diagnose_does_not_route_to_acp_stdio_bootstrap(self) -> None:
+        connection_id = self._create_builtin_openai()
         with mock.patch("nsbot_sidecar.api.acp_stdio.main") as acp_main:
             code, stdout, _stderr = _run_cli(
                 [
                     "--ns-bot-home",
                     self.temp_dir,
                     "run",
-                    "diagnose direct",
+                    "diagnose configured",
                     "--diagnose",
-                    "--provider",
-                    "custom",
-                    "--base-url",
-                    "https://llm.example.com/v1",
-                    "--api-key",
-                    "sk-direct",
-                    "--model",
-                    "demo-direct-model",
+                    "--provider-id",
+                    connection_id,
                 ]
             )
 
         self.assertEqual(code, 0)
         payload = json.loads(stdout)
-        self.assertEqual(payload["resolved"]["mode"], "direct")
+        self.assertEqual(payload["resolved"]["mode"], "provider")
         acp_main.assert_not_called()
 
     def test_init_creates_ns_bot_home_and_copies_resources_from_cache(self) -> None:

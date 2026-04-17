@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -179,8 +180,8 @@ def _handle_init_command(args: SimpleNamespace) -> int:
     return 0
 
 
-def _build_services(ns_bot_home_value: str):
-    database = connect_database(ns_bot_home_value)
+def _build_services(ns_bot_home_value: str, db_path: str | None = None):
+    database = connect_database(ns_bot_home_value, db_path=db_path)
     repositories = create_repositories(cast(Any, database))
     secret_store = LocalSecretStore(ns_bot_home_value)
     provider_service = ProviderService(
@@ -221,9 +222,8 @@ def _find_target_group(
     if not isinstance(groups, list):
         return None
     for group in groups:
-        connection_id = str(group.get("connectionId") or "")
         provider_id = str(group.get("providerId") or "")
-        if provider_ref == connection_id or provider_ref == provider_id:
+        if provider_ref == provider_id:
             return group
     return None
 
@@ -236,10 +236,50 @@ def _first_model_id(group: dict[str, Any]) -> str | None:
     return model_id or None
 
 
+def _build_runtime_worker_config(
+    *,
+    args: SimpleNamespace,
+    model_id: str,
+    provider: str | None,
+    base_url: str | None,
+    api_key: str | None,
+) -> RuntimeWorkerConfig:
+    return RuntimeWorkerConfig(
+        model_id=str(model_id),
+        provider=(str(provider).strip() or None) if provider is not None else None,
+        base_url=(str(base_url).strip() or None) if base_url is not None else None,
+        api_key=(str(api_key).strip() or None) if api_key is not None else None,
+        model=str(model_id),
+        request_timeout_ms=args.request_timeout_ms,
+        ns_bot_home=args.ns_bot_home,
+        workspace_path_default=args.workspace_path,
+        fd_executable=args.fd_executable or None,
+        rg_executable=args.rg_executable or None,
+        tool_os_type=args.tool_os_type or None,
+        max_steps=args.max_steps,
+    )
+
+
+def _build_runtime_target_resolution(
+    *,
+    mode: str,
+    config: RuntimeWorkerConfig,
+    provider_id: str | None,
+) -> dict[str, Any]:
+    return {
+        "mode": mode,
+        "providerId": provider_id,
+        "runtimeProvider": str(config.provider or ""),
+        "modelId": str(config.model_id),
+        "baseUrl": config.base_url,
+        "hasApiKey": bool(config.api_key),
+    }
+
+
 def _resolve_catalog_model_ids(bundle) -> list[str]:
     from nsbot_sidecar.providers.provider_catalog import list_providers
 
-    provider_id = bundle.connection.catalog_provider_id or ""
+    provider_id = bundle.provider.catalog_provider_id or ""
     for provider in list_providers():
         if str(provider.get("id") or "") != provider_id:
             continue
@@ -250,6 +290,139 @@ def _resolve_catalog_model_ids(bundle) -> list[str]:
     return []
 
 
+class _ModelsNotFoundError(click.ClickException):
+    exit_code = 3
+
+
+def _slugify_provider_id(text: str) -> str:
+    normalized = re.sub(r"[^a-zA-Z0-9._-]+", "-", text.strip().lower())
+    normalized = normalized.strip("-._")
+    return normalized or "custom"
+
+
+def _infer_provider_id_from_model_ref(model_ref: str) -> str:
+    ref = str(model_ref or "").strip()
+    if ref == "":
+        return ""
+    if "/" in ref:
+        prefix = ref.split("/", 1)[0].strip()
+        if prefix:
+            return prefix
+
+    from nsbot_sidecar.providers.provider_catalog import list_providers
+
+    for provider in list_providers():
+        provider_id = str(provider.get("id") or "").strip()
+        models = provider.get("models")
+        if provider_id == "" or not isinstance(models, list):
+            continue
+        for model in models:
+            if not isinstance(model, dict):
+                continue
+            if str(model.get("id") or "").strip() == ref:
+                return provider_id
+    return ref
+
+
+def _iter_active_models(bundle) -> list[Any]:
+    return [model for model in bundle.models if model.model_id]
+
+
+def _find_matching_models(
+    repositories,
+    *,
+    model_ref: str,
+    provider_id: str | None = None,
+) -> list[tuple[Any, Any]]:
+    ref = str(model_ref or "").strip()
+    if ref == "":
+        return []
+    keys = {ref}
+    if "/" in ref:
+        tail = ref.split("/", 1)[1].strip()
+        if tail:
+            keys.add(tail)
+
+    bundles = repositories.providers.list_bundles()
+    if provider_id:
+        bundles = [bundle for bundle in bundles if bundle.provider.id == provider_id]
+
+    matches: list[tuple[Any, Any]] = []
+    for bundle in bundles:
+        for model in _iter_active_models(bundle):
+            display_name = str(model.display_name or "").strip()
+            if keys.intersection({model.id, model.model_id, display_name}):
+                matches.append((bundle, model))
+    return matches
+
+
+def _resolve_model_target(
+    repositories,
+    *,
+    model_ref: str,
+    provider_id: str | None,
+) -> tuple[Any, Any]:
+    ref = str(model_ref or "").strip()
+    explicit_provider_id = str(provider_id or "").strip()
+
+    if explicit_provider_id:
+        matches = _find_matching_models(
+            repositories,
+            model_ref=ref,
+            provider_id=explicit_provider_id,
+        )
+        if len(matches) == 1:
+            return matches[0]
+        if len(matches) > 1:
+            raise ValueError(
+                f"Model reference '{ref}' is ambiguous in provider '{explicit_provider_id}'"
+            )
+        raise _ModelsNotFoundError(
+            f"Model '{ref}' not found in provider '{explicit_provider_id}'"
+        )
+
+    id_matches = [
+        item for item in _find_matching_models(repositories, model_ref=ref) if item[1].id == ref
+    ]
+    if len(id_matches) == 1:
+        return id_matches[0]
+
+    inferred_provider_id = _infer_provider_id_from_model_ref(ref)
+    inferred_matches = _find_matching_models(
+        repositories,
+        model_ref=ref,
+        provider_id=inferred_provider_id,
+    )
+    if len(inferred_matches) == 1:
+        return inferred_matches[0]
+    if len(inferred_matches) > 1:
+        raise ValueError(
+            f"Model reference '{ref}' is ambiguous in provider '{inferred_provider_id}'"
+        )
+
+    global_matches = _find_matching_models(repositories, model_ref=ref)
+    if len(global_matches) == 1:
+        return global_matches[0]
+    if len(global_matches) > 1:
+        providers = ", ".join(sorted({bundle.provider.id for bundle, _model in global_matches}))
+        raise ValueError(
+            f"Model reference '{ref}' is ambiguous across providers: {providers}. Pass --provider-id."
+        )
+
+    raise _ModelsNotFoundError(f"Model '{ref}' not found")
+
+
+def _serialize_model_record(bundle, model) -> dict[str, Any]:
+    return {
+        "id": model.id,
+        "name": model.display_name or model.model_id,
+        "providerId": bundle.provider.id,
+        "modelId": model.model_id,
+        "enabled": bool(model.enabled),
+        "source": model.source,
+    }
+
+
 def _handle_providers_command(args: SimpleNamespace) -> int:
     database, repositories, _secret_store, provider_service = _build_services(
         args.ns_bot_home
@@ -257,24 +430,24 @@ def _handle_providers_command(args: SimpleNamespace) -> int:
     try:
         if args.providers_command == "list":
             catalog = provider_service.catalog_payload()
-            connections = provider_service.list_connections_payload()
+            providers = provider_service.list_providers_payload()
             _print_json(
                 {
                     "providers": catalog.get("providers", []),
-                    "connections": connections.get("connections", []),
+                    "configuredProviders": providers.get("providers", []),
                 }
             )
             return 0
 
         if args.providers_command == "delete":
-            provider_service.delete_provider(args.connection_id)
-            _print_json({"ok": True, "deletedConnectionId": args.connection_id})
+            provider_service.delete_provider(args.provider_id)
+            _print_json({"ok": True, "deletedProviderId": args.provider_id})
             return 0
 
         if args.providers_command == "use":
             target_ref = str(args.provider or "").strip()
             if target_ref == "":
-                raise ValueError("Provider id or connection id is required")
+                raise ValueError("Provider id is required")
 
             model_options = provider_service.model_options_payload()
             group = _find_target_group(model_options, provider_ref=target_ref)
@@ -283,7 +456,7 @@ def _handle_providers_command(args: SimpleNamespace) -> int:
                     f"No available connected provider found for '{target_ref}'"
                 )
 
-            connection_id = str(group.get("connectionId") or "")
+            provider_id = str(group.get("providerId") or "")
             requested_model = str(args.model or "").strip()
             model_id = requested_model or _first_model_id(group)
             if model_id is None:
@@ -296,16 +469,15 @@ def _handle_providers_command(args: SimpleNamespace) -> int:
             }
             if model_id not in allowed_ids:
                 raise ValueError(
-                    f"Model '{model_id}' is not available for connection '{connection_id}'"
+                    f"Model '{model_id}' is not available for provider '{provider_id}'"
                 )
 
             updated = provider_service.update_provider(
-                connection_id, {"preferredModelId": model_id}
+                provider_id, {"preferredModelId": model_id}
             )
             _print_json(
                 {
                     "ok": True,
-                    "connectionId": connection_id,
                     "providerId": _normalize_provider_ref(updated),
                     "modelId": model_id,
                 }
@@ -319,24 +491,103 @@ def _handle_providers_command(args: SimpleNamespace) -> int:
 
 def _handle_models_command(args: SimpleNamespace) -> int:
     database, repositories, _secret_store, provider_service = _build_services(
-        args.ns_bot_home
+        args.ns_bot_home,
+        db_path=(str(args.db_path).strip() or None),
     )
     try:
+        if args.models_command == "create":
+            provider_id = str(args.provider_id or "").strip() or _slugify_provider_id(
+                str(args.name or "")
+            )
+            payload = {
+                "id": provider_id,
+                "kind": "custom",
+                "customSlug": provider_id,
+                "displayName": str(args.name or "").strip(),
+                "baseUrl": str(args.base_url or "").strip(),
+                "apiKey": str(args.api_key or "").strip(),
+                "customModels": [
+                    {
+                        "modelId": str(args.model_id or "").strip(),
+                        "displayName": str(args.name or "").strip(),
+                        "enabled": True,
+                    }
+                ],
+                "preferredModelId": str(args.model_id or "").strip(),
+                "isEnabled": True,
+            }
+            provider_service.create_provider(payload)
+            created_bundle = repositories.providers.get_bundle_by_id_or_raise(provider_id)
+            created_model = next(
+                (
+                    model
+                    for model in created_bundle.models
+                    if model.source == "custom"
+                    and model.model_id == str(args.model_id or "").strip()
+                ),
+                None,
+            )
+            if created_model is None:
+                raise RuntimeError("Created model was not found after persistence")
+            _print_json(
+                {
+                    "ok": True,
+                    **_serialize_model_record(created_bundle, created_model),
+                    "baseUrl": created_bundle.provider.base_url,
+                }
+            )
+            return 0
+
         if args.models_command == "list":
             payload = provider_service.model_options_payload()
             groups = payload.get("groups")
             filtered = []
-            provider_filter = str(args.provider or "").strip()
-            connection_filter = str(args.connection_id or "").strip()
+            provider_filter = str(
+                args.provider_id or getattr(args, "provider", "") or ""
+            ).strip()
             for group in groups if isinstance(groups, list) else []:
                 provider_id = str(group.get("providerId") or "")
-                connection_id = str(group.get("connectionId") or "")
                 if provider_filter and provider_filter != provider_id:
                     continue
-                if connection_filter and connection_filter != connection_id:
-                    continue
                 filtered.append(group)
-            _print_json({"groups": filtered})
+
+            serialized_models = []
+            for bundle in repositories.providers.list_bundles():
+                for model in _iter_active_models(bundle):
+                    if provider_filter and bundle.provider.id != provider_filter:
+                        continue
+                    serialized_models.append(_serialize_model_record(bundle, model))
+
+            _print_json({"groups": filtered, "models": serialized_models})
+            return 0
+
+        if args.models_command == "get":
+            bundle, model = _resolve_model_target(
+                repositories,
+                model_ref=str(args.model_ref or "").strip(),
+                provider_id=str(args.provider_id or "").strip() or None,
+            )
+            _print_json(_serialize_model_record(bundle, model))
+            return 0
+
+        if args.models_command == "set-default":
+            bundle, model = _resolve_model_target(
+                repositories,
+                model_ref=str(args.model_ref or "").strip(),
+                provider_id=str(args.provider_id or "").strip() or None,
+            )
+            provider_service.update_provider(
+                bundle.provider.id,
+                {"preferredModelId": model.model_id},
+            )
+            _print_json(
+                {
+                    "ok": True,
+                    "providerId": bundle.provider.id,
+                    "modelId": model.model_id,
+                    "action": "set-default",
+                }
+            )
             return 0
 
         if args.models_command == "status":
@@ -345,9 +596,9 @@ def _handle_models_command(args: SimpleNamespace) -> int:
             groups = payload.get("groups")
             default_group = None
             if isinstance(default_selection, dict):
-                selected_connection = str(default_selection.get("connectionId") or "")
+                selected_provider = str(default_selection.get("providerId") or "")
                 for group in groups if isinstance(groups, list) else []:
-                    if str(group.get("connectionId") or "") == selected_connection:
+                    if str(group.get("providerId") or "") == selected_provider:
                         default_group = group
                         break
             _print_json(
@@ -359,17 +610,34 @@ def _handle_models_command(args: SimpleNamespace) -> int:
             )
             return 0
 
-        connection_id = str(args.connection_id or "").strip()
-        model_id = str(args.model or "").strip()
-        bundle = repositories.providers.get_bundle_by_id(connection_id)
-        if bundle is None:
-            raise ValueError(f"Provider connection not found: {connection_id}")
+        model_ref = str(args.model or "").strip()
+        explicit_provider_id = str(args.provider_id or "").strip()
+        normalized_model_id = model_ref.split("/", 1)[1].strip() if "/" in model_ref else model_ref
+
+        if explicit_provider_id:
+            bundle = repositories.providers.get_bundle_by_id(explicit_provider_id)
+            if bundle is None:
+                raise ValueError(f"Provider not found: {explicit_provider_id}")
+            provider_id = bundle.provider.id
+            model_id = normalized_model_id
+        else:
+            inferred_provider_id = _infer_provider_id_from_model_ref(model_ref)
+            bundle = repositories.providers.get_bundle_by_id(inferred_provider_id)
+            if bundle is not None:
+                provider_id = bundle.provider.id
+                model_id = normalized_model_id
+            else:
+                bundle, resolved_model = _resolve_model_target(
+                    repositories,
+                    model_ref=model_ref,
+                    provider_id=None,
+                )
+                provider_id = bundle.provider.id
+                model_id = resolved_model.model_id
 
         if args.models_command == "remove":
-            if bundle.connection.kind != "custom":
-                raise ValueError(
-                    "models remove is only supported for custom provider connections"
-                )
+            if bundle.provider.kind != "custom":
+                raise ValueError("models remove is only supported for custom providers")
             custom_models = [
                 {
                     "id": model.id,
@@ -383,11 +651,9 @@ def _handle_models_command(args: SimpleNamespace) -> int:
             if len(custom_models) == len(
                 [model for model in bundle.models if model.source == "custom"]
             ):
-                raise ValueError(
-                    f"Model '{model_id}' not found in connection '{connection_id}'"
-                )
+                raise ValueError(f"Model '{model_id}' not found in provider '{provider_id}'")
 
-            next_preferred = bundle.connection.preferred_model_id
+            next_preferred = bundle.provider.preferred_model_id
             if next_preferred == model_id:
                 replacement = next(
                     (
@@ -400,7 +666,7 @@ def _handle_models_command(args: SimpleNamespace) -> int:
                 next_preferred = replacement
 
             provider_service.update_provider(
-                connection_id,
+                provider_id,
                 {
                     "customModels": custom_models,
                     "preferredModelId": next_preferred,
@@ -409,14 +675,14 @@ def _handle_models_command(args: SimpleNamespace) -> int:
             _print_json(
                 {
                     "ok": True,
-                    "connectionId": connection_id,
+                    "providerId": provider_id,
                     "modelId": model_id,
                     "action": "removed",
                 }
             )
             return 0
 
-        if bundle.connection.kind == "custom":
+        if bundle.provider.kind == "custom":
             custom_models = []
             found = False
             for model in bundle.models:
@@ -435,21 +701,19 @@ def _handle_models_command(args: SimpleNamespace) -> int:
                     }
                 )
             if not found:
-                raise ValueError(
-                    f"Model '{model_id}' not found in connection '{connection_id}'"
-                )
+                raise ValueError(f"Model '{model_id}' not found in provider '{provider_id}'")
 
             provider_service.update_provider(
-                connection_id,
+                provider_id,
                 {
                     "customModels": custom_models,
-                    "preferredModelId": bundle.connection.preferred_model_id,
+                    "preferredModelId": bundle.provider.preferred_model_id,
                 },
             )
             _print_json(
                 {
                     "ok": True,
-                    "connectionId": connection_id,
+                    "providerId": provider_id,
                     "modelId": model_id,
                     "action": "enabled"
                     if args.models_command == "enable"
@@ -461,25 +725,25 @@ def _handle_models_command(args: SimpleNamespace) -> int:
         catalog_ids = _resolve_catalog_model_ids(bundle)
         if model_id not in set(catalog_ids):
             raise ValueError(
-                f"Model '{model_id}' is not a catalog model for connection '{connection_id}'"
+                f"Model '{model_id}' is not a catalog model for provider '{provider_id}'"
             )
 
         if (
             args.models_command == "enable"
-            and bundle.connection.model_policy != "restricted"
+            and bundle.provider.model_policy != "restricted"
         ):
             _print_json(
                 {
                     "ok": True,
-                    "connectionId": connection_id,
+                    "providerId": provider_id,
                     "modelId": model_id,
                     "action": "enabled",
-                    "modelPolicy": bundle.connection.model_policy,
+                    "modelPolicy": bundle.provider.model_policy,
                 }
             )
             return 0
 
-        if bundle.connection.model_policy == "restricted":
+        if bundle.provider.model_policy == "restricted":
             enabled_set = {
                 model.model_id
                 for model in bundle.models
@@ -495,17 +759,17 @@ def _handle_models_command(args: SimpleNamespace) -> int:
 
         enabled_in_order = [item for item in catalog_ids if item in enabled_set]
         provider_service.update_provider(
-            connection_id,
+            provider_id,
             {
                 "modelPolicy": "restricted",
                 "enabledModelIds": enabled_in_order,
-                "preferredModelId": bundle.connection.preferred_model_id,
+                "preferredModelId": bundle.provider.preferred_model_id,
             },
         )
         _print_json(
             {
                 "ok": True,
-                "connectionId": connection_id,
+                "providerId": provider_id,
                 "modelId": model_id,
                 "action": "enabled" if args.models_command == "enable" else "disabled",
             }
@@ -596,10 +860,10 @@ def _handle_sessions_command(args: SimpleNamespace) -> int:
 
         if args.sessions_command == "create":
             payload: dict[str, Any] = {}
-            connection_id = str(args.connection_id or "").strip()
+            provider_id = str(args.provider_id or "").strip()
             model_id = str(args.model_id or "").strip()
-            if connection_id:
-                payload["connectionId"] = connection_id
+            if provider_id:
+                payload["providerId"] = provider_id
             if model_id:
                 payload["modelId"] = model_id
             try:
@@ -687,7 +951,7 @@ def _resolve_run_metadata(
             "sessionKey": resolved_session_key,
             "workspaceId": workspace.id,
             "workspacePath": workspace.real_path,
-            "activeConnectionId": session.active_connection_id,
+            "activeProviderId": session.active_provider_id,
             "activeModelId": session.active_model_id,
         },
     )
@@ -700,98 +964,48 @@ def _resolve_run_target(
         args.ns_bot_home
     )
     try:
-        direct_mode = any(
-            [
-                str(args.provider or "").strip(),
-                str(args.base_url or "").strip(),
-                str(args.api_key or "").strip(),
-                str(args.model or "").strip(),
-            ]
-        )
-        explicit_connection_id = str(args.connection_id or "").strip()
+        explicit_provider_id = str(args.provider_id or "").strip()
         explicit_selected_model = str(args.selected_model_id or "").strip()
 
-        if direct_mode:
-            model_id = str(args.model or args.model_id).strip()
-            config = RuntimeWorkerConfig(
-                model_id=model_id,
-                provider=str(args.provider or "custom").strip() or "custom",
-                base_url=str(args.base_url or "").strip() or None,
-                api_key=str(args.api_key or "").strip() or None,
-                model=model_id,
-                request_timeout_ms=args.request_timeout_ms,
-                ns_bot_home=args.ns_bot_home,
-                workspace_path_default=args.workspace_path,
-                fd_executable=args.fd_executable or None,
-                rg_executable=args.rg_executable or None,
-                tool_os_type=args.tool_os_type or None,
-                max_steps=args.max_steps,
-            )
-            return (
-                config,
-                {
-                    "mode": "direct",
-                    "connectionId": None,
-                    "providerId": str(config.provider or ""),
-                    "runtimeProvider": str(config.provider or ""),
-                    "modelId": model_id,
-                    "baseUrl": config.base_url,
-                    "hasApiKey": bool(config.api_key),
-                },
-            )
-
-        if explicit_connection_id:
-            bundle = repositories.providers.get_bundle_by_id(explicit_connection_id)
+        if explicit_provider_id:
+            bundle = repositories.providers.get_bundle_by_id(explicit_provider_id)
             if bundle is None:
-                raise ValueError(
-                    f"Provider connection not found: {explicit_connection_id}"
-                )
+                raise ValueError(f"Provider not found: {explicit_provider_id}")
             selected_model = (
-                explicit_selected_model or bundle.connection.preferred_model_id
+                explicit_selected_model or bundle.provider.preferred_model_id
             )
             if not selected_model:
                 options = provider_service.model_options_payload()
-                group = _find_target_group(options, provider_ref=explicit_connection_id)
+                group = _find_target_group(options, provider_ref=explicit_provider_id)
                 if group is None:
-                    raise ValueError(
-                        f"No available models for connection '{explicit_connection_id}'"
-                    )
+                    raise ValueError(f"No available models for provider '{explicit_provider_id}'")
                 selected_model = _first_model_id(group)
                 if selected_model is None:
-                    raise ValueError(
-                        f"No available models for connection '{explicit_connection_id}'"
-                    )
+                    raise ValueError(f"No available models for provider '{explicit_provider_id}'")
 
             secret_payload = secret_store.load_provider_secret(
-                bundle.connection.secret_ref
+                bundle.provider.secret_ref
             )
             api_key = secret_payload.api_key if secret_payload is not None else None
-            config = RuntimeWorkerConfig(
+            config = _build_runtime_worker_config(
+                args=args,
                 model_id=str(selected_model),
-                provider=bundle.connection.runtime_provider,
-                base_url=bundle.connection.base_url,
+                provider=bundle.provider.runtime_provider,
+                base_url=bundle.provider.base_url,
                 api_key=api_key,
-                model=str(selected_model),
-                request_timeout_ms=args.request_timeout_ms,
-                ns_bot_home=args.ns_bot_home,
-                workspace_path_default=args.workspace_path,
-                fd_executable=args.fd_executable or None,
-                rg_executable=args.rg_executable or None,
-                tool_os_type=args.tool_os_type or None,
-                max_steps=args.max_steps,
             )
             return (
                 config,
-                {
-                    "mode": "connection",
-                    "connectionId": bundle.connection.id,
-                    "providerId": bundle.connection.catalog_provider_id
-                    or bundle.connection.custom_slug
-                    or bundle.connection.runtime_provider,
-                    "runtimeProvider": bundle.connection.runtime_provider,
-                    "modelId": str(selected_model),
-                    "baseUrl": bundle.connection.base_url,
-                    "hasApiKey": bool(api_key),
+                _build_runtime_target_resolution(
+                    mode="provider",
+                    config=config,
+                    provider_id=bundle.provider.id,
+                )
+                | {
+                    "providerId": bundle.provider.catalog_provider_id
+                    or bundle.provider.custom_slug
+                    or bundle.provider.runtime_provider,
+                    "runtimeProvider": bundle.provider.runtime_provider,
                 },
             )
 
@@ -801,41 +1015,34 @@ def _resolve_run_target(
             raise ValueError(
                 "No default provider/model available. Configure a provider first."
             )
-        connection_id = str(default_selection.get("connectionId") or "")
+        provider_id = str(default_selection.get("providerId") or "")
         model_id = str(default_selection.get("modelId") or "")
-        if connection_id == "" or model_id == "":
+        if provider_id == "" or model_id == "":
             raise ValueError("Default selection is invalid")
-        bundle = repositories.providers.get_bundle_by_id(connection_id)
+        bundle = repositories.providers.get_bundle_by_id(provider_id)
         if bundle is None:
-            raise ValueError(f"Default provider connection not found: {connection_id}")
-        secret_payload = secret_store.load_provider_secret(bundle.connection.secret_ref)
+            raise ValueError(f"Default provider not found: {provider_id}")
+        secret_payload = secret_store.load_provider_secret(bundle.provider.secret_ref)
         api_key = secret_payload.api_key if secret_payload is not None else None
-        config = RuntimeWorkerConfig(
+        config = _build_runtime_worker_config(
+            args=args,
             model_id=model_id,
-            provider=bundle.connection.runtime_provider,
-            base_url=bundle.connection.base_url,
+            provider=bundle.provider.runtime_provider,
+            base_url=bundle.provider.base_url,
             api_key=api_key,
-            model=model_id,
-            request_timeout_ms=args.request_timeout_ms,
-            ns_bot_home=args.ns_bot_home,
-            workspace_path_default=args.workspace_path,
-            fd_executable=args.fd_executable or None,
-            rg_executable=args.rg_executable or None,
-            tool_os_type=args.tool_os_type or None,
-            max_steps=args.max_steps,
         )
         return (
             config,
-            {
-                "mode": "default-selection",
-                "connectionId": bundle.connection.id,
-                "providerId": bundle.connection.catalog_provider_id
-                or bundle.connection.custom_slug
-                or bundle.connection.runtime_provider,
-                "runtimeProvider": bundle.connection.runtime_provider,
-                "modelId": model_id,
-                "baseUrl": bundle.connection.base_url,
-                "hasApiKey": bool(api_key),
+            _build_runtime_target_resolution(
+                mode="default-provider",
+                config=config,
+                provider_id=bundle.provider.id,
+            )
+            | {
+                "providerId": bundle.provider.catalog_provider_id
+                or bundle.provider.custom_slug
+                or bundle.provider.runtime_provider,
+                "runtimeProvider": bundle.provider.runtime_provider,
             },
         )
     finally:
@@ -966,15 +1173,13 @@ def _parse_root_mode_arguments(argv: list[str]) -> tuple[bool, str | None, bool,
 def _run_with_error_handling(fn) -> int:
     try:
         code = int(fn())
-        if code != 0:
-            raise RuntimeError(f"Command failed with exit code {code}")
         return code
     except Exception:
         raise
 
 
 app = typer.Typer(help="NSBot CLI for provider/model management and runtime execution")
-providers_app = typer.Typer(help="Manage provider connections")
+providers_app = typer.Typer(help="Manage providers")
 models_app = typer.Typer(help="Manage model options")
 workspaces_app = typer.Typer(help="Manage workspaces")
 sessions_app = typer.Typer(help="Manage sessions")
@@ -1027,14 +1232,14 @@ def providers_use(
 @providers_app.command("delete")
 def providers_delete(
     ctx: typer.Context,
-    connection_id: str = typer.Option(..., "--connection-id", help="Provider connection id"),
+    provider_id: str = typer.Option(..., "--provider-id", help="Provider id"),
 ) -> None:
     _run_with_error_handling(
         lambda: _handle_providers_command(
             SimpleNamespace(
                 ns_bot_home=_ns_bot_home_from_ctx(ctx),
                 providers_command="delete",
-                connection_id=connection_id,
+                provider_id=provider_id,
             )
         )
     )
@@ -1043,26 +1248,109 @@ def providers_delete(
 @models_app.command("list")
 def models_list(
     ctx: typer.Context,
-    provider: str = typer.Option("", "--provider", help="Filter by provider id"),
-    connection_id: str = typer.Option("", "--connection-id", help="Filter by connection id"),
+    provider_id: str = typer.Option("", "--provider-id", help="Filter by provider id"),
+    db_path: str = typer.Option("", "--db-path", help="Override database path"),
+    json_output: bool = typer.Option(False, "--json", help="Output JSON payload"),
 ) -> None:
+    _ = json_output
     _run_with_error_handling(
         lambda: _handle_models_command(
             SimpleNamespace(
                 ns_bot_home=_ns_bot_home_from_ctx(ctx),
                 models_command="list",
-                provider=provider,
-                connection_id=connection_id,
+                provider_id=provider_id,
+                db_path=db_path,
             )
         )
     )
 
 
 @models_app.command("status")
-def models_status(ctx: typer.Context) -> None:
+def models_status(
+    ctx: typer.Context,
+    db_path: str = typer.Option("", "--db-path", help="Override database path"),
+    json_output: bool = typer.Option(False, "--json", help="Output JSON payload"),
+) -> None:
+    _ = json_output
     _run_with_error_handling(
         lambda: _handle_models_command(
-            SimpleNamespace(ns_bot_home=_ns_bot_home_from_ctx(ctx), models_command="status")
+            SimpleNamespace(
+                ns_bot_home=_ns_bot_home_from_ctx(ctx),
+                models_command="status",
+                db_path=db_path,
+            )
+        )
+    )
+
+
+@models_app.command("create")
+def models_create(
+    ctx: typer.Context,
+    name: str = typer.Option(..., "--name"),
+    base_url: str = typer.Option(..., "--base-url"),
+    model_id: str = typer.Option(..., "--model-id"),
+    api_key: str = typer.Option(..., "--api-key"),
+    provider_id: str = typer.Option("", "--provider-id"),
+    db_path: str = typer.Option("", "--db-path", help="Override database path"),
+    json_output: bool = typer.Option(False, "--json", help="Output JSON payload"),
+) -> None:
+    _ = json_output
+    _run_with_error_handling(
+        lambda: _handle_models_command(
+            SimpleNamespace(
+                ns_bot_home=_ns_bot_home_from_ctx(ctx),
+                models_command="create",
+                name=name,
+                base_url=base_url,
+                model_id=model_id,
+                api_key=api_key,
+                provider_id=provider_id,
+                db_path=db_path,
+            )
+        )
+    )
+
+
+@models_app.command("get")
+def models_get(
+    ctx: typer.Context,
+    model_ref: str = typer.Argument(..., help="Model id, model record id, or model name"),
+    provider_id: str = typer.Option("", "--provider-id"),
+    db_path: str = typer.Option("", "--db-path", help="Override database path"),
+    json_output: bool = typer.Option(False, "--json", help="Output JSON payload"),
+) -> None:
+    _ = json_output
+    _run_with_error_handling(
+        lambda: _handle_models_command(
+            SimpleNamespace(
+                ns_bot_home=_ns_bot_home_from_ctx(ctx),
+                models_command="get",
+                model_ref=model_ref,
+                provider_id=provider_id,
+                db_path=db_path,
+            )
+        )
+    )
+
+
+@models_app.command("set-default")
+def models_set_default(
+    ctx: typer.Context,
+    model_ref: str = typer.Argument(..., help="Model id, model record id, or model name"),
+    provider_id: str = typer.Option("", "--provider-id"),
+    db_path: str = typer.Option("", "--db-path", help="Override database path"),
+    json_output: bool = typer.Option(False, "--json", help="Output JSON payload"),
+) -> None:
+    _ = json_output
+    _run_with_error_handling(
+        lambda: _handle_models_command(
+            SimpleNamespace(
+                ns_bot_home=_ns_bot_home_from_ctx(ctx),
+                models_command="set-default",
+                model_ref=model_ref,
+                provider_id=provider_id,
+                db_path=db_path,
+            )
         )
     )
 
@@ -1070,16 +1358,20 @@ def models_status(ctx: typer.Context) -> None:
 @models_app.command("enable")
 def models_enable(
     ctx: typer.Context,
-    connection_id: str = typer.Option(..., "--connection-id"),
+    provider_id: str = typer.Option("", "--provider-id"),
     model: str = typer.Option(..., "--model"),
+    db_path: str = typer.Option("", "--db-path", help="Override database path"),
+    json_output: bool = typer.Option(False, "--json", help="Output JSON payload"),
 ) -> None:
+    _ = json_output
     _run_with_error_handling(
         lambda: _handle_models_command(
             SimpleNamespace(
                 ns_bot_home=_ns_bot_home_from_ctx(ctx),
                 models_command="enable",
-                connection_id=connection_id,
+                provider_id=provider_id,
                 model=model,
+                db_path=db_path,
             )
         )
     )
@@ -1088,16 +1380,20 @@ def models_enable(
 @models_app.command("disable")
 def models_disable(
     ctx: typer.Context,
-    connection_id: str = typer.Option(..., "--connection-id"),
+    provider_id: str = typer.Option("", "--provider-id"),
     model: str = typer.Option(..., "--model"),
+    db_path: str = typer.Option("", "--db-path", help="Override database path"),
+    json_output: bool = typer.Option(False, "--json", help="Output JSON payload"),
 ) -> None:
+    _ = json_output
     _run_with_error_handling(
         lambda: _handle_models_command(
             SimpleNamespace(
                 ns_bot_home=_ns_bot_home_from_ctx(ctx),
                 models_command="disable",
-                connection_id=connection_id,
+                provider_id=provider_id,
                 model=model,
+                db_path=db_path,
             )
         )
     )
@@ -1106,16 +1402,20 @@ def models_disable(
 @models_app.command("remove")
 def models_remove(
     ctx: typer.Context,
-    connection_id: str = typer.Option(..., "--connection-id"),
+    provider_id: str = typer.Option("", "--provider-id"),
     model: str = typer.Option(..., "--model"),
+    db_path: str = typer.Option("", "--db-path", help="Override database path"),
+    json_output: bool = typer.Option(False, "--json", help="Output JSON payload"),
 ) -> None:
+    _ = json_output
     _run_with_error_handling(
         lambda: _handle_models_command(
             SimpleNamespace(
                 ns_bot_home=_ns_bot_home_from_ctx(ctx),
                 models_command="remove",
-                connection_id=connection_id,
+                provider_id=provider_id,
                 model=model,
+                db_path=db_path,
             )
         )
     )
@@ -1224,7 +1524,7 @@ def sessions_list(
 def sessions_create(
     ctx: typer.Context,
     workspace_id: str = typer.Option(..., "--workspace-id"),
-    connection_id: str = typer.Option("", "--connection-id"),
+    provider_id: str = typer.Option("", "--provider-id"),
     model_id: str = typer.Option("", "--model-id"),
 ) -> None:
     _run_with_error_handling(
@@ -1233,7 +1533,7 @@ def sessions_create(
                 ns_bot_home=_ns_bot_home_from_ctx(ctx),
                 sessions_command="create",
                 workspace_id=workspace_id,
-                connection_id=connection_id,
+                provider_id=provider_id,
                 model_id=model_id,
             )
         )
@@ -1307,13 +1607,8 @@ def run_command(
     user_input: str = typer.Argument(..., help="Task prompt"),
     turn_id: str = typer.Option(str(uuid.uuid4()), "--turn-id"),
     workspace_path: str = typer.Option(os.getcwd(), "--workspace-path"),
-    model_id: str = typer.Option("gpt-5.4", "--model-id"),
-    connection_id: str = typer.Option("", "--connection-id"),
+    provider_id: str = typer.Option("", "--provider-id"),
     selected_model_id: str = typer.Option("", "--selected-model-id"),
-    provider: str = typer.Option("", "--provider"),
-    base_url: str = typer.Option("", "--base-url"),
-    api_key: str = typer.Option("", "--api-key"),
-    model: str = typer.Option("", "--model"),
     request_timeout_ms: int = typer.Option(60000, "--request-timeout-ms"),
     max_steps: int = typer.Option(20, "--max-steps"),
     fd_executable: str = typer.Option("", "--fd-executable"),
@@ -1331,13 +1626,8 @@ def run_command(
                 user_input=user_input,
                 turn_id=turn_id,
                 workspace_path=workspace_path,
-                model_id=model_id,
-                connection_id=connection_id,
+                provider_id=provider_id,
                 selected_model_id=selected_model_id,
-                provider=provider or os.getenv("PROVIDER", "").strip(),
-                base_url=base_url or os.getenv("BASE_URL", "").strip(),
-                api_key=api_key or os.getenv("API_KEY", "").strip(),
-                model=model or os.getenv("MODEL", "").strip(),
                 request_timeout_ms=request_timeout_ms,
                 max_steps=max_steps,
                 fd_executable=fd_executable or os.getenv("NSBOT_FD_EXECUTABLE", "").strip(),

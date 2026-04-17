@@ -70,7 +70,7 @@ class WorkerRequestParsingTests(unittest.TestCase):
         self.assertEqual(req.config.tool_os_type, "windows")
         self.assertEqual(req.config.max_steps, 7)
 
-    def test_parse_request_parses_direct_mode_fields(self) -> None:
+    def test_parse_request_parses_resolved_runtime_fields(self) -> None:
         raw = json.dumps(
             {
                 "turnId": "turn-3",

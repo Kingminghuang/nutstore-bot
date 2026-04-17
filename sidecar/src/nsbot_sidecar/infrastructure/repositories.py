@@ -17,8 +17,8 @@ def create_id(prefix: str) -> str:
     return f"{prefix}_{uuid4().hex}"
 
 
-def create_secret_ref(connection_id: str) -> str:
-    return f"sec_{connection_id}"
+def create_secret_ref(provider_id: str) -> str:
+    return f"sec_{provider_id}"
 
 
 def _as_int(value: object) -> int:
@@ -49,7 +49,7 @@ class WorkspaceRecord:
 
 
 @dataclass(frozen=True)
-class ProviderConnectionRecord:
+class ProviderRecord:
     id: str
     kind: str
     runtime_provider: str
@@ -69,7 +69,7 @@ class ProviderConnectionRecord:
 @dataclass(frozen=True)
 class ProviderModelRecord:
     id: str
-    connection_id: str
+    provider_id: str
     source: str
     model_id: str
     display_name: str | None
@@ -80,8 +80,8 @@ class ProviderModelRecord:
 
 
 @dataclass(frozen=True)
-class ProviderConnectionBundle:
-    connection: ProviderConnectionRecord
+class ProviderBundle:
+    provider: ProviderRecord
     models: list[ProviderModelRecord]
 
 
@@ -96,7 +96,7 @@ class SessionRecord:
     title_generation_attempts: int
     last_message_preview: str | None
     message_count: int
-    active_connection_id: str | None
+    active_provider_id: str | None
     active_model_id: str | None
     created_at: str
     updated_at: str
@@ -205,131 +205,136 @@ class WorkspacesRepository:
         self.connection.commit()
 
 
-class ProviderConnectionsRepository:
+class ProvidersRepository:
     def __init__(self, connection: sqlite3.Connection):
         self.connection = connection
 
     def save_bundle(
         self,
         *,
-        connection_data: dict[str, object],
+        provider_data: dict[str, object],
         models: list[dict[str, object]] | None = None,
-    ) -> ProviderConnectionBundle:
+    ) -> ProviderBundle:
         models = models or []
         now = now_iso_timestamp()
-        record_id = str(connection_data.get("id") or create_id("prov"))
+        kind = str(provider_data["kind"])
+        record_id = str(
+            provider_data.get("id")
+            or (
+                provider_data.get("catalog_provider_id")
+                if kind == "builtin"
+                else provider_data.get("custom_slug")
+            )
+            or provider_data.get("runtime_provider")
+            or ""
+        ).strip()
+        if record_id == "":
+            raise ValueError("Provider id could not be resolved")
 
         existing = self.get_bundle_by_id(record_id)
-        created_at = existing.connection.created_at if existing else now
+        created_at = existing.provider.created_at if existing else now
         secret_ref = str(
-            connection_data.get("secret_ref")
+            provider_data.get("secret_ref")
             or (
-                existing.connection.secret_ref
+                existing.provider.secret_ref
                 if existing
                 else create_secret_ref(record_id)
             )
         )
 
+        materialized_models = models[:]
+        if not materialized_models:
+            materialized_models = [
+                {
+                    "source": "catalog" if kind == "builtin" else "custom",
+                    "model_id": "",
+                    "display_name": None,
+                    "enabled": False,
+                    "sort_order": 0,
+                }
+            ]
+
         with transaction(self.connection):
-            self.connection.execute(
-                """
-                INSERT INTO provider_connections (
-                    id, kind, runtime_provider, catalog_provider_id, custom_slug,
-                    display_name, base_url, secret_ref, api_key_configured,
-                    model_policy, preferred_model_id, is_enabled, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(id) DO UPDATE SET
-                    kind = excluded.kind,
-                    runtime_provider = excluded.runtime_provider,
-                    catalog_provider_id = excluded.catalog_provider_id,
-                    custom_slug = excluded.custom_slug,
-                    display_name = excluded.display_name,
-                    base_url = excluded.base_url,
-                    secret_ref = excluded.secret_ref,
-                    api_key_configured = excluded.api_key_configured,
-                    model_policy = excluded.model_policy,
-                    preferred_model_id = excluded.preferred_model_id,
-                    is_enabled = excluded.is_enabled,
-                    updated_at = excluded.updated_at
-                """,
-                (
-                    record_id,
-                    str(connection_data["kind"]),
-                    str(connection_data["runtime_provider"]),
-                    connection_data.get("catalog_provider_id"),
-                    connection_data.get("custom_slug"),
-                    str(connection_data["display_name"]),
-                    connection_data.get("base_url"),
-                    secret_ref,
-                    1 if bool(connection_data.get("api_key_configured", False)) else 0,
-                    str(connection_data.get("model_policy") or "all_catalog"),
-                    connection_data.get("preferred_model_id"),
-                    0 if connection_data.get("is_enabled") is False else 1,
-                    created_at,
-                    now,
-                ),
-            )
+            self.connection.execute("DELETE FROM models WHERE provider = ?", (record_id,))
 
-            self.connection.execute(
-                "DELETE FROM provider_models WHERE connection_id = ?", (record_id,)
-            )
+            for index, model in enumerate(materialized_models):
+                model_id = str(model.get("model_id") or "")
+                existing_model = None
+                if existing is not None:
+                    existing_model = next(
+                        (
+                            item
+                            for item in existing.models
+                            if item.source == str(model["source"])
+                            and item.model_id == model_id
+                        ),
+                        None,
+                    )
 
-            for index, model in enumerate(models):
                 self.connection.execute(
                     """
-                    INSERT INTO provider_models (
-                        id, connection_id, source, model_id, display_name,
-                        enabled, sort_order, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO models (
+                        id, provider, kind, provider_display_name, base_url,
+                        secret_ref, api_key_configured, model_policy,
+                        preferred_model_id, is_enabled, source, model_id,
+                        display_name, enabled, sort_order, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
-                        str(model.get("id") or create_id("pmod")),
+                        str(model.get("id") or (existing_model.id if existing_model else create_id("model"))),
                         record_id,
+                        kind,
+                        str(provider_data["display_name"]),
+                        provider_data.get("base_url"),
+                        secret_ref,
+                        1 if bool(provider_data.get("api_key_configured", False)) else 0,
+                        str(provider_data.get("model_policy") or "all_catalog"),
+                        provider_data.get("preferred_model_id"),
+                        0 if provider_data.get("is_enabled") is False else 1,
                         str(model["source"]),
-                        str(model["model_id"]),
+                        model_id,
                         model.get("display_name"),
                         0 if model.get("enabled") is False else 1,
                         _as_int(model.get("sort_order", index)),
-                        now,
+                        existing_model.created_at if existing_model else created_at,
                         now,
                     ),
                 )
 
         return self.get_bundle_by_id_or_raise(record_id)
 
-    def get_bundle_by_id(self, connection_id: str) -> ProviderConnectionBundle | None:
+    def get_bundle_by_id(self, provider_id: str) -> ProviderBundle | None:
         row = self.connection.execute(
-            "SELECT * FROM provider_connections WHERE id = ?", (connection_id,)
+            "SELECT * FROM models WHERE provider = ? ORDER BY sort_order ASC, model_id ASC LIMIT 1",
+            (provider_id,),
         ).fetchone()
         if row is None:
             return None
 
         models = self.connection.execute(
-            "SELECT * FROM provider_models WHERE connection_id = ? ORDER BY sort_order ASC, model_id ASC",
-            (connection_id,),
+            "SELECT * FROM models WHERE provider = ? ORDER BY sort_order ASC, model_id ASC",
+            (provider_id,),
         ).fetchall()
 
-        return ProviderConnectionBundle(
-            connection=_map_provider_connection(row),
+        return ProviderBundle(
+            provider=_map_provider(row),
             models=[_map_provider_model(model_row) for model_row in models],
         )
 
-    def list_bundles(self) -> list[ProviderConnectionBundle]:
+    def list_bundles(self) -> list[ProviderBundle]:
         rows = self.connection.execute(
-            "SELECT id FROM provider_connections ORDER BY updated_at DESC, display_name ASC"
+            "SELECT provider FROM models GROUP BY provider ORDER BY MAX(updated_at) DESC, MIN(provider_display_name) ASC"
         ).fetchall()
         return [self.get_bundle_by_id_or_raise(str(row[0])) for row in rows]
 
-    def delete_by_id(self, connection_id: str) -> None:
-        self.connection.execute(
-            "DELETE FROM provider_connections WHERE id = ?", (connection_id,)
-        )
+    def delete_by_id(self, provider_id: str) -> None:
+        self.connection.execute("DELETE FROM models WHERE provider = ?", (provider_id,))
         self.connection.commit()
 
-    def get_bundle_by_id_or_raise(self, connection_id: str) -> ProviderConnectionBundle:
-        bundle = self.get_bundle_by_id(connection_id)
+    def get_bundle_by_id_or_raise(self, provider_id: str) -> ProviderBundle:
+        bundle = self.get_bundle_by_id(provider_id)
         if bundle is None:
-            raise ValueError(f"Provider connection not found: {connection_id}")
+            raise ValueError(f"Provider not found: {provider_id}")
         return bundle
 
 
@@ -346,7 +351,7 @@ class SessionsRepository:
         title: str = "New session",
         title_source: str = "placeholder",
         title_status: str = "idle",
-        active_connection_id: str | None = None,
+        active_provider_id: str | None = None,
         active_model_id: str | None = None,
     ) -> SessionRecord:
         record_id = session_id or create_id("sess")
@@ -357,7 +362,7 @@ class SessionsRepository:
             INSERT INTO sessions (
                 id, workspace_id, session_key, title, title_source, title_status,
                 title_generation_attempts, last_message_preview, message_count,
-                active_connection_id, active_model_id, created_at, updated_at, last_message_at
+                active_provider_id, active_model_id, created_at, updated_at, last_message_at
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
@@ -370,7 +375,7 @@ class SessionsRepository:
                 0,
                 None,
                 0,
-                active_connection_id,
+                active_provider_id,
                 active_model_id,
                 now,
                 now,
@@ -421,8 +426,8 @@ class SessionsRepository:
             "message_count": _as_int(
                 updates.get("message_count", existing.message_count)
             ),
-            "active_connection_id": updates.get(
-                "active_connection_id", existing.active_connection_id
+            "active_provider_id": updates.get(
+                "active_provider_id", existing.active_provider_id
             ),
             "active_model_id": updates.get("active_model_id", existing.active_model_id),
             "title": updates.get("title", existing.title),
@@ -442,7 +447,7 @@ class SessionsRepository:
                 last_message_at = ?,
                 last_message_preview = ?,
                 message_count = ?,
-                active_connection_id = ?,
+                active_provider_id = ?,
                 active_model_id = ?,
                 title = ?,
                 title_source = ?,
@@ -455,7 +460,7 @@ class SessionsRepository:
                 payload["last_message_at"],
                 payload["last_message_preview"],
                 payload["message_count"],
-                payload["active_connection_id"],
+                payload["active_provider_id"],
                 payload["active_model_id"],
                 payload["title"],
                 payload["title_source"],
@@ -754,7 +759,7 @@ class DraftAttachmentsRepository:
 @dataclass(frozen=True)
 class Repositories:
     workspaces: WorkspacesRepository
-    providers: ProviderConnectionsRepository
+    providers: ProvidersRepository
     sessions: SessionsRepository
     acp_event_log: AcpEventLogRepository
     attachments: AttachmentsRepository
@@ -764,7 +769,7 @@ class Repositories:
 def create_repositories(connection: sqlite3.Connection) -> Repositories:
     return Repositories(
         workspaces=WorkspacesRepository(connection),
-        providers=ProviderConnectionsRepository(connection),
+        providers=ProvidersRepository(connection),
         sessions=SessionsRepository(connection),
         acp_event_log=AcpEventLogRepository(connection),
         attachments=AttachmentsRepository(connection),
@@ -783,14 +788,16 @@ def _map_workspace(row: sqlite3.Row) -> WorkspaceRecord:
     )
 
 
-def _map_provider_connection(row: sqlite3.Row) -> ProviderConnectionRecord:
-    return ProviderConnectionRecord(
-        id=str(row["id"]),
-        kind=str(row["kind"]),
-        runtime_provider=str(row["runtime_provider"]),
-        catalog_provider_id=_nullable_str(row["catalog_provider_id"]),
-        custom_slug=_nullable_str(row["custom_slug"]),
-        display_name=str(row["display_name"]),
+def _map_provider(row: sqlite3.Row) -> ProviderRecord:
+    kind = str(row["kind"])
+    provider = str(row["provider"])
+    return ProviderRecord(
+        id=provider,
+        kind=kind,
+        runtime_provider=provider if kind == "builtin" else "custom",
+        catalog_provider_id=provider if kind == "builtin" else None,
+        custom_slug=provider if kind == "custom" else None,
+        display_name=str(row["provider_display_name"]),
         base_url=_nullable_str(row["base_url"]),
         secret_ref=str(row["secret_ref"]),
         api_key_configured=bool(row["api_key_configured"]),
@@ -805,7 +812,7 @@ def _map_provider_connection(row: sqlite3.Row) -> ProviderConnectionRecord:
 def _map_provider_model(row: sqlite3.Row) -> ProviderModelRecord:
     return ProviderModelRecord(
         id=str(row["id"]),
-        connection_id=str(row["connection_id"]),
+        provider_id=str(row["provider"]),
         source=str(row["source"]),
         model_id=str(row["model_id"]),
         display_name=_nullable_str(row["display_name"]),
@@ -827,7 +834,7 @@ def _map_session(row: sqlite3.Row) -> SessionRecord:
         title_generation_attempts=int(row["title_generation_attempts"]),
         last_message_preview=_nullable_str(row["last_message_preview"]),
         message_count=int(row["message_count"]),
-        active_connection_id=_nullable_str(row["active_connection_id"]),
+        active_provider_id=_nullable_str(row["active_provider_id"]),
         active_model_id=_nullable_str(row["active_model_id"]),
         created_at=str(row["created_at"]),
         updated_at=str(row["updated_at"]),

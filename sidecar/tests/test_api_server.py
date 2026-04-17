@@ -159,7 +159,7 @@ class ApiServerTests(unittest.TestCase):
                     "method": "_nsbot/workspace/sessions/create",
                     "params": {
                         "workspaceId": workspace_id,
-                        "connectionId": provider_id,
+                        "providerId": provider_id,
                         "modelId": "gpt-5.4",
                     },
                 }
@@ -194,7 +194,7 @@ class ApiServerTests(unittest.TestCase):
             real_path=str(workspace_path),
         )
         provider = repos.providers.save_bundle(
-            connection_data={
+            provider_data={
                 "kind": "builtin",
                 "runtime_provider": "openai",
                 "catalog_provider_id": "openai",
@@ -205,7 +205,7 @@ class ApiServerTests(unittest.TestCase):
         )
         session = repos.sessions.create(
             workspace_id=workspace.id,
-            active_connection_id=provider.connection.id,
+            active_provider_id=provider.provider.id,
             active_model_id="gpt-5.4",
         )
         repos.acp_event_log.append(

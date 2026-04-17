@@ -27,7 +27,7 @@ class RepositoriesTests(unittest.TestCase):
         )
 
         provider = self.repositories.providers.save_bundle(
-            connection_data={
+            provider_data={
                 "kind": "builtin",
                 "runtime_provider": "openai",
                 "catalog_provider_id": "openai",
@@ -45,7 +45,7 @@ class RepositoriesTests(unittest.TestCase):
 
         session = self.repositories.sessions.create(
             workspace_id=workspace.id,
-            active_connection_id=provider.connection.id,
+            active_provider_id=provider.provider.id,
             active_model_id="gpt-5.4",
         )
 
@@ -75,7 +75,7 @@ class RepositoriesTests(unittest.TestCase):
         self.assertEqual(
             len(self.repositories.acp_event_log.list_by_session_id(session.id)), 1
         )
-        self.assertTrue(provider.connection.secret_ref.startswith("sec_"))
+        self.assertTrue(provider.provider.secret_ref.startswith("sec_"))
         persisted_session = self.repositories.sessions.get_by_id(session.id)
         self.assertEqual(persisted_session.message_count, 1)
         self.assertEqual(
@@ -92,7 +92,7 @@ class RepositoriesTests(unittest.TestCase):
 
         session = self.repositories.sessions.create(
             workspace_id=workspace.id,
-            active_connection_id=None,
+            active_provider_id=None,
             active_model_id=None,
         )
         self.repositories.sessions.touch(
@@ -114,7 +114,7 @@ class RepositoriesTests(unittest.TestCase):
 
     def test_provider_fields_survive_reopening_database(self) -> None:
         provider = self.repositories.providers.save_bundle(
-            connection_data={
+            provider_data={
                 "kind": "builtin",
                 "runtime_provider": "openai",
                 "catalog_provider_id": "openai",
@@ -132,8 +132,8 @@ class RepositoriesTests(unittest.TestCase):
         reopened = create_repositories(reopened_connection)
 
         reopened_provider = reopened.providers.get_bundle_by_id_or_raise(
-            provider.connection.id
+            provider.provider.id
         )
-        self.assertEqual(reopened_provider.connection.model_policy, "restricted")
-        self.assertEqual(reopened_provider.connection.preferred_model_id, "gpt-5.4")
-        self.assertEqual(reopened_provider.connection.api_key_configured, True)
+        self.assertEqual(reopened_provider.provider.model_policy, "restricted")
+        self.assertEqual(reopened_provider.provider.preferred_model_id, "gpt-5.4")
+        self.assertEqual(reopened_provider.provider.api_key_configured, True)

@@ -102,7 +102,7 @@ class AcpSessionTests(unittest.TestCase):
             real_path=str(temp_dir / "ws"),
         )
         self.provider = self.app_state.repositories.providers.save_bundle(
-            connection_data={
+            provider_data={
                 "kind": "builtin",
                 "runtime_provider": "openai",
                 "catalog_provider_id": "openai",
@@ -112,7 +112,7 @@ class AcpSessionTests(unittest.TestCase):
             }
         )
         self.app_state.secret_store.save_provider_secret(
-            self.provider.connection.secret_ref,
+            self.provider.provider.secret_ref,
             ProviderSecretPayload(version=1, api_key="sk-test"),
         )
 
@@ -139,7 +139,7 @@ class AcpSessionTests(unittest.TestCase):
     def test_timeline_list(self) -> None:
         session = self.app_state.repositories.sessions.create(
             workspace_id=self.workspace.id,
-            active_connection_id=self.provider.connection.id,
+            active_provider_id=self.provider.provider.id,
             active_model_id="gpt-5.4",
         )
         self.app_state.repositories.acp_event_log.append(
@@ -339,7 +339,7 @@ class AcpSessionTests(unittest.TestCase):
     def test_attachment_resource_is_expanded_into_prompt_text(self) -> None:
         session = self.app_state.repositories.sessions.create(
             workspace_id=self.workspace.id,
-            active_connection_id=self.provider.connection.id,
+            active_provider_id=self.provider.provider.id,
             active_model_id="gpt-5.4",
         )
         attachment = self.app_state.session_service.create_attachment(
@@ -374,7 +374,7 @@ class AcpSessionTests(unittest.TestCase):
     def test_user_message_chunk_uses_display_text_for_attachment_resources(self) -> None:
         session = self.app_state.repositories.sessions.create(
             workspace_id=self.workspace.id,
-            active_connection_id=self.provider.connection.id,
+            active_provider_id=self.provider.provider.id,
             active_model_id="gpt-5.4",
         )
         attachment = self.app_state.session_service.create_attachment(
@@ -427,7 +427,7 @@ class AcpSessionTests(unittest.TestCase):
     def test_prompt(self) -> None:
         session = self.app_state.repositories.sessions.create(
             workspace_id=self.workspace.id,
-            active_connection_id=self.provider.connection.id,
+            active_provider_id=self.provider.provider.id,
             active_model_id="gpt-5.4",
         )
         transport = _InMemoryTransport([])
@@ -449,7 +449,7 @@ class AcpSessionTests(unittest.TestCase):
     def test_prompt_can_be_cancelled(self) -> None:
         session = self.app_state.repositories.sessions.create(
             workspace_id=self.workspace.id,
-            active_connection_id=self.provider.connection.id,
+            active_provider_id=self.provider.provider.id,
             active_model_id="gpt-5.4",
         )
         transport = _InMemoryTransport([])
@@ -497,7 +497,7 @@ class AcpSessionTests(unittest.TestCase):
     def test_edit_and_prompt_rejects_non_latest_user_event(self) -> None:
         session = self.app_state.repositories.sessions.create(
             workspace_id=self.workspace.id,
-            active_connection_id=self.provider.connection.id,
+            active_provider_id=self.provider.provider.id,
             active_model_id="gpt-5.4",
         )
         self.app_state.repositories.acp_event_log.append(
@@ -544,7 +544,7 @@ class AcpSessionTests(unittest.TestCase):
     def test_edit_and_prompt_allows_latest_user_event(self) -> None:
         session = self.app_state.repositories.sessions.create(
             workspace_id=self.workspace.id,
-            active_connection_id=self.provider.connection.id,
+            active_provider_id=self.provider.provider.id,
             active_model_id="gpt-5.4",
         )
         self.app_state.repositories.acp_event_log.append(
@@ -588,7 +588,7 @@ class AcpSessionTests(unittest.TestCase):
     def test_edit_and_prompt_allows_latest_user_when_last_event_is_assistant(self) -> None:
         session = self.app_state.repositories.sessions.create(
             workspace_id=self.workspace.id,
-            active_connection_id=self.provider.connection.id,
+            active_provider_id=self.provider.provider.id,
             active_model_id="gpt-5.4",
         )
         self.app_state.repositories.acp_event_log.append(

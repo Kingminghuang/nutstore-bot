@@ -11,8 +11,8 @@ from nsbot_sidecar.providers.provider_catalog import BUILTIN_PROVIDERS, catalog_
 from nsbot_sidecar.api.redaction import redact_sensitive
 from nsbot_sidecar.domain.sensitive_write_guard import detect_sensitive_write_issues
 from nsbot_sidecar.infrastructure.repositories import (
-    ProviderConnectionBundle,
-    ProviderConnectionsRepository,
+    ProviderBundle,
+    ProvidersRepository,
     ProviderModelRecord,
 )
 from nsbot_sidecar.infrastructure.secret_store import LocalSecretStore, ProviderSecretPayload
@@ -23,7 +23,7 @@ LOGGER = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class ProviderService:
-    repositories: ProviderConnectionsRepository
+    repositories: ProvidersRepository
     secret_store: LocalSecretStore
 
     def catalog_payload(self) -> dict[str, Any]:
@@ -31,10 +31,10 @@ class ProviderService:
         providers.append(custom_provider_template())
         return {"version": catalog_version(providers), "providers": providers}
 
-    def list_connections_payload(self) -> dict[str, list[dict[str, Any]]]:
+    def list_providers_payload(self) -> dict[str, list[dict[str, Any]]]:
         bundles = self._reconcile_catalog_preferences(self.repositories.list_bundles())
         return {
-            "connections": [
+            "providers": [
                 serialize_bundle(bundle, self.secret_store) for bundle in bundles
             ]
         }
@@ -43,83 +43,78 @@ class ProviderService:
         catalog_entries = list_providers()
         catalog_by_id = {str(entry["id"]): entry for entry in catalog_entries}
         groups: list[dict[str, Any]] = []
-        preferred_by_connection: dict[str, str] = {}
+        preferred_by_provider: dict[str, str] = {}
 
         for bundle in self._reconcile_catalog_preferences(
             self.repositories.list_bundles()
         ):
-            connection = bundle.connection
-            if not connection.is_enabled or not connection.api_key_configured:
+            provider = bundle.provider
+            if not provider.is_enabled or not provider.api_key_configured:
                 continue
 
             provider_id = (
-                connection.catalog_provider_id
-                or connection.custom_slug
-                or connection.runtime_provider
+                provider.catalog_provider_id
+                or provider.custom_slug
+                or provider.runtime_provider
             )
             models: list[dict[str, Any]] = []
 
-            if connection.kind == "builtin":
-                catalog_provider_id = connection.catalog_provider_id or ""
+            if provider.kind == "builtin":
+                catalog_provider_id = provider.catalog_provider_id or ""
                 catalog_entry = catalog_by_id.get(catalog_provider_id)
                 if catalog_entry is None:
                     continue
 
                 catalog_models = list(catalog_entry.get("models", []))
-                if connection.model_policy == "restricted":
-                    catalog_models_by_id = {
-                        str(model.get("id") or ""): model for model in catalog_models
-                    }
-                    enabled_model_ids = [
+                if provider.model_policy == "restricted":
+                    enabled_model_ids = {
                         model.model_id
                         for model in bundle.models
-                        if model.source == "catalog" and model.enabled
-                    ]
+                        if model.source == "catalog" and model.enabled and model.model_id
+                    }
                     catalog_models = [
-                        catalog_models_by_id[model_id]
-                        for model_id in enabled_model_ids
-                        if model_id in catalog_models_by_id
+                        model
+                        for model in catalog_models
+                        if str(model.get("id") or "") in enabled_model_ids
                     ]
 
                 models = [
                     serialize_catalog_model_option(
-                        connection_id=connection.id,
-                        provider_label=connection.display_name,
+                        provider_label=provider.display_name,
                         provider_id=provider_id,
                         model=model,
                     )
                     for model in catalog_models
                 ]
-            elif connection.kind == "custom":
+            elif provider.kind == "custom":
                 models = [
                     serialize_custom_model_option(
-                        connection_id=connection.id,
-                        provider_label=connection.display_name,
+                        provider_label=provider.display_name,
                         provider_id=provider_id,
                         model=model,
                     )
                     for model in bundle.models
-                    if model.source == "custom" and model.enabled
+                    if model.source == "custom" and model.enabled and model.model_id
                 ]
 
             if not models:
                 continue
 
-            if connection.preferred_model_id:
-                preferred_by_connection[connection.id] = connection.preferred_model_id
+            if provider.preferred_model_id:
+                preferred_by_provider[provider.id] = provider.preferred_model_id
 
             groups.append(
                 {
-                    "connectionId": connection.id,
-                    "providerLabel": connection.display_name,
-                    "providerId": provider_id,
+                    "providerId": provider.id,
+                    "providerLabel": provider.display_name,
+                    "providerName": provider_id,
                     "models": models,
                 }
             )
 
         return {
             "groups": groups,
-            "defaultSelection": select_default_model(groups, preferred_by_connection),
+            "defaultSelection": select_default_model(groups, preferred_by_provider),
         }
 
     def create_provider(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -140,10 +135,10 @@ class ProviderService:
         bundle = self._upsert_provider(merged, existing=existing)
         LOGGER.info(
             "Provider updated: provider_id=%s kind=%s runtime_provider=%s display_name=%s",
-            bundle.connection.id,
-            bundle.connection.kind,
-            bundle.connection.runtime_provider,
-            bundle.connection.display_name,
+            bundle.provider.id,
+            bundle.provider.kind,
+            bundle.provider.runtime_provider,
+            bundle.provider.display_name,
         )
         return serialize_bundle(bundle, self.secret_store)
 
@@ -166,24 +161,24 @@ class ProviderService:
                     "Please migrate or delete related sessions before removing it."
                 ),
             ) from exc
-        self.secret_store.delete_provider_secret(bundle.connection.secret_ref)
+        self.secret_store.delete_provider_secret(bundle.provider.secret_ref)
 
     def _upsert_provider(
         self,
         payload: dict[str, Any],
         *,
-        existing: ProviderConnectionBundle | None,
-    ) -> ProviderConnectionBundle:
+        existing: ProviderBundle | None,
+    ) -> ProviderBundle:
         normalized = normalize_provider_payload(payload, existing)
 
         existing_secret = (
-            self.secret_store.load_provider_secret(existing.connection.secret_ref)
+            self.secret_store.load_provider_secret(existing.provider.secret_ref)
             if existing is not None
             else None
         ) or ProviderSecretPayload(version=1, api_key=None)
 
         secret_ref = (
-            existing.connection.secret_ref
+            existing.provider.secret_ref
             if existing is not None
             else normalized["secret_ref"]
         )
@@ -191,7 +186,7 @@ class ProviderService:
 
         sensitive_issues = detect_sensitive_write_issues(
             {
-                "connection_data": normalized,
+                "provider_data": normalized,
                 "models": normalized["models"],
             }
         )
@@ -214,7 +209,7 @@ class ProviderService:
             )
 
         bundle = self.repositories.save_bundle(
-            connection_data={
+            provider_data={
                 "id": normalized["id"],
                 "kind": normalized["kind"],
                 "runtime_provider": normalized["runtime_provider"],
@@ -231,27 +226,27 @@ class ProviderService:
             models=normalized["models"],
         )
         self.secret_store.save_provider_secret(
-            bundle.connection.secret_ref, secret_payload
+            bundle.provider.secret_ref, secret_payload
         )
         return bundle
 
     def _reconcile_catalog_preferences(
-        self, bundles: list[ProviderConnectionBundle]
-    ) -> list[ProviderConnectionBundle]:
+        self, bundles: list[ProviderBundle]
+    ) -> list[ProviderBundle]:
         catalog_by_id = {provider["id"]: provider for provider in list_providers()}
-        reconciled: list[ProviderConnectionBundle] = []
+        reconciled: list[ProviderBundle] = []
         for bundle in bundles:
-            if bundle.connection.kind != "builtin":
+            if bundle.provider.kind != "builtin":
                 reconciled.append(bundle)
                 continue
 
-            preferred_model_id = bundle.connection.preferred_model_id
+            preferred_model_id = bundle.provider.preferred_model_id
             if preferred_model_id is None:
                 reconciled.append(bundle)
                 continue
 
             catalog_entry = catalog_by_id.get(
-                bundle.connection.catalog_provider_id or ""
+                bundle.provider.catalog_provider_id or ""
             )
             catalog_models = {
                 str(model.get("id") or "")
@@ -262,11 +257,12 @@ class ProviderService:
                 continue
 
             next_preferred_model_id = None
-            if bundle.connection.model_policy == "restricted":
+            if bundle.provider.model_policy == "restricted":
                 for model in bundle.models:
                     if (
                         model.source == "catalog"
                         and model.enabled
+                        and model.model_id
                         and model.model_id in catalog_models
                     ):
                         next_preferred_model_id = model.model_id
@@ -277,19 +273,19 @@ class ProviderService:
                 )
 
             updated_bundle = self.repositories.save_bundle(
-                connection_data={
-                    "id": bundle.connection.id,
-                    "kind": bundle.connection.kind,
-                    "runtime_provider": bundle.connection.runtime_provider,
-                    "catalog_provider_id": bundle.connection.catalog_provider_id,
-                    "custom_slug": bundle.connection.custom_slug,
-                    "display_name": bundle.connection.display_name,
-                    "base_url": bundle.connection.base_url,
-                    "secret_ref": bundle.connection.secret_ref,
-                    "api_key_configured": bundle.connection.api_key_configured,
-                    "model_policy": bundle.connection.model_policy,
+                provider_data={
+                    "id": bundle.provider.id,
+                    "kind": bundle.provider.kind,
+                    "runtime_provider": bundle.provider.runtime_provider,
+                    "catalog_provider_id": bundle.provider.catalog_provider_id,
+                    "custom_slug": bundle.provider.custom_slug,
+                    "display_name": bundle.provider.display_name,
+                    "base_url": bundle.provider.base_url,
+                    "secret_ref": bundle.provider.secret_ref,
+                    "api_key_configured": bundle.provider.api_key_configured,
+                    "model_policy": bundle.provider.model_policy,
                     "preferred_model_id": next_preferred_model_id,
-                    "is_enabled": bundle.connection.is_enabled,
+                    "is_enabled": bundle.provider.is_enabled,
                 },
                 models=[
                     {
@@ -319,10 +315,10 @@ def custom_provider_template() -> dict[str, Any]:
 
 
 def normalize_provider_payload(
-    payload: dict[str, Any], existing: ProviderConnectionBundle | None
+    payload: dict[str, Any], existing: ProviderBundle | None
 ) -> dict[str, Any]:
     kind = str(
-        payload.get("kind") or (existing.connection.kind if existing else "")
+        payload.get("kind") or (existing.provider.kind if existing else "")
     ).strip()
     if kind not in {"builtin", "custom"}:
         raise HTTPException(
@@ -331,7 +327,7 @@ def normalize_provider_payload(
 
     catalog_by_id = {provider["id"]: provider for provider in list_providers()}
     provider_id = (
-        str(payload.get("id") or (existing.connection.id if existing else "")).strip()
+        str(payload.get("id") or (existing.provider.id if existing else "")).strip()
         or None
     )
 
@@ -339,7 +335,7 @@ def normalize_provider_payload(
         catalog_provider_id = str(
             payload.get("catalogProviderId")
             or payload.get("catalog_provider_id")
-            or (existing.connection.catalog_provider_id if existing else "")
+            or (existing.provider.catalog_provider_id if existing else "")
         ).strip()
         if catalog_provider_id not in BUILTIN_PROVIDERS:
             raise HTTPException(
@@ -349,10 +345,12 @@ def normalize_provider_payload(
 
         catalog_entry = catalog_by_id[catalog_provider_id]
         runtime_provider = str(catalog_entry["runtimeProvider"])
+        if provider_id is None:
+            provider_id = catalog_provider_id
         base_url_policy = str(catalog_entry["baseUrlPolicy"])
         base_url_input = payload.get("baseUrl", payload.get("base_url"))
         if base_url_input is None and existing is not None:
-            base_url_input = existing.connection.base_url
+            base_url_input = existing.provider.base_url
         base_url = _normalize_optional_string(base_url_input)
         if base_url_policy == "hidden":
             base_url = None
@@ -361,23 +359,33 @@ def normalize_provider_payload(
             payload.get("displayName", payload.get("display_name"))
         )
         if display_name is None and existing is not None:
-            display_name = existing.connection.display_name
+            display_name = existing.provider.display_name
         if display_name is None:
             display_name = str(catalog_entry["label"])
 
         model_policy = str(
             payload.get("modelPolicy")
             or payload.get("model_policy")
-            or (existing.connection.model_policy if existing else "all_catalog")
+            or (existing.provider.model_policy if existing else "all_catalog")
         )
         enabled_model_ids = payload.get("enabledModelIds")
         if enabled_model_ids is None and existing is not None:
             enabled_model_ids = [
                 model.model_id
                 for model in existing.models
-                if model.source == "catalog" and model.enabled
+                if model.source == "catalog" and model.enabled and model.model_id
             ]
         enabled_model_ids = _normalize_string_list(enabled_model_ids)
+        catalog_model_ids = [
+            str(model.get("id") or "")
+            for model in catalog_entry.get("models", [])
+            if model.get("id")
+        ]
+        enabled_catalog_ids = (
+            set(enabled_model_ids)
+            if model_policy == "restricted"
+            else set(catalog_model_ids)
+        )
 
         models = [
             {
@@ -393,16 +401,16 @@ def normalize_provider_payload(
                 "source": "catalog",
                 "model_id": model_id,
                 "display_name": None,
-                "enabled": True,
+                "enabled": model_id in enabled_catalog_ids,
                 "sort_order": index,
             }
-            for index, model_id in enumerate(enabled_model_ids)
+            for index, model_id in enumerate(catalog_model_ids)
         ]
         preferred_model_id = _normalize_optional_string(
             payload.get("preferredModelId", payload.get("preferred_model_id"))
         )
         if preferred_model_id is None and existing is not None:
-            preferred_model_id = existing.connection.preferred_model_id
+            preferred_model_id = existing.provider.preferred_model_id
 
         return {
             "id": provider_id,
@@ -412,7 +420,7 @@ def normalize_provider_payload(
             "custom_slug": None,
             "display_name": display_name,
             "base_url": base_url,
-            "secret_ref": existing.connection.secret_ref
+            "secret_ref": existing.provider.secret_ref
             if existing
             else f"sec_{provider_id or 'provider'}",
             "api_key_input": payload.get(
@@ -428,17 +436,19 @@ def normalize_provider_payload(
 
     custom_slug = _normalize_optional_string(
         payload.get("customSlug", payload.get("custom_slug"))
-        or (existing.connection.custom_slug if existing else None)
+        or (existing.provider.custom_slug if existing else None)
     )
     if custom_slug is None:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Custom provider slug is required",
         )
+    if provider_id is None:
+        provider_id = custom_slug
 
     base_url_value = payload.get("baseUrl", payload.get("base_url", _VALUE_UNSET))
     if base_url_value is _VALUE_UNSET and existing is not None:
-        base_url_value = existing.connection.base_url
+        base_url_value = existing.provider.base_url
     base_url = (
         None
         if base_url_value is _VALUE_UNSET
@@ -454,7 +464,7 @@ def normalize_provider_payload(
         payload.get("displayName", payload.get("display_name"))
     )
     if display_name is None and existing is not None:
-        display_name = existing.connection.display_name
+        display_name = existing.provider.display_name
     if display_name is None:
         display_name = custom_slug
 
@@ -475,7 +485,7 @@ def normalize_provider_payload(
         payload.get("preferredModelId", payload.get("preferred_model_id"))
     )
     if preferred_model_id is None and existing is not None:
-        preferred_model_id = existing.connection.preferred_model_id
+        preferred_model_id = existing.provider.preferred_model_id
 
     return {
         "id": provider_id,
@@ -485,7 +495,7 @@ def normalize_provider_payload(
         "custom_slug": custom_slug,
         "display_name": display_name,
         "base_url": base_url,
-        "secret_ref": existing.connection.secret_ref
+        "secret_ref": existing.provider.secret_ref
         if existing
         else f"sec_{provider_id or custom_slug}",
         "api_key_input": payload.get(
@@ -501,7 +511,7 @@ def normalize_provider_payload(
 
 
 def normalize_custom_models(
-    custom_models: Any, existing: ProviderConnectionBundle | None
+    custom_models: Any, existing: ProviderBundle | None
 ) -> list[dict[str, Any]]:
     if custom_models is None:
         return []
@@ -559,40 +569,40 @@ def build_secret_payload(
 
 
 def resolve_api_key_configured(
-    payload: dict[str, Any], existing: ProviderConnectionBundle | None
+    payload: dict[str, Any], existing: ProviderBundle | None
 ) -> bool:
     if "apiKey" in payload:
         return _normalize_optional_string(payload.get("apiKey")) is not None
     if "api_key" in payload:
         return _normalize_optional_string(payload.get("api_key")) is not None
-    return existing.connection.api_key_configured if existing is not None else False
+    return existing.provider.api_key_configured if existing is not None else False
 
 
 def serialize_bundle(
-    bundle: ProviderConnectionBundle, secret_store: LocalSecretStore
+    bundle: ProviderBundle, secret_store: LocalSecretStore
 ) -> dict[str, Any]:
     return {
-        "id": bundle.connection.id,
-        "kind": bundle.connection.kind,
-        "runtimeProvider": bundle.connection.runtime_provider,
-        "catalogProviderId": bundle.connection.catalog_provider_id,
-        "customSlug": bundle.connection.custom_slug,
-        "displayName": bundle.connection.display_name,
-        "baseUrl": bundle.connection.base_url,
-        "apiKeyConfigured": bundle.connection.api_key_configured,
-        "modelPolicy": bundle.connection.model_policy,
-        "preferredModelId": bundle.connection.preferred_model_id,
+        "id": bundle.provider.id,
+        "kind": bundle.provider.kind,
+        "runtimeProvider": bundle.provider.runtime_provider,
+        "catalogProviderId": bundle.provider.catalog_provider_id,
+        "customSlug": bundle.provider.custom_slug,
+        "displayName": bundle.provider.display_name,
+        "baseUrl": bundle.provider.base_url,
+        "apiKeyConfigured": bundle.provider.api_key_configured,
+        "modelPolicy": bundle.provider.model_policy,
+        "preferredModelId": bundle.provider.preferred_model_id,
         "enabledModelIds": [
             model.model_id
             for model in bundle.models
-            if model.source == "catalog" and model.enabled
+            if model.source == "catalog" and model.enabled and model.model_id
         ],
         "customModels": [
             serialize_custom_model(model)
             for model in bundle.models
-            if model.source == "custom"
+            if model.source == "custom" and model.model_id
         ],
-        "updatedAt": bundle.connection.updated_at,
+        "updatedAt": bundle.provider.updated_at,
     }
 
 
@@ -607,15 +617,13 @@ def serialize_custom_model(model: ProviderModelRecord) -> dict[str, Any]:
 
 def serialize_catalog_model_option(
     *,
-    connection_id: str,
     provider_label: str,
     provider_id: str,
     model: dict[str, Any],
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
-        "connectionId": connection_id,
-        "providerLabel": provider_label,
         "providerId": provider_id,
+        "providerLabel": provider_label,
         "modelId": str(model.get("id") or ""),
         "label": str(model.get("id") or ""),
         "supportsReasoningTokens": bool(model.get("supportsReasoningTokens", False)),
@@ -630,15 +638,13 @@ def serialize_catalog_model_option(
 
 def serialize_custom_model_option(
     *,
-    connection_id: str,
     provider_label: str,
     provider_id: str,
     model: ProviderModelRecord,
 ) -> dict[str, Any]:
     return {
-        "connectionId": connection_id,
-        "providerLabel": provider_label,
         "providerId": provider_id,
+        "providerLabel": provider_label,
         "modelId": model.model_id,
         "label": model.display_name or model.model_id,
         "supportsReasoningTokens": False,
@@ -646,33 +652,33 @@ def serialize_custom_model_option(
 
 
 def select_default_model(
-    groups: list[dict[str, Any]], preferred_by_connection: dict[str, str]
+    groups: list[dict[str, Any]], preferred_by_provider: dict[str, str]
 ) -> dict[str, str] | None:
     for group in groups:
-        connection_id = str(group.get("connectionId") or "")
+        provider_id = str(group.get("providerId") or "")
         models = group.get("models")
-        if not connection_id or not isinstance(models, list) or not models:
+        if not provider_id or not isinstance(models, list) or not models:
             continue
 
-        preferred_model_id = preferred_by_connection.get(connection_id)
+        preferred_model_id = preferred_by_provider.get(provider_id)
         if preferred_model_id and any(
             str(model.get("modelId") or "") == preferred_model_id for model in models
         ):
             return {
-                "connectionId": connection_id,
+                "providerId": provider_id,
                 "modelId": preferred_model_id,
             }
 
     for group in groups:
-        connection_id = str(group.get("connectionId") or "")
+        provider_id = str(group.get("providerId") or "")
         models = group.get("models")
-        if not connection_id or not isinstance(models, list) or not models:
+        if not provider_id or not isinstance(models, list) or not models:
             continue
 
         first_model_id = str(models[0].get("modelId") or "")
         if first_model_id:
             return {
-                "connectionId": connection_id,
+                "providerId": provider_id,
                 "modelId": first_model_id,
             }
 
@@ -680,7 +686,7 @@ def select_default_model(
 
 
 def _find_existing_model(
-    existing: ProviderConnectionBundle | None, source: str, model_id: str
+    existing: ProviderBundle | None, source: str, model_id: str
 ) -> ProviderModelRecord | None:
     if existing is None:
         return None

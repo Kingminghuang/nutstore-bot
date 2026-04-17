@@ -125,6 +125,9 @@ class RuntimeServiceTests(unittest.TestCase):
             model_id="gpt-5.4",
             ns_bot_home=str(self.temp_dir),
             workspace_path_default=str(self.workspace_a),
+            provider="openai",
+            api_key="sk-test",
+            model="gpt-5.4",
             max_steps=6,
         )
 
@@ -151,7 +154,7 @@ class RuntimeServiceTests(unittest.TestCase):
         ]
         self.assertGreaterEqual(len(assistant_messages), 1)
 
-    def test_direct_mode_execution(self) -> None:
+    def test_configured_model_execution(self) -> None:
         cfg = replace(
             self._config(),
             provider="openai",
@@ -176,7 +179,7 @@ class RuntimeServiceTests(unittest.TestCase):
 
         self.assertEqual(result["final_answer"], "direct-ok")
 
-    def test_direct_mode_passes_reasoning_effort_to_model_factory(self) -> None:
+    def test_configured_model_passes_reasoning_effort_to_model_factory(self) -> None:
         captured: dict[str, object] = {}
 
         cfg = replace(
@@ -206,7 +209,7 @@ class RuntimeServiceTests(unittest.TestCase):
         self.assertEqual(result["final_answer"], "direct-ok")
         self.assertEqual(captured["reasoning_effort"], "high")
 
-    def test_direct_mode_requires_api_key(self) -> None:
+    def test_configured_model_requires_api_key(self) -> None:
         cfg = replace(
             self._config(),
             provider="openai",
@@ -228,6 +231,7 @@ class RuntimeServiceTests(unittest.TestCase):
             )
 
         self.assertEqual(ctx.exception.code, "missing_api_key")
+        self.assertEqual(ctx.exception.message, "configured api key is missing")
 
     def test_provider_error_passthrough(self) -> None:
         cfg = replace(

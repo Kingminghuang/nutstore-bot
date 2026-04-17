@@ -62,7 +62,7 @@ class TimelineService:
         self,
         session_id: str,
         *,
-        active_connection_id: str | None = None,
+        active_provider_id: str | None = None,
         active_model_id: str | None = None,
         trigger_title_generation: bool = False,
     ) -> dict[str, Any]:
@@ -76,7 +76,7 @@ class TimelineService:
             message_count=len(transcript_messages),
             last_message_preview=(last_message or "")[:280] if last_message else None,
             last_message_at=events[-1].created_at if events else None,
-            active_connection_id=active_connection_id or session.active_connection_id,
+            active_provider_id=active_provider_id or session.active_provider_id,
             active_model_id=active_model_id or session.active_model_id,
             updated_at=None,
         )
@@ -159,7 +159,7 @@ def serialize_session_summary(session) -> dict[str, Any]:
         "lastMessageAt": session.last_message_at,
         "messageCount": session.message_count,
         "lastMessagePreview": session.last_message_preview,
-        "activeConnectionId": session.active_connection_id,
+        "activeProviderId": session.active_provider_id,
         "activeModelId": session.active_model_id,
     }
 

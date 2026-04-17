@@ -75,46 +75,33 @@ CREATE TABLE IF NOT EXISTS workspaces (
   updated_at TEXT NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS provider_connections (
-  id TEXT PRIMARY KEY,
-  kind TEXT NOT NULL CHECK (kind IN ('builtin', 'custom')),
-  runtime_provider TEXT NOT NULL CHECK (
-    runtime_provider IN ('anthropic', 'deepseek', 'gemini', 'openai', 'custom')
-  ),
-  catalog_provider_id TEXT,
-  custom_slug TEXT,
-  display_name TEXT NOT NULL,
-  base_url TEXT,
-  secret_ref TEXT NOT NULL,
-  api_key_configured INTEGER NOT NULL DEFAULT 0,
-  model_policy TEXT NOT NULL DEFAULT 'all_catalog' CHECK (
-    model_policy IN ('all_catalog', 'restricted', 'custom_only')
-  ),
-  preferred_model_id TEXT,
-  is_enabled INTEGER NOT NULL DEFAULT 1,
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
+CREATE TABLE IF NOT EXISTS models (
+    id TEXT PRIMARY KEY,
+    provider TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('builtin', 'custom')),
+    provider_display_name TEXT NOT NULL,
+    base_url TEXT,
+    secret_ref TEXT NOT NULL,
+    api_key_configured INTEGER NOT NULL DEFAULT 0,
+    model_policy TEXT NOT NULL DEFAULT 'all_catalog' CHECK (
+        model_policy IN ('all_catalog', 'restricted', 'custom_only')
+    ),
+    preferred_model_id TEXT,
+    is_enabled INTEGER NOT NULL DEFAULT 1,
+    source TEXT NOT NULL CHECK (source IN ('catalog', 'custom')),
+    model_id TEXT NOT NULL,
+    display_name TEXT,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS uq_builtin_provider_connection
-ON provider_connections(catalog_provider_id)
-WHERE kind = 'builtin';
+CREATE UNIQUE INDEX IF NOT EXISTS uq_models_provider_source_model
+ON models(provider, source, model_id);
 
-CREATE TABLE IF NOT EXISTS provider_models (
-  id TEXT PRIMARY KEY,
-  connection_id TEXT NOT NULL,
-  source TEXT NOT NULL CHECK (source IN ('catalog', 'custom')),
-  model_id TEXT NOT NULL,
-  display_name TEXT,
-  enabled INTEGER NOT NULL DEFAULT 1,
-  sort_order INTEGER NOT NULL DEFAULT 0,
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL,
-  FOREIGN KEY (connection_id) REFERENCES provider_connections(id) ON DELETE CASCADE
-);
-
-CREATE INDEX IF NOT EXISTS idx_provider_models_connection
-ON provider_models(connection_id, sort_order, model_id);
+CREATE INDEX IF NOT EXISTS idx_models_provider_order
+ON models(provider, sort_order, model_id);
 
 CREATE TABLE IF NOT EXISTS sessions (
   id TEXT PRIMARY KEY,
@@ -130,13 +117,12 @@ CREATE TABLE IF NOT EXISTS sessions (
   title_generation_attempts INTEGER NOT NULL DEFAULT 0,
   last_message_preview TEXT,
   message_count INTEGER NOT NULL DEFAULT 0,
-  active_connection_id TEXT,
+    active_provider_id TEXT,
   active_model_id TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   last_message_at TEXT,
-  FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE,
-  FOREIGN KEY (active_connection_id) REFERENCES provider_connections(id)
+    FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
 );
 
 CREATE INDEX IF NOT EXISTS idx_sessions_workspace_updated
