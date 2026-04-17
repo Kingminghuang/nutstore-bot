@@ -24,24 +24,6 @@ class LocalPathsTests(unittest.TestCase):
         self.assertEqual(secrets_dir_path(custom), Path(custom).resolve() / "secrets")
         self.assertEqual(master_key_path(custom), Path(custom).resolve() / "master.key")
 
-    def test_windows_prefers_appdata(self) -> None:
-        with patch("nsbot_sidecar.infrastructure.local_paths.sys.platform", "win32"):
-            with patch.dict(
-                os.environ,
-                {"APPDATA": r"C:\\Users\\test\\AppData\\Roaming"},
-                clear=True,
-            ):
-                self.assertEqual(
-                    nsbot_home(),
-                    (Path(r"C:\Users\test\AppData\Roaming") / "NutstoreBot").resolve(),
-                )
-
-    def test_linux_prefers_xdg_state_home(self) -> None:
-        with patch("nsbot_sidecar.infrastructure.local_paths.sys.platform", "linux"):
-            with patch.dict(
-                os.environ, {"XDG_STATE_HOME": "/tmp/xdg-state"}, clear=True
-            ):
-                self.assertEqual(
-                    nsbot_home(),
-                    (Path("/tmp/xdg-state") / "NutstoreBot").resolve(),
-                )
+    def test_default_home_is_always_user_home_nutstorebot(self) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(nsbot_home(), (Path.home() / "NutstoreBot").resolve())

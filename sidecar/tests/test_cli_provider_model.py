@@ -2,14 +2,13 @@ from __future__ import annotations
 
 import io
 import json
-import subprocess
 import shutil
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from unittest import mock
-from pathlib import Path
 
+from nsbot_sidecar import cli as cli_module
 from nsbot_sidecar.cli import main as cli_main
 from nsbot_sidecar.providers.provider_catalog import list_providers
 from nsbot_sidecar.infrastructure.repositories import create_repositories
@@ -93,24 +92,30 @@ class CliProviderModelTests(unittest.TestCase):
         self.assertEqual(payload["deletedProviderId"], connection_id)
         self.assertIsNone(self.repositories.providers.get_bundle_by_id(connection_id))
 
-    def test_models_remove_rejected_for_builtin_connection(self) -> None:
-        connection_id = self._create_builtin_openai()
-        code, _stdout, stderr = _run_cli(
+    def test_models_create_persists_custom_provider(self) -> None:
+        code, stdout, _stderr = _run_cli(
             [
                 "--ns-bot-home",
                 self.temp_dir,
                 "models",
-                "remove",
-                "--provider-id",
-                connection_id,
-                "--model",
-                "gpt-5.4",
+                "create",
+                "--name",
+                "my-gateway",
+                "--base-url",
+                "https://llm.example.com/v1",
+                "--model-id",
+                "model-a",
+                "--api-key",
+                "sk-test",
             ]
         )
-        self.assertEqual(code, 1)
-        self.assertIn("only supported for custom", stderr)
+        self.assertEqual(code, 0)
+        payload = json.loads(stdout)
+        self.assertEqual(payload["kind"], "custom")
+        self.assertEqual(payload["customSlug"], "my-gateway")
+        self.assertEqual(payload["preferredModelId"], "model-a")
 
-    def test_models_remove_custom_deletes_model(self) -> None:
+    def test_models_get_returns_provider_model_tuple(self) -> None:
         bundle = self.repositories.providers.save_bundle(
             provider_data={
                 "kind": "custom",
@@ -133,13 +138,6 @@ class CliProviderModelTests(unittest.TestCase):
                     "enabled": True,
                     "sort_order": 0,
                 },
-                {
-                    "source": "custom",
-                    "model_id": "model-b",
-                    "display_name": "Model B",
-                    "enabled": True,
-                    "sort_order": 1,
-                },
             ],
         )
 
@@ -148,91 +146,61 @@ class CliProviderModelTests(unittest.TestCase):
                 "--ns-bot-home",
                 self.temp_dir,
                 "models",
-                "remove",
-                "--provider-id",
-                bundle.provider.id,
-                "--model",
-                "model-a",
+                "get",
+                f"{bundle.provider.id}:model-a",
             ]
         )
         self.assertEqual(code, 0)
         payload = json.loads(stdout)
-        self.assertEqual(payload["action"], "removed")
+        self.assertEqual(payload["providerId"], bundle.provider.id)
+        self.assertEqual(payload["modelId"], "model-a")
+
+    def test_models_set_default_updates_provider_preference(self) -> None:
+        connection_id = self._create_builtin_openai()
+        openai_entry = next(
+            item for item in list_providers() if str(item.get("id")) == "openai"
+        )
+        model_ids = [str(item.get("id")) for item in openai_entry.get("models", [])]
+        self.assertGreater(len(model_ids), 0)
+
+        code, stdout, _stderr = _run_cli(
+            [
+                "--ns-bot-home",
+                self.temp_dir,
+                "models",
+                "set-default",
+                f"{connection_id}:{model_ids[0]}",
+            ]
+        )
+        self.assertEqual(code, 0)
+        payload = json.loads(stdout)
+        self.assertEqual(payload["action"], "set-default")
+        self.assertEqual(payload["providerId"], connection_id)
+        self.assertEqual(payload["modelId"], model_ids[0])
 
         refreshed = self.repositories.providers.get_bundle_by_id_or_raise(
-            bundle.provider.id
+            connection_id
         )
-        self.assertEqual(
-            [model.model_id for model in refreshed.models if model.source == "custom"],
-            ["model-b"],
-        )
-        self.assertEqual(refreshed.provider.preferred_model_id, "model-b")
+        self.assertEqual(refreshed.provider.preferred_model_id, model_ids[0])
 
-    def test_agent_run_diagnose_uses_default_selection(self) -> None:
-        connection_id = self._create_builtin_openai()
-        openai_entry = next(
-            item for item in list_providers() if str(item.get("id") or "") == "openai"
-        )
-        expected_model_id = str(openai_entry["models"][0]["id"])
-
-        _run_cli(
+    def test_models_enable_is_removed(self) -> None:
+        code, stdout, stderr = _run_cli(
             [
                 "--ns-bot-home",
                 self.temp_dir,
-                "providers",
-                "use",
-                "openai",
-            ]
-        )
-
-        code, stdout, _stderr = _run_cli(
-            [
-                "--ns-bot-home",
-                self.temp_dir,
-                "agent",
-                "run",
-                "--prompt",
-                "diagnose test",
-                "--diagnose",
-            ]
-        )
-        self.assertEqual(code, 0)
-        payload = json.loads(stdout)
-        self.assertEqual(payload["resolved"]["mode"], "default-provider")
-        self.assertEqual(payload["resolved"]["providerId"], connection_id)
-        self.assertEqual(payload["resolved"]["modelId"], expected_model_id)
-        self.assertEqual(payload["runtime"]["provider"], "openai")
-
-    def test_agent_run_diagnose_uses_explicit_provider_selection(self) -> None:
-        connection_id = self._create_builtin_openai()
-        openai_entry = next(
-            item for item in list_providers() if str(item.get("id") or "") == "openai"
-        )
-        selected_model_id = str(openai_entry["models"][0]["id"])
-
-        code, stdout, _stderr = _run_cli(
-            [
-                "--ns-bot-home",
-                self.temp_dir,
-                "agent",
-                "run",
-                "--prompt",
-                "diagnose configured",
-                "--diagnose",
+                "models",
+                "enable",
                 "--provider-id",
-                connection_id,
-                "--selected-model-id",
-                selected_model_id,
+                "openai",
+                "--model",
+                "gpt-5",
             ]
         )
-        self.assertEqual(code, 0)
-        payload = json.loads(stdout)
-        self.assertEqual(payload["resolved"]["mode"], "provider")
-        self.assertEqual(payload["resolved"]["providerId"], connection_id)
-        self.assertEqual(payload["resolved"]["modelId"], selected_model_id)
-        self.assertEqual(payload["runtime"]["provider"], "openai")
+        self.assertEqual(code, 2)
+        self.assertEqual(stdout, "")
+        self.assertIn("No such command 'enable'", stderr)
 
-    def test_agent_run_rejects_removed_direct_runtime_flags(self) -> None:
+    def test_agent_run_rejects_removed_provider_option(self) -> None:
         code, stdout, stderr = _run_cli(
             [
                 "--ns-bot-home",
@@ -240,47 +208,16 @@ class CliProviderModelTests(unittest.TestCase):
                 "agent",
                 "run",
                 "--prompt",
-                "diagnose configured",
-                "--diagnose",
-                "--api-key",
-                "sk-direct",
+                "hello",
+                "--provider-id",
+                "openai",
             ]
         )
-
         self.assertEqual(code, 2)
         self.assertEqual(stdout, "")
-        self.assertIn("No such option: --api-key", stderr)
+        self.assertIn("No such option: --provider-id", stderr)
 
-    def test_agent_run_diagnose_uses_fd_rg_from_env_when_flags_absent(self) -> None:
-        with mock.patch.dict(
-            "os.environ",
-            {
-                "PROVIDER": "anthropic",
-                "BASE_URL": "https://llm.example.com/v1",
-                "API_KEY": "sk-direct",
-                "MODEL": "demo-direct-model",
-                "NSBOT_FD_EXECUTABLE": "/opt/tools/fd",
-                "NSBOT_RG_EXECUTABLE": "/opt/tools/rg",
-            },
-            clear=False,
-        ):
-            code, stdout, _stderr = _run_cli(
-                [
-                    "--ns-bot-home",
-                    self.temp_dir,
-                    "agent",
-                    "run",
-                    "--prompt",
-                    "diagnose configured",
-                    "--diagnose",
-                ]
-            )
-
-        self.assertEqual(code, 1)
-        self.assertEqual(stdout, "")
-        self.assertIn("No default provider/model available", _stderr)
-
-    def test_agent_run_diagnose_ignores_removed_direct_runtime_env_vars(self) -> None:
+    def test_agent_run_help_uses_thread_workspace_model_flags(self) -> None:
         connection_id = self._create_builtin_openai()
         _run_cli(
             [
@@ -291,37 +228,153 @@ class CliProviderModelTests(unittest.TestCase):
                 "openai",
             ]
         )
+        code, stdout, _stderr = _run_cli(
+            [
+                "--ns-bot-home",
+                self.temp_dir,
+                "agent",
+                "run",
+                "--help",
+            ]
+        )
+        self.assertEqual(code, 0)
+        self.assertIn("--thread-id", stdout)
+        self.assertIn("--workspace", stdout)
+        self.assertIn("--model", stdout)
+        self.assertIn("--background", stdout)
+        self.assertIn("--json", stdout)
+        self.assertIn("--db-path", stdout)
+        self.assertNotIn("--turn-id", stdout)
+        self.assertNotIn("--workspace-path", stdout)
+        self.assertNotIn("--provider-id", stdout)
 
-        with mock.patch.dict(
-            "os.environ",
-            {
-                "BASE_URL": "https://llm.example.com/v1",
-                "API_KEY": "sk-direct",
-                "MODEL": "demo-direct-model",
-                "NSBOT_FD_EXECUTABLE": "/opt/tools/fd",
-                "NSBOT_RG_EXECUTABLE": "/opt/tools/rg",
-            },
-            clear=False,
-        ):
+    def test_agent_worker_help_uses_run_id_flag(self) -> None:
+        code, stdout, _stderr = _run_cli(
+            [
+                "--ns-bot-home",
+                self.temp_dir,
+                "agent",
+                "worker",
+                "--help",
+            ]
+        )
+        self.assertEqual(code, 0)
+        self.assertIn("--run-id", stdout)
+        self.assertNotIn("--thread-id", stdout)
+
+    def test_agent_cancel_help_uses_run_id_flag(self) -> None:
+        code, stdout, _stderr = _run_cli(
+            [
+                "--ns-bot-home",
+                self.temp_dir,
+                "agent",
+                "cancel",
+                "--help",
+            ]
+        )
+        self.assertEqual(code, 0)
+        self.assertIn("--run-id", stdout)
+        self.assertNotIn("--thread-id", stdout)
+
+    def test_agent_watch_help_exposes_json_flag(self) -> None:
+        code, stdout, _stderr = _run_cli(
+            [
+                "--ns-bot-home",
+                self.temp_dir,
+                "agent",
+                "watch",
+                "--help",
+            ]
+        )
+        self.assertEqual(code, 0)
+        self.assertIn("--json", stdout)
+
+    def test_models_help_exposes_db_path_and_json_flags(self) -> None:
+        commands = ["list", "create", "get", "set-default"]
+        for subcommand in commands:
             code, stdout, _stderr = _run_cli(
                 [
                     "--ns-bot-home",
                     self.temp_dir,
+                    "models",
+                    subcommand,
+                    "--help",
+                ]
+            )
+            self.assertEqual(code, 0)
+            self.assertIn("--db-path", stdout)
+            self.assertIn("--json", stdout)
+
+    def test_agent_cancel_prints_canceled(self) -> None:
+        with mock.patch.object(
+            cli_module,
+            "_read_run_record",
+            return_value={"thread_id": "thread_x"},
+        ), mock.patch.object(cli_module, "_update_run_record", return_value={}):
+            code, stdout, stderr = _run_cli(
+                [
+                    "--ns-bot-home",
+                    self.temp_dir,
                     "agent",
-                    "run",
-                    "--prompt",
-                    "diagnose configured",
-                    "--diagnose",
+                    "cancel",
+                    "--run-id",
+                    "run_x",
                 ]
             )
 
         self.assertEqual(code, 0)
+        self.assertEqual(stdout.strip(), "Canceled")
+        self.assertEqual(stderr, "")
+
+    def test_watch_json_outputs_thread_event_rows_array(self) -> None:
+        class _FakeDb:
+            def close(self) -> None:
+                return None
+
+        class _FakeSessionService:
+            def list_timeline_payload(self, session_id: str):
+                self.last_session_id = session_id
+                return {
+                    "events": [
+                        {
+                            "sequenceNo": 1,
+                            "turnId": "run_1",
+                            "eventType": "acp.event",
+                            "payload": {"type": "turn.started"},
+                            "createdAt": "2026-01-01T00:00:00Z",
+                        }
+                    ]
+                }
+
+        fake_service = _FakeSessionService()
+        with mock.patch.object(
+            cli_module,
+            "_build_session_service",
+            return_value=(_FakeDb(), object(), fake_service),
+        ):
+            code, stdout, stderr = _run_cli(
+                [
+                    "--ns-bot-home",
+                    self.temp_dir,
+                    "agent",
+                    "watch",
+                    "--thread-id",
+                    "thread_1",
+                    "--from-offset",
+                    "0",
+                    "--no-follow",
+                    "--json",
+                ]
+            )
+
+        self.assertEqual(code, 0)
+        self.assertEqual(stderr, "")
         payload = json.loads(stdout)
-        self.assertEqual(payload["runtime"]["fdExecutable"], "/opt/tools/fd")
-        self.assertEqual(payload["runtime"]["rgExecutable"], "/opt/tools/rg")
-        self.assertEqual(payload["resolved"]["mode"], "default-provider")
-        self.assertEqual(payload["resolved"]["providerId"], connection_id)
-        self.assertEqual(payload["runtime"]["provider"], "openai")
+        self.assertIsInstance(payload, list)
+        self.assertEqual(len(payload), 1)
+        self.assertEqual(payload[0]["run_id"], "run_1")
+        self.assertEqual(payload[0]["thread_id"], "thread_1")
+        self.assertEqual(payload[0]["event_type"], "turn.started")
 
     def test_root_acp_mode_routes_to_acp_stdio_bootstrap(self) -> None:
         with mock.patch("nsbot_sidecar.api.acp_stdio.main", return_value=17) as acp_main:
@@ -369,8 +422,7 @@ class CliProviderModelTests(unittest.TestCase):
         self.assertIn("ACP mode cannot be combined with subcommands", stderr)
         acp_main.assert_not_called()
 
-    def test_agent_run_diagnose_does_not_route_to_acp_stdio_bootstrap(self) -> None:
-        connection_id = self._create_builtin_openai()
+    def test_agent_run_help_does_not_route_to_acp_stdio_bootstrap(self) -> None:
         with mock.patch("nsbot_sidecar.api.acp_stdio.main") as acp_main:
             code, stdout, _stderr = _run_cli(
                 [
@@ -378,178 +430,13 @@ class CliProviderModelTests(unittest.TestCase):
                     self.temp_dir,
                     "agent",
                     "run",
-                    "--prompt",
-                    "diagnose configured",
-                    "--diagnose",
-                    "--provider-id",
-                    connection_id,
+                    "--help",
                 ]
             )
 
         self.assertEqual(code, 0)
-        payload = json.loads(stdout)
-        self.assertEqual(payload["resolved"]["mode"], "provider")
+        self.assertIn("--thread-id", stdout)
         acp_main.assert_not_called()
-
-    def test_init_creates_ns_bot_home_and_copies_resources_from_cache(self) -> None:
-        runtime_root = Path(tempfile.mkdtemp(prefix="sidecar-runtime-"))
-        try:
-            templates_dir = runtime_root / "templates"
-            templates_dir.mkdir(parents=True, exist_ok=True)
-            (templates_dir / "TOOLS.md").write_text("tool template", encoding="utf-8")
-
-            cache_root = runtime_root / "vendor" / "search-tools"
-            target = "aarch64-apple-darwin"
-            fd_cache = cache_root / target / "fd" / "fd"
-            rg_cache = cache_root / target / "rg" / "rg"
-            fd_cache.parent.mkdir(parents=True, exist_ok=True)
-            rg_cache.parent.mkdir(parents=True, exist_ok=True)
-            fd_cache.write_text("fake-fd", encoding="utf-8")
-            rg_cache.write_text("fake-rg", encoding="utf-8")
-
-            ns_home = Path(self.temp_dir) / "bootstrap"
-            with mock.patch("nsbot_sidecar.cli._runtime_paths", return_value={
-                "repo_root": runtime_root,
-                "sidecar_root": runtime_root,
-                "templates_dir": templates_dir,
-                "search_tools_cache_root": cache_root,
-                "prepare_search_tools_script": runtime_root / "scripts" / "prepare_search_tools.py",
-            }), mock.patch("nsbot_sidecar.cli._resolve_target_triple", return_value=target):
-                code, stdout, _stderr = _run_cli(
-                    ["--ns-bot-home", str(ns_home), "init"]
-                )
-
-            self.assertEqual(code, 0)
-            payload = json.loads(stdout)
-            self.assertEqual(payload["ok"], True)
-            self.assertTrue((ns_home / "bin").exists())
-            self.assertTrue((ns_home / "templates" / "TOOLS.md").exists())
-            self.assertTrue((ns_home / "bin" / "fd").exists())
-            self.assertTrue((ns_home / "bin" / "rg").exists())
-            self.assertEqual(payload["prepared"]["templatesCopied"], True)
-            self.assertEqual(payload["prepared"]["searchToolsCopied"], True)
-            self.assertEqual(payload["prepared"]["searchToolsDownloaded"], False)
-        finally:
-            shutil.rmtree(runtime_root, ignore_errors=True)
-
-    def test_init_skips_templates_copy_when_already_present(self) -> None:
-        runtime_root = Path(tempfile.mkdtemp(prefix="sidecar-runtime-"))
-        try:
-            templates_dir = runtime_root / "templates"
-            templates_dir.mkdir(parents=True, exist_ok=True)
-            (templates_dir / "TOOLS.md").write_text("tool template", encoding="utf-8")
-
-            cache_root = runtime_root / "vendor" / "search-tools"
-            target = "aarch64-apple-darwin"
-            for tool in ("fd", "rg"):
-                tool_path = cache_root / target / tool / tool
-                tool_path.parent.mkdir(parents=True, exist_ok=True)
-                tool_path.write_text(f"fake-{tool}", encoding="utf-8")
-
-            ns_home = Path(self.temp_dir) / "bootstrap2"
-            (ns_home / "templates").mkdir(parents=True, exist_ok=True)
-            (ns_home / "templates" / "TOOLS.md").write_text("existing", encoding="utf-8")
-
-            with mock.patch("nsbot_sidecar.cli._runtime_paths", return_value={
-                "repo_root": runtime_root,
-                "sidecar_root": runtime_root,
-                "templates_dir": templates_dir,
-                "search_tools_cache_root": cache_root,
-                "prepare_search_tools_script": runtime_root / "scripts" / "prepare_search_tools.py",
-            }), mock.patch("nsbot_sidecar.cli._resolve_target_triple", return_value=target):
-                code, stdout, _stderr = _run_cli(
-                    ["--ns-bot-home", str(ns_home), "init"]
-                )
-
-            self.assertEqual(code, 0)
-            payload = json.loads(stdout)
-            self.assertEqual(payload["prepared"]["templatesCopied"], False)
-            self.assertEqual(
-                (ns_home / "templates" / "TOOLS.md").read_text(encoding="utf-8"),
-                "existing",
-            )
-        finally:
-            shutil.rmtree(runtime_root, ignore_errors=True)
-
-    def test_init_downloads_search_tools_when_cache_missing(self) -> None:
-        runtime_root = Path(tempfile.mkdtemp(prefix="sidecar-runtime-"))
-        try:
-            templates_dir = runtime_root / "templates"
-            templates_dir.mkdir(parents=True, exist_ok=True)
-            (templates_dir / "TOOLS.md").write_text("tool template", encoding="utf-8")
-
-            cache_root = runtime_root / "vendor" / "search-tools"
-            target = "aarch64-apple-darwin"
-            script_path = runtime_root / "scripts" / "prepare_search_tools.py"
-            script_path.parent.mkdir(parents=True, exist_ok=True)
-            script_path.write_text("# placeholder", encoding="utf-8")
-            ns_home = Path(self.temp_dir) / "bootstrap3"
-
-            def fake_run(*_args, **_kwargs):
-                fd_cache = cache_root / target / "fd" / "fd"
-                rg_cache = cache_root / target / "rg" / "rg"
-                fd_cache.parent.mkdir(parents=True, exist_ok=True)
-                rg_cache.parent.mkdir(parents=True, exist_ok=True)
-                fd_cache.write_text("fake-fd", encoding="utf-8")
-                rg_cache.write_text("fake-rg", encoding="utf-8")
-                return subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
-
-            with mock.patch("nsbot_sidecar.cli._runtime_paths", return_value={
-                "repo_root": runtime_root,
-                "sidecar_root": runtime_root,
-                "templates_dir": templates_dir,
-                "search_tools_cache_root": cache_root,
-                "prepare_search_tools_script": script_path,
-            }), mock.patch("nsbot_sidecar.cli._resolve_target_triple", return_value=target), mock.patch("nsbot_sidecar.cli.subprocess.run", side_effect=fake_run):
-                code, stdout, _stderr = _run_cli(
-                    ["--ns-bot-home", str(ns_home), "init"]
-                )
-
-            self.assertEqual(code, 0)
-            payload = json.loads(stdout)
-            self.assertEqual(payload["prepared"]["searchToolsDownloaded"], True)
-            self.assertTrue((ns_home / "bin" / "fd").exists())
-            self.assertTrue((ns_home / "bin" / "rg").exists())
-        finally:
-            shutil.rmtree(runtime_root, ignore_errors=True)
-
-    def test_init_returns_error_when_prepare_search_tools_fails(self) -> None:
-        runtime_root = Path(tempfile.mkdtemp(prefix="sidecar-runtime-"))
-        try:
-            templates_dir = runtime_root / "templates"
-            templates_dir.mkdir(parents=True, exist_ok=True)
-            (templates_dir / "TOOLS.md").write_text("tool template", encoding="utf-8")
-
-            cache_root = runtime_root / "vendor" / "search-tools"
-            target = "aarch64-apple-darwin"
-            script_path = runtime_root / "scripts" / "prepare_search_tools.py"
-            script_path.parent.mkdir(parents=True, exist_ok=True)
-            script_path.write_text("# placeholder", encoding="utf-8")
-            ns_home = Path(self.temp_dir) / "bootstrap4"
-
-            with mock.patch("nsbot_sidecar.cli._runtime_paths", return_value={
-                "repo_root": runtime_root,
-                "sidecar_root": runtime_root,
-                "templates_dir": templates_dir,
-                "search_tools_cache_root": cache_root,
-                "prepare_search_tools_script": script_path,
-            }), mock.patch("nsbot_sidecar.cli._resolve_target_triple", return_value=target), mock.patch(
-                "nsbot_sidecar.cli.subprocess.run",
-                return_value=subprocess.CompletedProcess(
-                    args=[],
-                    returncode=1,
-                    stdout="",
-                    stderr="download failed",
-                ),
-            ):
-                code, _stdout, stderr = _run_cli(
-                    ["--ns-bot-home", str(ns_home), "init"]
-                )
-
-            self.assertEqual(code, 1)
-            self.assertIn("download failed", stderr)
-        finally:
-            shutil.rmtree(runtime_root, ignore_errors=True)
 
 
 if __name__ == "__main__":

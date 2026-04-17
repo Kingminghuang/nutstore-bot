@@ -98,7 +98,7 @@ class WorkerRequestParsingTests(unittest.TestCase):
         self.assertEqual(req.config.model, "gpt-4.1")
         self.assertEqual(req.config.request_timeout_ms, 45000)
 
-    def test_parse_request_uses_platform_nsbot_home_default(self) -> None:
+    def test_parse_request_uses_home_nutstorebot_default(self) -> None:
         raw = json.dumps(
             {
                 "turnId": "turn-4",
@@ -109,17 +109,12 @@ class WorkerRequestParsingTests(unittest.TestCase):
             }
         )
 
-        with patch("nsbot_sidecar.runtime.worker.sys.platform", "win32"):
-            with patch.dict(
-                os.environ,
-                {"APPDATA": r"C:\\Users\\test\\AppData\\Roaming"},
-                clear=True,
-            ):
-                req = parse_request(raw)
+        with patch.dict(os.environ, {}, clear=True):
+            req = parse_request(raw)
 
         self.assertEqual(
             req.config.ns_bot_home,
-            str((Path(r"C:\Users\test\AppData\Roaming") / "NutstoreBot").resolve()),
+            str((Path.home() / "NutstoreBot").resolve()),
         )
 
     def test_main_uses_runtime_engine_and_prints_json_response(self) -> None:

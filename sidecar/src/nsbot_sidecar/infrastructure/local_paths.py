@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-import sys
 from pathlib import Path
 
 
@@ -49,23 +48,4 @@ def ensure_secret_dir(ns_bot_home_override: str | None = None) -> Path:
 
 
 def _platform_storage_root() -> Path | None:
-    if sys.platform.startswith("win"):
-        appdata = os.environ.get("APPDATA")
-        if appdata:
-            # Some callers provide escaped Windows paths (e.g. C:\\Users\\...).
-            appdata = appdata.replace("\\\\", "\\")
-            return Path(appdata) / APP_NAME
-        return None
-
-    if sys.platform == "darwin":
-        return Path.home() / "Library" / "Application Support" / APP_NAME
-
-    state_home = os.environ.get("XDG_STATE_HOME")
-    if state_home:
-        return Path(state_home) / APP_NAME
-
-    config_home = os.environ.get("XDG_CONFIG_HOME")
-    if config_home:
-        return Path(config_home) / APP_NAME
-
-    return None
+    return Path.home() / APP_NAME
