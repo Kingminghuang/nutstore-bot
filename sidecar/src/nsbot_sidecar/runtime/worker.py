@@ -9,7 +9,7 @@ from typing import Any
 
 from nsbot_sidecar.infrastructure.local_paths import nsbot_home
 from nsbot_sidecar.runtime.engine import create_runtime_engine
-from nsbot_sidecar.runtime.runtime_service import (
+from nsbot_sidecar.runtime.types import (
     RunMetadata,
     RuntimeProcessError,
     RuntimeWorkerConfig,

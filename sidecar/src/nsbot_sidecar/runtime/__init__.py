@@ -1,15 +1,25 @@
 from nsbot_sidecar.runtime.engine import (
-    RuntimeEngine,
-    RuntimeRequestContext,
-    RuntimeResult,
     SmolagentsRuntimeEngine,
     create_runtime_engine,
 )
+from nsbot_sidecar.runtime.types import (
+    RunMetadata,
+    RuntimeCancelledError,
+    RuntimeEngine,
+    RuntimeProcessError,
+    RuntimeRequestContext,
+    RuntimeResult,
+    RuntimeWorkerConfig,
+)
 
 __all__ = [
+    "RunMetadata",
+    "RuntimeCancelledError",
     "RuntimeEngine",
+    "RuntimeProcessError",
     "RuntimeRequestContext",
     "RuntimeResult",
+    "RuntimeWorkerConfig",
     "SmolagentsRuntimeEngine",
     "create_runtime_engine",
 ]

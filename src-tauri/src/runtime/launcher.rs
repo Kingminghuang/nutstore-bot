@@ -118,9 +118,11 @@ pub fn bundled_command(
     name: &str,
     fallback_root: Option<&Path>,
     envs: &[(&str, String)],
+    args: &[&str],
 ) -> Option<Command> {
     let executable = resolve_bundled_executable(name, fallback_root)?;
     let mut command = Command::new(executable);
+    command.args(args);
     for (key, value) in envs {
         command.env(key, value);
     }
@@ -131,11 +133,12 @@ pub fn spawn_bundled_process(
     name: &str,
     fallback_root: Option<&Path>,
     envs: &[(&str, String)],
+    args: &[&str],
     stdin: Stdio,
     stdout: Stdio,
     stderr: Stdio,
 ) -> Result<Option<Child>, Box<dyn Error>> {
-    let Some(mut command) = bundled_command(name, fallback_root, envs) else {
+    let Some(mut command) = bundled_command(name, fallback_root, envs, args) else {
         return Ok(None);
     };
     command.stdin(stdin).stdout(stdout).stderr(stderr);
@@ -370,10 +373,20 @@ mod tests {
         fs::write(&candidate, "binary").expect("candidate binary");
 
         let envs = vec![("NS_BOT_HOME", "/tmp/nsbot-home".to_string())];
-        let command = bundled_command("nsbot-sidecar", Some(&fallback_root), &envs)
-            .expect("bundled command");
+        let command = bundled_command(
+            "nsbot-sidecar",
+            Some(&fallback_root),
+            &envs,
+            &["--acp"],
+        )
+        .expect("bundled command");
 
         assert_eq!(command.get_program(), candidate.as_os_str());
+        let args = command
+            .get_args()
+            .map(|value| value.to_string_lossy().to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(args, vec!["--acp".to_string()]);
         let env_pairs = command.get_envs().collect::<Vec<_>>();
         assert!(env_pairs.iter().any(|(key, value)| {
             *key == "NS_BOT_HOME"

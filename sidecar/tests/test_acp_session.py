@@ -14,7 +14,7 @@ import subprocess
 from nsbot_sidecar.api.acp_app import AcpAppConfig, create_acp_app
 from nsbot_sidecar.api.acp_session import AcpJsonRpcSession
 from nsbot_sidecar.infrastructure.secret_store import ProviderSecretPayload
-from nsbot_sidecar.runtime.runtime_service import RuntimeCancelledError
+from nsbot_sidecar.runtime.types import RuntimeCancelledError
 
 
 class _InMemoryTransport:

@@ -21,7 +21,7 @@ from nsbot_sidecar.providers.direct_model import DirectModelConfig
 from nsbot_sidecar.runtime.native_code_agent import NativeCodeAgent
 from nsbot_sidecar.providers.direct_model import DirectModelError
 from nsbot_sidecar.runtime.engine import SmolagentsRuntimeEngine
-from nsbot_sidecar.runtime.runtime_service import (
+from nsbot_sidecar.runtime.types import (
     RunMetadata,
     RuntimeProcessError,
     RuntimeWorkerConfig,
@@ -99,7 +99,7 @@ class FakeDirectFailureModel(Model):
         raise DirectModelError("provider_timeout", "provider timed out")
 
 
-class RuntimeServiceTests(unittest.TestCase):
+class RuntimeEngineTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp_dir = Path(tempfile.mkdtemp(prefix="runtime-service-"))
         (self.temp_dir / "templates").mkdir(parents=True, exist_ok=True)
@@ -365,7 +365,7 @@ class RuntimeServiceTests(unittest.TestCase):
         )
         self.assertNotIn("Above examples were using notional tools", prompt)
 
-    def test_runtime_service_wires_tool_calling_agent_with_managed_code_agent(self) -> None:
+    def test_runtime_engine_wires_tool_calling_agent_with_managed_code_agent(self) -> None:
         created: dict[str, object] = {}
 
         class FakeCodeAgent:
@@ -385,10 +385,10 @@ class RuntimeServiceTests(unittest.TestCase):
                 return iter(())
 
         with patch(
-            "nsbot_sidecar.runtime.runtime_service.NativeCodeAgent",
+            "nsbot_sidecar.runtime.engine.NativeCodeAgent",
             FakeCodeAgent,
         ), patch(
-            "nsbot_sidecar.runtime.runtime_service.NativeToolCallingAgent",
+            "nsbot_sidecar.runtime.engine.NativeToolCallingAgent",
             FakeToolCallingAgent,
         ):
             service = SmolagentsRuntimeEngine(
@@ -428,7 +428,7 @@ class RuntimeServiceTests(unittest.TestCase):
         self.assertIsNone(code_kwargs["logger"])
         self.assertIsNone(main_kwargs["logger"])
 
-    def test_runtime_service_disables_console_output_when_configured(self) -> None:
+    def test_runtime_engine_disables_console_output_when_configured(self) -> None:
         created: dict[str, object] = {}
 
         class FakeCodeAgent:
@@ -448,10 +448,10 @@ class RuntimeServiceTests(unittest.TestCase):
                 return iter(())
 
         with patch(
-            "nsbot_sidecar.runtime.runtime_service.NativeCodeAgent",
+            "nsbot_sidecar.runtime.engine.NativeCodeAgent",
             FakeCodeAgent,
         ), patch(
-            "nsbot_sidecar.runtime.runtime_service.NativeToolCallingAgent",
+            "nsbot_sidecar.runtime.engine.NativeToolCallingAgent",
             FakeToolCallingAgent,
         ):
             service = SmolagentsRuntimeEngine(

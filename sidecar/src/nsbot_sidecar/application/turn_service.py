@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any, Callable
 
 from nsbot_sidecar.runtime.engine import create_runtime_engine
-from nsbot_sidecar.runtime.runtime_service import RunMetadata, RuntimeWorkerConfig
+from nsbot_sidecar.runtime.types import RunMetadata, RuntimeWorkerConfig
 
 
 def execute_runtime_turn(

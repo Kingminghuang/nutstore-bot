@@ -20,7 +20,7 @@ from nsbot_sidecar.infrastructure.local_paths import nsbot_home
 from nsbot_sidecar.infrastructure.repositories import create_id
 from nsbot_sidecar.infrastructure.storage import transaction
 from nsbot_sidecar.runtime.engine import create_runtime_engine
-from nsbot_sidecar.runtime.runtime_service import (
+from nsbot_sidecar.runtime.types import (
     RunMetadata,
     RuntimeCancelledError,
     RuntimeWorkerConfig,

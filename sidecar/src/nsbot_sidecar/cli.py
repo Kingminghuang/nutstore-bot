@@ -22,10 +22,7 @@ from nsbot_sidecar.infrastructure.local_paths import nsbot_home
 from nsbot_sidecar.application.provider_service import ProviderService
 from nsbot_sidecar.infrastructure.repositories import create_repositories
 from nsbot_sidecar.runtime.engine import create_runtime_engine
-from nsbot_sidecar.runtime.runtime_service import (
-    RunMetadata,
-    RuntimeWorkerConfig,
-)
+from nsbot_sidecar.runtime.types import RunMetadata, RuntimeWorkerConfig
 from nsbot_sidecar.application.session_service import SessionService
 from nsbot_sidecar.infrastructure.secret_store import LocalSecretStore
 from nsbot_sidecar.infrastructure.storage import connect_database

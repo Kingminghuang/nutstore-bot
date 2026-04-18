@@ -881,6 +881,7 @@ fn connect_acp_stdio(
         "nsbot-sidecar",
         Some(&config.runtime_root),
         &sidecar_env,
+        &["--acp"],
         Stdio::piped(),
         Stdio::piped(),
         stderr,
