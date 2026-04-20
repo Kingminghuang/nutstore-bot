@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-import asyncio
 import base64
 from contextlib import suppress
-from concurrent.futures import Future
 import json
 import mimetypes
 import os
@@ -12,10 +10,11 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-import threading
 from dataclasses import dataclass
 from typing import Any, Protocol
 from urllib.parse import unquote, urlparse
+
+import anyio
 
 from nsbot_sidecar.infrastructure.local_paths import nsbot_home
 from nsbot_sidecar.infrastructure.repositories import create_id
@@ -44,7 +43,8 @@ def _acp_debug_log(message: str) -> None:
 
 @dataclass
 class _ClientRequestWaiter:
-    future: Future
+    event: anyio.Event
+    result: dict[str, Any] | None
     session_id: str
     turn_id: str | None = None
 
@@ -65,6 +65,85 @@ class _AuthState:
     gateway_base_url: str | None = None
 
 
+@dataclass(frozen=True)
+class _SessionActorMessage:
+    kind: str
+    req_id: Any | None = None
+    params: dict[str, Any] | None = None
+
+
+class _SessionActor:
+    def __init__(self, session_id: str, owner: "AcpJsonRpcSession"):
+        self.session_id = session_id
+        self.owner = owner
+        self._send_stream, self._recv_stream = anyio.create_memory_object_stream(0)
+        self._closed: anyio.Event | None = None
+        self._running_prompt = False
+
+    @property
+    def running_prompt(self) -> bool:
+        return self._running_prompt
+
+    def start(self, task_group: anyio.abc.TaskGroup) -> None:
+        if self._closed is not None:
+            return
+        self._closed = anyio.Event()
+        task_group.start_soon(self._run)
+
+    async def enqueue_prompt(self, req_id: Any, params: dict[str, Any]) -> None:
+        await self._send_stream.send(
+            _SessionActorMessage(kind="prompt", req_id=req_id, params=params)
+        )
+
+    async def enqueue_edit_and_prompt(self, req_id: Any, params: dict[str, Any]) -> None:
+        await self._send_stream.send(
+            _SessionActorMessage(
+                kind="edit_and_prompt",
+                req_id=req_id,
+                params=params,
+            )
+        )
+
+    async def enqueue_cancel(self) -> None:
+        await self._send_stream.send(_SessionActorMessage(kind="cancel"))
+
+    async def close(self) -> None:
+        with suppress(Exception):
+            await self._send_stream.send(_SessionActorMessage(kind="shutdown"))
+        with suppress(Exception):
+            await self._send_stream.aclose()
+        if self._closed is not None:
+            with suppress(Exception):
+                await self._closed.wait()
+
+    async def _run(self) -> None:
+        try:
+            async with self._recv_stream:
+                async for message in self._recv_stream:
+                    if message.kind == "shutdown":
+                        break
+                    if message.kind == "cancel":
+                        self.owner._cancel_session_state(self.session_id)
+                        continue
+                    if message.kind not in {"prompt", "edit_and_prompt"}:
+                        continue
+                    req_id = message.req_id
+                    params = message.params or {}
+                    self._running_prompt = True
+                    runner = (
+                        self.owner._handle_edit_and_prompt_request
+                        if message.kind == "edit_and_prompt"
+                        else self.owner._handle_prompt_request
+                    )
+                    try:
+                        await runner(req_id, params)
+                    finally:
+                        self._running_prompt = False
+        finally:
+            if self._closed is not None:
+                self._closed.set()
+
+
 class JsonRpcTransport(Protocol):
     async def accept(self) -> None: ...
 
@@ -80,7 +159,7 @@ class StdioJsonRpcTransport:
         return
 
     async def receive_json(self) -> dict[str, Any]:
-        line = await asyncio.to_thread(sys.stdin.readline)
+        line = await anyio.to_thread.run_sync(sys.stdin.readline)
         if line == "":
             raise EOFError("stdin closed")
         try:
@@ -100,14 +179,14 @@ class AcpJsonRpcSession:
     def __init__(self, transport: JsonRpcTransport, app_state: Any):
         self.transport = transport
         self.state = app_state
-        self.loop: asyncio.AbstractEventLoop | None = None
-        self._send_lock = asyncio.Lock()
-        self._pending_lock = threading.Lock()
+        self._send_lock = anyio.Lock()
+        self._task_group: anyio.abc.TaskGroup | None = None
+        self._task_group_cm: Any | None = None
 
         self._next_rpc_id = 1000
         self._pending_client_calls: dict[int, _ClientRequestWaiter] = {}
-        self._prompt_tasks: dict[str, asyncio.Task[Any]] = {}
-        self._session_cancel_events: dict[str, threading.Event] = {}
+        self._session_actors: dict[str, _SessionActor] = {}
+        self._session_cancelled: dict[str, bool] = {}
         self._session_thought_levels: dict[str, str] = {}
         self._session_mcp_connections: dict[str, _SessionMcpConnection] = {}
         self._auth_state: _AuthState | None = None
@@ -119,7 +198,7 @@ class AcpJsonRpcSession:
 
     async def run(self) -> None:
         await self.transport.accept()
-        self.loop = asyncio.get_running_loop()
+        await self._ensure_task_group()
         try:
             while True:
                 payload = await self.transport.receive_json()
@@ -129,11 +208,13 @@ class AcpJsonRpcSession:
             self._cancel_all_sessions()
         except RuntimeError as exc:
             # Starlette may raise RuntimeError on abrupt client disconnect in tests/runtime.
-            if "WebSocket is not connected" in str(exc):
-                self._close_all_mcp_connections()
-                self._cancel_all_sessions()
-                return
-            raise
+            if "WebSocket is not connected" not in str(exc):
+                raise
+            self._close_all_mcp_connections()
+            self._cancel_all_sessions()
+        finally:
+            await self._close_all_session_actors()
+            await self._close_task_group()
 
     async def _dispatch(self, payload: dict[str, Any]) -> None:
         if not isinstance(payload, dict):
@@ -164,6 +245,9 @@ class AcpJsonRpcSession:
             if method == "disconnect":
                 await self._send_result(req_id, {})
                 self._close_all_mcp_connections()
+                self._cancel_all_sessions()
+                await self._close_all_session_actors()
+                await self._close_task_group()
                 await self.transport.close()
                 return
             if method == "session/new":
@@ -457,7 +541,7 @@ class AcpJsonRpcSession:
                 return
             if method == "session/cancel":
                 session_id = str(params.get("sessionId") or "")
-                self._cancel_session(session_id)
+                await self._cancel_session(session_id)
                 await self._send_result(req_id, {"cancelled": True})
                 return
             if method == "session/prompt":
@@ -466,26 +550,22 @@ class AcpJsonRpcSession:
                 if not session_id:
                     await self._send_error(req_id, -32000, "sessionId is required")
                     return
-                existing = self._prompt_tasks.get(session_id)
-                if existing is not None and not existing.done():
+                actor = await self._ensure_session_actor(session_id)
+                if actor.running_prompt:
                     await self._send_error(req_id, -32000, "session already running")
                     return
-                task = asyncio.create_task(self._handle_prompt_request(req_id, params))
-                self._prompt_tasks[session_id] = task
+                await actor.enqueue_prompt(req_id, params)
                 return
             if method == "_nsbot/session/edit_and_prompt":
                 session_id = str(params.get("sessionId") or "")
                 if not session_id:
                     await self._send_error(req_id, -32000, "sessionId is required")
                     return
-                existing = self._prompt_tasks.get(session_id)
-                if existing is not None and not existing.done():
+                actor = await self._ensure_session_actor(session_id)
+                if actor.running_prompt:
                     await self._send_error(req_id, -32000, "session already running")
                     return
-                task = asyncio.create_task(
-                    self._handle_edit_and_prompt_request(req_id, params)
-                )
-                self._prompt_tasks[session_id] = task
+                await actor.enqueue_edit_and_prompt(req_id, params)
                 return
 
             _acp_debug_log(f"method not found during request dispatch: {method}")
@@ -498,7 +578,7 @@ class AcpJsonRpcSession:
         params = payload.get("params") or {}
         if method == "session/cancel":
             session_id = str(params.get("sessionId") or "")
-            self._cancel_session(session_id)
+            await self._cancel_session(session_id)
 
     def _handle_initialize(self, params: dict[str, Any]) -> dict[str, Any]:
         capabilities = params.get("clientCapabilities")
@@ -1550,7 +1630,6 @@ class AcpJsonRpcSession:
     ) -> None:
         session_id = str(params.get("sessionId") or "")
         event_id = str(params.get("eventId") or params.get("event_id") or "")
-        delegated = False
         try:
             if not session_id:
                 raise RuntimeError("sessionId is required")
@@ -1580,7 +1659,6 @@ class AcpJsonRpcSession:
                     active_model_id=session.active_model_id,
                 )
 
-            delegated = True
             await self._handle_prompt_request(
                 req_id,
                 {
@@ -1592,8 +1670,6 @@ class AcpJsonRpcSession:
                 },
             )
         except Exception as exc:  # noqa: BLE001
-            if not delegated:
-                self._prompt_tasks.pop(session_id, None)
             await self._send_error(req_id, -32000, str(exc))
 
     def _resolve_edit_anchor_from_event(
@@ -1697,10 +1773,7 @@ class AcpJsonRpcSession:
             if isinstance(meta, dict) and isinstance(meta.get("autoAllow"), bool):
                 auto_allow = bool(meta.get("autoAllow"))
 
-            cancel_event = self._session_cancel_events.setdefault(
-                session_id, threading.Event()
-            )
-            cancel_event.clear()
+            self._session_cancelled[session_id] = False
 
             turn_id = create_id("acpturn")
 
@@ -1778,141 +1851,29 @@ class AcpJsonRpcSession:
                 }
                 if auto_allow:
                     return "allow"
-                if cancel_event.is_set():
+                if self._session_cancelled.get(session_id, False):
                     return "cancelled"
-                return self._request_permission_sync(session_id, enriched_request)
+                return anyio.from_thread.run(
+                    self._request_permission,
+                    session_id,
+                    enriched_request,
+                )
 
             def event_callback(event: dict[str, Any]) -> None:
-                etype = str(event.get("type") or "")
-                payload = event.get("payload") or {}
-
-                if etype == "delta":
-                    text = str(payload.get("text") or "")
-                    if not text:
-                        return
-                    self._emit_session_update_threadsafe(
-                        session_id,
-                        {
-                            "sessionUpdate": "agent_message_chunk",
-                            "content": {"type": "text", "text": text},
-                        },
-                        turn_id=turn_id,
-                    )
-                    return
-
-                if etype == "thinking_delta":
-                    text = str(payload.get("text") or "")
-                    if not text:
-                        return
-                    self._emit_session_update_threadsafe(
-                        session_id,
-                        {
-                            "sessionUpdate": "agent_thought_chunk",
-                            "content": {"type": "text", "text": text},
-                        },
-                        turn_id=turn_id,
-                        record_event=True,
-                    )
-                    return
-
-                if etype == "available_commands":
-                    commands = payload.get("commands")
-                    if not isinstance(commands, list):
-                        return
-                    self._emit_session_update_threadsafe(
-                        session_id,
-                        {
-                            "sessionUpdate": "available_commands_update",
-                            "availableCommands": commands,
-                        },
-                        turn_id=turn_id,
-                        record_event=False,
-                    )
-                    return
-
-                if etype != "timeline_entry":
-                    return
-
-                entry_kind = str(payload.get("entry_kind") or "")
-                if not entry_kind:
-                    return
-
-                if entry_kind == "planning":
-                    self._emit_session_update_threadsafe(
-                        session_id,
-                        {
-                            "sessionUpdate": "plan",
-                            "entries": [
-                                {
-                                    "content": str(payload.get("content_text") or ""),
-                                    "priority": "medium",
-                                    "status": "pending",
-                                }
-                            ],
-                        },
-                        turn_id=turn_id,
-                    )
-                    return
-
-                if entry_kind != "action":
-                    return
-
-                content_json = payload.get("content_json")
-                if isinstance(content_json, str):
-                    try:
-                        content_json = json.loads(content_json)
-                    except Exception:
-                        content_json = None
-                content_json = content_json if isinstance(content_json, dict) else {}
-                tool_calls = (
-                    content_json.get("toolCalls")
-                    if isinstance(content_json, dict)
-                    else None
+                anyio.from_thread.run(
+                    self._handle_runtime_event,
+                    session_id,
+                    turn_id,
+                    event,
                 )
-                error_text = (
-                    str(content_json.get("error") or "")
-                    if isinstance(content_json, dict)
-                    else ""
-                )
-                status = "failed" if error_text else "completed"
 
-                if isinstance(tool_calls, list):
-                    for tool_call in tool_calls:
-                        if not isinstance(tool_call, dict):
-                            continue
-                        tool_call_id = str(tool_call.get("id") or create_id("tool"))
-                        name = str(tool_call.get("name") or "Tool call")
-                        kind = self._tool_kind_for_name(name)
-
-                        self._emit_session_update_threadsafe(
-                            session_id,
-                            {
-                                "sessionUpdate": "tool_call",
-                                "toolCallId": tool_call_id,
-                                "title": name,
-                                "kind": kind,
-                                "status": "pending",
-                            },
-                            turn_id=turn_id,
-                        )
-                        self._emit_session_update_threadsafe(
-                            session_id,
-                            {
-                                "sessionUpdate": "tool_call_update",
-                                "toolCallId": tool_call_id,
-                                "status": status,
-                            },
-                            turn_id=turn_id,
-                        )
-
-            result = await asyncio.to_thread(
-                engine.process,
+            result = await engine.process_async(
                 turn_id,
                 user_text,
                 {"uid": "acp-user", "tid": "acp-team", "exp_epoch": 0},
                 metadata,
                 event_callback,
-                cancel_event.is_set,
+                lambda: self._session_cancelled.get(session_id, False),
                 permission_requester,
             )
 
@@ -1944,24 +1905,144 @@ class AcpJsonRpcSession:
             else:
                 await self._send_error(req_id, -32000, str(exc))
                 return
-        finally:
-            self._prompt_tasks.pop(session_id, None)
-
         await self._send_result(req_id, {"stopReason": stop_reason})
 
-    def _request_permission_sync(self, session_id: str, request: dict[str, Any]) -> str:
-        if self.loop is None:
-            return "cancelled"
+    async def _handle_runtime_event(
+        self, session_id: str, turn_id: str, event: dict[str, Any]
+    ) -> None:
+        etype = str(event.get("type") or "")
+        payload = event.get("payload") or {}
 
-        rpc_id = self._next_client_rpc_id()
-        future: Future = Future()
-        turn_id = str(request.get("turn_id") or request.get("turnId") or "") or None
-        with self._pending_lock:
-            self._pending_client_calls[rpc_id] = _ClientRequestWaiter(
-                future=future,
-                session_id=session_id,
+        if etype == "delta":
+            text = str(payload.get("text") or "")
+            if not text:
+                return
+            await self._emit_session_update(
+                session_id,
+                {
+                    "sessionUpdate": "agent_message_chunk",
+                    "content": {"type": "text", "text": text},
+                },
                 turn_id=turn_id,
             )
+            return
+
+        if etype == "thinking_delta":
+            text = str(payload.get("text") or "")
+            if not text:
+                return
+            await self._emit_session_update(
+                session_id,
+                {
+                    "sessionUpdate": "agent_thought_chunk",
+                    "content": {"type": "text", "text": text},
+                },
+                turn_id=turn_id,
+                record_event=True,
+            )
+            return
+
+        if etype == "available_commands":
+            commands = payload.get("commands")
+            if not isinstance(commands, list):
+                return
+            await self._emit_session_update(
+                session_id,
+                {
+                    "sessionUpdate": "available_commands_update",
+                    "availableCommands": commands,
+                },
+                turn_id=turn_id,
+                record_event=False,
+            )
+            return
+
+        if etype != "timeline_entry":
+            return
+
+        entry_kind = str(payload.get("entry_kind") or "")
+        if not entry_kind:
+            return
+
+        if entry_kind == "planning":
+            await self._emit_session_update(
+                session_id,
+                {
+                    "sessionUpdate": "plan",
+                    "entries": [
+                        {
+                            "content": str(payload.get("content_text") or ""),
+                            "priority": "medium",
+                            "status": "pending",
+                        }
+                    ],
+                },
+                turn_id=turn_id,
+            )
+            return
+
+        if entry_kind != "action":
+            return
+
+        content_json = payload.get("content_json")
+        if isinstance(content_json, str):
+            try:
+                content_json = json.loads(content_json)
+            except Exception:
+                content_json = None
+        content_json = content_json if isinstance(content_json, dict) else {}
+        tool_calls = (
+            content_json.get("toolCalls")
+            if isinstance(content_json, dict)
+            else None
+        )
+        error_text = (
+            str(content_json.get("error") or "")
+            if isinstance(content_json, dict)
+            else ""
+        )
+        status = "failed" if error_text else "completed"
+
+        if not isinstance(tool_calls, list):
+            return
+        for tool_call in tool_calls:
+            if not isinstance(tool_call, dict):
+                continue
+            tool_call_id = str(tool_call.get("id") or create_id("tool"))
+            name = str(tool_call.get("name") or "Tool call")
+            kind = self._tool_kind_for_name(name)
+
+            await self._emit_session_update(
+                session_id,
+                {
+                    "sessionUpdate": "tool_call",
+                    "toolCallId": tool_call_id,
+                    "title": name,
+                    "kind": kind,
+                    "status": "pending",
+                },
+                turn_id=turn_id,
+            )
+            await self._emit_session_update(
+                session_id,
+                {
+                    "sessionUpdate": "tool_call_update",
+                    "toolCallId": tool_call_id,
+                    "status": status,
+                },
+                turn_id=turn_id,
+            )
+
+    async def _request_permission(self, session_id: str, request: dict[str, Any]) -> str:
+        rpc_id = self._next_client_rpc_id()
+        waiter = _ClientRequestWaiter(
+            event=anyio.Event(),
+            result=None,
+            session_id=session_id,
+            turn_id=str(request.get("turn_id") or request.get("turnId") or "") or None,
+        )
+        turn_id = str(request.get("turn_id") or request.get("turnId") or "") or None
+        self._pending_client_calls[rpc_id] = waiter
 
         tool_call_id = str(request.get("toolCallId") or create_id("tool"))
         title = str(request.get("title") or "Permission required")
@@ -1994,8 +2075,9 @@ class AcpJsonRpcSession:
             },
         }
 
-        asyncio.run_coroutine_threadsafe(self._send_json(payload), self.loop).result()
-        result = future.result()
+        await self._send_json(payload)
+        await waiter.event.wait()
+        result = waiter.result or {}
 
         outcome = result.get("outcome") if isinstance(result, dict) else None
         decision = (
@@ -2006,7 +2088,7 @@ class AcpJsonRpcSession:
         )
 
         if decision == "cancelled":
-            self._send_permission_terminal_update(
+            await self._send_permission_terminal_update(
                 session_id,
                 tool_call_id,
                 "cancelled",
@@ -2015,7 +2097,7 @@ class AcpJsonRpcSession:
             return "cancelled"
 
         if option_id.startswith("allow"):
-            self._send_permission_terminal_update(
+            await self._send_permission_terminal_update(
                 session_id,
                 tool_call_id,
                 "completed",
@@ -2023,7 +2105,7 @@ class AcpJsonRpcSession:
             )
             return "allow"
 
-        self._send_permission_terminal_update(
+        await self._send_permission_terminal_update(
             session_id,
             tool_call_id,
             "failed",
@@ -2031,14 +2113,14 @@ class AcpJsonRpcSession:
         )
         return "reject"
 
-    def _send_permission_terminal_update(
+    async def _send_permission_terminal_update(
         self,
         session_id: str,
         tool_call_id: str,
         status: str,
         turn_id: str | None = None,
     ) -> None:
-        self._emit_session_update_threadsafe(
+        await self._emit_session_update(
             session_id,
             {
                 "sessionUpdate": "tool_call_update",
@@ -2054,16 +2136,17 @@ class AcpJsonRpcSession:
         if not isinstance(rpc_id, int):
             return
 
-        with self._pending_lock:
-            waiter = self._pending_client_calls.pop(rpc_id, None)
+        waiter = self._pending_client_calls.pop(rpc_id, None)
         if waiter is None:
             return
 
         if "result" in payload:
-            waiter.future.set_result(payload.get("result") or {})
+            waiter.result = payload.get("result") or {}
+            waiter.event.set()
             return
 
-        waiter.future.set_result({"outcome": {"outcome": "cancelled"}})
+        waiter.result = {"outcome": {"outcome": "cancelled"}}
+        waiter.event.set()
 
     def _permission_kind_for_request(self, request: dict[str, Any]) -> str:
         kind = str(request.get("kind") or "").strip().lower()
@@ -2082,34 +2165,74 @@ class AcpJsonRpcSession:
         return "other"
 
     def _next_client_rpc_id(self) -> int:
-        with self._pending_lock:
-            self._next_rpc_id += 1
-            return self._next_rpc_id
+        self._next_rpc_id += 1
+        return self._next_rpc_id
 
-    def _cancel_session(self, session_id: str) -> None:
+    async def _ensure_task_group(self) -> anyio.abc.TaskGroup:
+        if self._task_group is not None:
+            return self._task_group
+        self._task_group_cm = anyio.create_task_group()
+        self._task_group = await self._task_group_cm.__aenter__()
+        return self._task_group
+
+    async def _close_task_group(self) -> None:
+        if self._task_group_cm is None:
+            self._task_group = None
+            return
+        task_group_cm = self._task_group_cm
+        self._task_group_cm = None
+        self._task_group = None
+        await task_group_cm.__aexit__(None, None, None)
+
+    async def _ensure_session_actor(self, session_id: str) -> _SessionActor:
+        actor = self._session_actors.get(session_id)
+        if actor is not None:
+            return actor
+        task_group = await self._ensure_task_group()
+        actor = _SessionActor(session_id=session_id, owner=self)
+        actor.start(task_group)
+        self._session_actors[session_id] = actor
+        return actor
+
+    async def _close_all_session_actors(self) -> None:
+        actors = list(self._session_actors.values())
+        self._session_actors.clear()
+        for actor in actors:
+            with suppress(Exception):
+                await actor.close()
+
+    async def _cancel_session(self, session_id: str) -> None:
+        self._cancel_session_state(session_id)
+        actor = self._session_actors.get(session_id)
+        if actor is not None:
+            with suppress(Exception):
+                await actor.enqueue_cancel()
+
+    def _cancel_session_state(self, session_id: str) -> None:
         if not session_id:
             return
 
-        event = self._session_cancel_events.setdefault(session_id, threading.Event())
-        event.set()
+        self._session_cancelled[session_id] = True
 
-        with self._pending_lock:
-            to_cancel = [
-                key
-                for key, waiter in self._pending_client_calls.items()
-                if waiter.session_id == session_id
-            ]
-            for key in to_cancel:
-                waiter = self._pending_client_calls.pop(key, None)
-                if waiter and not waiter.future.done():
-                    waiter.future.set_result({"outcome": {"outcome": "cancelled"}})
+        to_cancel = [
+            key
+            for key, waiter in self._pending_client_calls.items()
+            if waiter.session_id == session_id
+        ]
+        for key in to_cancel:
+            waiter = self._pending_client_calls.pop(key, None)
+            if waiter is None:
+                continue
+            waiter.result = {"outcome": {"outcome": "cancelled"}}
+            waiter.event.set()
 
     def _cancel_all_sessions(self) -> None:
-        session_ids = set(self._session_cancel_events.keys()) | set(
-            self._prompt_tasks.keys()
+        session_ids = (
+            set(self._session_cancelled.keys())
+            | set(self._session_actors.keys())
         )
         for session_id in session_ids:
-            self._cancel_session(session_id)
+            self._cancel_session_state(session_id)
 
     async def _emit_session_update(
         self,
@@ -2123,19 +2246,6 @@ class AcpJsonRpcSession:
         if record_event:
             self._persist_session_update_event(payload, turn_id=turn_id)
         await self._send_notification("session/update", payload)
-
-    def _emit_session_update_threadsafe(
-        self,
-        session_id: str,
-        update: dict[str, Any],
-        *,
-        turn_id: str | None = None,
-        record_event: bool = True,
-    ) -> None:
-        payload = {"sessionId": session_id, "update": update}
-        if record_event:
-            self._persist_session_update_event(payload, turn_id=turn_id)
-        self._send_notification_threadsafe("session/update", payload)
 
     def _persist_session_update_event(
         self, params: dict[str, Any], *, turn_id: str | None = None
@@ -2195,16 +2305,6 @@ class AcpJsonRpcSession:
 
     async def _send_notification(self, method: str, params: dict[str, Any]) -> None:
         await self._send_json({"jsonrpc": "2.0", "method": method, "params": params})
-
-    def _send_notification_threadsafe(
-        self, method: str, params: dict[str, Any]
-    ) -> None:
-        if self.loop is None:
-            return
-        asyncio.run_coroutine_threadsafe(
-            self._send_notification(method, params),
-            self.loop,
-        ).result()
 
     async def _send_json(self, payload: dict[str, Any]) -> None:
         async with self._send_lock:

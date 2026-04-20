@@ -12,6 +12,7 @@ from types import SimpleNamespace
 from typing import Any, cast
 import uuid
 
+import anyio
 import click
 from fastapi import HTTPException
 import typer
@@ -792,11 +793,12 @@ def _execute_agent_turn(
         "exp_epoch": 0,
     }
     runtime_engine = create_runtime_engine(config)
-    result = runtime_engine.process(
-        turn_id=run_id,
-        user_input=prompt,
-        auth_context=auth_context,
-        metadata=metadata,
+    result = anyio.run(
+        runtime_engine.process_async,
+        run_id,
+        prompt,
+        auth_context,
+        metadata,
     )
 
     output = {

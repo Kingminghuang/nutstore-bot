@@ -6,7 +6,7 @@ from nsbot_sidecar.runtime.engine import create_runtime_engine
 from nsbot_sidecar.runtime.types import RunMetadata, RuntimeWorkerConfig
 
 
-def execute_runtime_turn(
+async def execute_runtime_turn(
     config: RuntimeWorkerConfig,
     turn_id: str,
     user_input: str,
@@ -17,7 +17,7 @@ def execute_runtime_turn(
 ) -> dict[str, Any]:
     """Forward runtime execution through RuntimeEngine."""
     engine = create_runtime_engine(config)
-    return engine.process(
+    return await engine.process_async(
         turn_id=turn_id,
         user_input=user_input,
         auth_context=auth_context,

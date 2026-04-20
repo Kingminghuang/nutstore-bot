@@ -8,6 +8,7 @@ import platform
 from pathlib import Path
 from typing import Any, Callable, cast
 
+import anyio
 from rich.console import Console
 from smolagents.memory import ActionStep, FinalAnswerStep, PlanningStep
 from smolagents.models import ChatMessageStreamDelta
@@ -84,7 +85,28 @@ class SmolagentsRuntimeEngine:
         self.consolidator_factory = consolidator_factory
         self.extra_tools = list(extra_tools or [])
 
-    def process(
+    async def process_async(
+        self,
+        turn_id: str,
+        user_input: str,
+        auth_context: dict[str, Any],
+        metadata: RunMetadata,
+        event_callback: Callable[[dict[str, Any]], None] | None = None,
+        is_cancelled: Callable[[], bool] | None = None,
+        permission_requester: Callable[[dict[str, Any]], str] | None = None,
+    ) -> RuntimeResult:
+        return await anyio.to_thread.run_sync(
+            self._process_sync,
+            turn_id,
+            user_input,
+            auth_context,
+            metadata,
+            event_callback,
+            is_cancelled,
+            permission_requester,
+        )
+
+    def _process_sync(
         self,
         turn_id: str,
         user_input: str,

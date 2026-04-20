@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import shutil
 import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from smolagents.models import (
     ChatMessage,
@@ -137,14 +138,14 @@ class RuntimeEngineTests(unittest.TestCase):
             model_factory=lambda: FakeStreamingModel("ok"),
         )
 
-        result = service.process(
+        result = asyncio.run(service.process_async(
             turn_id="turn-1",
             user_input="say ok",
             auth_context={},
             metadata=RunMetadata(
                 workspace_path=str(self.workspace_a), session_key=None
             ),
-        )
+        ))
 
         self.assertEqual(result["final_answer"], "ok")
         self.assertGreaterEqual(len(result["deltas"]), 1)
@@ -168,14 +169,14 @@ class RuntimeEngineTests(unittest.TestCase):
             model_factory=lambda: FakeStreamingModel("direct-ok"),
         )
 
-        result = service.process(
+        result = asyncio.run(service.process_async(
             turn_id="turn-direct",
             user_input="task",
             auth_context={},
             metadata=RunMetadata(
                 workspace_path=str(self.workspace_a), session_key=None
             ),
-        )
+        ))
 
         self.assertEqual(result["final_answer"], "direct-ok")
 
@@ -197,14 +198,14 @@ class RuntimeEngineTests(unittest.TestCase):
 
         service = SmolagentsRuntimeEngine(cfg, model_factory=fake_model_factory)
 
-        result = service.process(
+        result = asyncio.run(service.process_async(
             turn_id="turn-direct-reasoning",
             user_input="task",
             auth_context={},
             metadata=RunMetadata(
                 workspace_path=str(self.workspace_a), session_key=None
             ),
-        )
+        ))
 
         self.assertEqual(result["final_answer"], "direct-ok")
         self.assertEqual(captured["reasoning_effort"], "high")
@@ -221,14 +222,14 @@ class RuntimeEngineTests(unittest.TestCase):
         service = SmolagentsRuntimeEngine(cfg)
 
         with self.assertRaises(RuntimeProcessError) as ctx:
-            service.process(
+            asyncio.run(service.process_async(
                 turn_id="turn-direct-no-key",
                 user_input="task",
                 auth_context={},
                 metadata=RunMetadata(
                     workspace_path=str(self.workspace_a), session_key=None
                 ),
-            )
+        ))
 
         self.assertEqual(ctx.exception.code, "missing_api_key")
         self.assertEqual(ctx.exception.message, "configured api key is missing")
@@ -248,14 +249,14 @@ class RuntimeEngineTests(unittest.TestCase):
         service = SmolagentsRuntimeEngine(cfg, model_factory=direct_failure_factory)
 
         with self.assertRaises(RuntimeProcessError) as ctx:
-            service.process(
+            asyncio.run(service.process_async(
                 turn_id="turn-provider-failure",
                 user_input="task",
                 auth_context={},
                 metadata=RunMetadata(
                     workspace_path=str(self.workspace_a), session_key=None
                 ),
-            )
+        ))
 
         self.assertEqual(ctx.exception.code, "provider_timeout")
 
@@ -270,14 +271,14 @@ class RuntimeEngineTests(unittest.TestCase):
             ),
         )
 
-        result = service.process(
+        result = asyncio.run(service.process_async(
             turn_id="turn-3",
             user_input="continue",
             auth_context={},
             metadata=RunMetadata(
                 workspace_path=str(self.workspace_a), session_key=None
             ),
-        )
+        ))
 
         self.assertEqual(result["final_answer"], "done")
 
@@ -287,22 +288,22 @@ class RuntimeEngineTests(unittest.TestCase):
             model_factory=lambda: FakeStreamingModel("ok"),
         )
 
-        service.process(
+        asyncio.run(service.process_async(
             turn_id="turn-a",
             user_input="task-a",
             auth_context={},
             metadata=RunMetadata(
                 workspace_path=str(self.workspace_a), session_key=None
             ),
-        )
-        service.process(
+        ))
+        asyncio.run(service.process_async(
             turn_id="turn-b",
             user_input="task-b",
             auth_context={},
             metadata=RunMetadata(
                 workspace_path=str(self.workspace_b), session_key=None
             ),
-        )
+        ))
 
         self.assertEqual(len(service.sessions.cache), 2)
         keys = sorted(service.sessions.cache.keys())
@@ -315,30 +316,30 @@ class RuntimeEngineTests(unittest.TestCase):
             model_factory=lambda: FakeStreamingModel("ok"),
         )
 
-        service.process(
+        asyncio.run(service.process_async(
             turn_id="turn-win-1",
             user_input="task-a",
             auth_context={},
             metadata=RunMetadata(
                 workspace_path="C:/Workspace/Project", session_key=None
             ),
-        )
-        service.process(
+        ))
+        asyncio.run(service.process_async(
             turn_id="turn-win-2",
             user_input="task-b",
             auth_context={},
             metadata=RunMetadata(
                 workspace_path="/mnt/c/workspace/project", session_key=None
             ),
-        )
-        service.process(
+        ))
+        asyncio.run(service.process_async(
             turn_id="turn-win-3",
             user_input="task-c",
             auth_context={},
             metadata=RunMetadata(
                 workspace_path="/cygdrive/c/Workspace/Project", session_key=None
             ),
-        )
+        ))
 
         self.assertEqual(len(service.sessions.cache), 1)
         self.assertEqual(
@@ -395,7 +396,7 @@ class RuntimeEngineTests(unittest.TestCase):
                 self._config(),
                 model_factory=lambda: FakeStreamingModel("ok"),
             )
-            result = service.process(
+            result = asyncio.run(service.process_async(
                 turn_id="turn-managed-agent",
                 user_input="task",
                 auth_context={},
@@ -403,7 +404,7 @@ class RuntimeEngineTests(unittest.TestCase):
                     workspace_path=str(self.workspace_a),
                     session_key=None,
                 ),
-            )
+        ))
 
         self.assertIsNone(result["final_answer"])
         main_kwargs = created["main_kwargs"]
@@ -458,7 +459,7 @@ class RuntimeEngineTests(unittest.TestCase):
                 replace(self._config(), allow_console_output=False),
                 model_factory=lambda: FakeStreamingModel("ok"),
             )
-            service.process(
+            asyncio.run(service.process_async(
                 turn_id="turn-stream-flags-disabled",
                 user_input="task",
                 auth_context={},
@@ -466,7 +467,7 @@ class RuntimeEngineTests(unittest.TestCase):
                     workspace_path=str(self.workspace_a),
                     session_key=None,
                 ),
-            )
+        ))
 
         self.assertTrue(created["code_kwargs"]["stream_outputs"])
         self.assertTrue(created["main_kwargs"]["stream_outputs"])
@@ -509,7 +510,7 @@ class RuntimeEngineTests(unittest.TestCase):
                 model_factory=lambda: FakeStreamingModel("ok"),
                 extra_tools=[extra_tool],
             )
-            service.process(
+            asyncio.run(service.process_async(
                 turn_id="turn-extra-tools",
                 user_input="task",
                 auth_context={},
@@ -517,7 +518,7 @@ class RuntimeEngineTests(unittest.TestCase):
                     workspace_path=str(self.workspace_a),
                     session_key=None,
                 ),
-            )
+        ))
 
         self.assertIn(extra_tool, created["code_tools"])
         self.assertIn(extra_tool, created["main_tools"])
@@ -528,14 +529,14 @@ class RuntimeEngineTests(unittest.TestCase):
             model_factory=lambda: FakeStreamingModel("silent-ok"),
         )
 
-        result = service.process(
+        result = asyncio.run(service.process_async(
             turn_id="turn-silent-deltas",
             user_input="say ok",
             auth_context={},
             metadata=RunMetadata(
                 workspace_path=str(self.workspace_a), session_key=None
             ),
-        )
+        ))
 
         self.assertEqual(result["final_answer"], "silent-ok")
         self.assertGreaterEqual(len(result["deltas"]), 1)
@@ -553,25 +554,28 @@ class RuntimeEngineTests(unittest.TestCase):
             "nsbot_sidecar.application.turn_service.create_runtime_engine"
         ) as engine_factory:
             runtime_engine = engine_factory.return_value
-            runtime_engine.process.return_value = {
-                "deltas": [],
-                "session_messages": [],
-                "final_answer": "ok",
-            }
-
-            result = execute_runtime_turn(
-                cfg,
-                "run-1",
-                "task",
-                {"auth": "ctx"},
-                metadata,
-                event_callback=callback,
-                is_cancelled=is_cancelled,
+            runtime_engine.process_async = AsyncMock(
+                return_value={
+                    "deltas": [],
+                    "session_messages": [],
+                    "final_answer": "ok",
+                }
+            )
+            result = asyncio.run(
+                execute_runtime_turn(
+                    cfg,
+                    "run-1",
+                    "task",
+                    {"auth": "ctx"},
+                    metadata,
+                    event_callback=callback,
+                    is_cancelled=is_cancelled,
+                )
             )
 
         self.assertEqual(result["final_answer"], "ok")
         engine_factory.assert_called_once_with(cfg)
-        runtime_engine.process.assert_called_once_with(
+        runtime_engine.process_async.assert_called_once_with(
             turn_id="run-1",
             user_input="task",
             auth_context={"auth": "ctx"},

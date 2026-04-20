@@ -1369,6 +1369,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "agent-client-protocol" },
+    { name = "anyio" },
     { name = "fastapi" },
     { name = "litellm" },
     { name = "mammoth" },
@@ -1390,6 +1391,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "agent-client-protocol", specifier = ">=0.9.0" },
+    { name = "anyio", specifier = ">=4.12.0" },
     { name = "fastapi", specifier = ">=0.115.0" },
     { name = "litellm", specifier = ">=1.51.0" },
     { name = "mammoth", specifier = ">=1.8.0" },

@@ -5,7 +5,7 @@ import os
 from io import StringIO
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from nsbot_sidecar.runtime.worker import main, parse_request
 
@@ -138,7 +138,9 @@ class WorkerRequestParsingTests(unittest.TestCase):
                 with patch(
                     "nsbot_sidecar.runtime.worker.create_runtime_engine"
                 ) as engine_factory:
-                    engine_factory.return_value.process.return_value = fake_result
+                    engine_factory.return_value.process_async = AsyncMock(
+                        return_value=fake_result
+                    )
                     code = main()
 
         self.assertEqual(code, 0)

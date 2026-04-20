@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import anyio
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -140,11 +141,12 @@ def main() -> int:
     try:
         request = parse_request(raw)
         runtime_engine = create_runtime_engine(request.config)
-        result = runtime_engine.process(
-            turn_id=request.turn_id,
-            user_input=request.user_input,
-            auth_context=request.auth_context,
-            metadata=request.metadata,
+        result = anyio.run(
+            runtime_engine.process_async,
+            request.turn_id,
+            request.user_input,
+            request.auth_context,
+            request.metadata,
         )
         print(RuntimeResponse(success=True, result=result).to_json(), flush=True)
         return 0

@@ -55,7 +55,7 @@ class RuntimeRequestContext:
 
 
 class RuntimeEngine(Protocol):
-    def process(
+    async def process_async(
         self,
         turn_id: str,
         user_input: str,

@@ -12,6 +12,7 @@ from typing import Any
 from unittest.mock import patch
 import subprocess
 
+import anyio
 from nsbot_sidecar.api.acp_app import AcpAppConfig, create_acp_app
 from nsbot_sidecar.api.acp_session import AcpJsonRpcSession
 from nsbot_sidecar.infrastructure.secret_store import ProviderSecretPayload
@@ -46,7 +47,7 @@ def _response_for(outgoing: list[dict[str, Any]], request_id: int) -> dict[str, 
 
 
 class _FakeEngine:
-    def process(
+    async def process_async(
         self,
         turn_id,
         user_input,
@@ -58,7 +59,9 @@ class _FakeEngine:
     ):
         del turn_id, auth_context, metadata, is_cancelled, permission_requester
         if event_callback is not None:
-            event_callback({"type": "delta", "payload": {"text": "chunk"}})
+            await anyio.to_thread.run_sync(
+                event_callback, {"type": "delta", "payload": {"text": "chunk"}}
+            )
         return {"final_answer": f"ok: {user_input}"}
 
 
@@ -66,7 +69,7 @@ class _BlockingCancellableEngine:
     def __init__(self) -> None:
         self.started = threading.Event()
 
-    def process(
+    async def process_async(
         self,
         turn_id,
         user_input,
@@ -79,9 +82,11 @@ class _BlockingCancellableEngine:
         del turn_id, user_input, auth_context, metadata, permission_requester
         self.started.set()
         if event_callback is not None:
-            event_callback({"type": "delta", "payload": {"text": "working"}})
+            await anyio.to_thread.run_sync(
+                event_callback, {"type": "delta", "payload": {"text": "working"}}
+            )
         while is_cancelled is not None and not is_cancelled():
-            time.sleep(0.01)
+            await asyncio.sleep(0.01)
         raise RuntimeCancelledError()
 
 
