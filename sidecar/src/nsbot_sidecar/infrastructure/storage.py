@@ -75,33 +75,43 @@ CREATE TABLE IF NOT EXISTS workspaces (
   updated_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS providers (
+        id TEXT PRIMARY KEY,
+        runtime_provider TEXT NOT NULL,
+        catalog_provider_id TEXT,
+        display_name TEXT NOT NULL,
+        base_url TEXT,
+        secret_ref TEXT NOT NULL,
+        preferred_model_id TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_providers_updated
+ON providers(updated_at DESC, id ASC);
+
 CREATE TABLE IF NOT EXISTS models (
-    id TEXT PRIMARY KEY,
-    provider TEXT NOT NULL,
-    kind TEXT NOT NULL CHECK (kind IN ('builtin', 'custom')),
-    provider_display_name TEXT NOT NULL,
-    base_url TEXT,
-    secret_ref TEXT NOT NULL,
-    api_key_configured INTEGER NOT NULL DEFAULT 0,
-    model_policy TEXT NOT NULL DEFAULT 'all_catalog' CHECK (
-        model_policy IN ('all_catalog', 'restricted', 'custom_only')
-    ),
-    preferred_model_id TEXT,
-    is_enabled INTEGER NOT NULL DEFAULT 1,
-    source TEXT NOT NULL CHECK (source IN ('catalog', 'custom')),
+        id TEXT PRIMARY KEY,
+        provider_id TEXT NOT NULL,
+        model_id TEXT NOT NULL,
+        display_name TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_models_provider_model
+ON models(provider_id, model_id);
+
+CREATE INDEX IF NOT EXISTS idx_models_provider_model
+ON models(provider_id, model_id);
+
+CREATE TABLE IF NOT EXISTS default_model_selection (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    provider_id TEXT NOT NULL,
     model_id TEXT NOT NULL,
-    display_name TEXT,
-    enabled INTEGER NOT NULL DEFAULT 1,
-    sort_order INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
-
-CREATE UNIQUE INDEX IF NOT EXISTS uq_models_provider_source_model
-ON models(provider, source, model_id);
-
-CREATE INDEX IF NOT EXISTS idx_models_provider_order
-ON models(provider, sort_order, model_id);
 
 CREATE TABLE IF NOT EXISTS sessions (
   id TEXT PRIMARY KEY,

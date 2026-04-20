@@ -33,6 +33,7 @@ def create_acp_app(config: AcpAppConfig | None = None) -> FastAPI:
     secret_store = LocalSecretStore(cfg.ns_bot_home)
     provider_service = ProviderService(
         repositories=repositories.providers,
+        default_model_selection=repositories.default_model_selection,
         secret_store=secret_store,
     )
     session_service = SessionService(
@@ -106,5 +107,9 @@ def create_acp_app(config: AcpAppConfig | None = None) -> FastAPI:
             status_code=500,
             content=redact_sensitive({"detail": str(exc)}),
         )
+
+    @app.get("/health")
+    async def health() -> dict[str, bool]:
+        return {"ok": True}
 
     return app

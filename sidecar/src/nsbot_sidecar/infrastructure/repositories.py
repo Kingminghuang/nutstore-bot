@@ -86,6 +86,14 @@ class ProviderBundle:
 
 
 @dataclass(frozen=True)
+class DefaultModelSelectionRecord:
+    provider_id: str
+    model_id: str
+    created_at: str
+    updated_at: str
+
+
+@dataclass(frozen=True)
 class SessionRecord:
     id: str
     workspace_id: str
@@ -215,16 +223,12 @@ class ProvidersRepository:
         provider_data: dict[str, object],
         models: list[dict[str, object]] | None = None,
     ) -> ProviderBundle:
-        models = models or []
+        materialized_models = models if models is not None else None
         now = now_iso_timestamp()
-        kind = str(provider_data["kind"])
         record_id = str(
             provider_data.get("id")
-            or (
-                provider_data.get("catalog_provider_id")
-                if kind == "builtin"
-                else provider_data.get("custom_slug")
-            )
+            or provider_data.get("catalog_provider_id")
+            or provider_data.get("custom_slug")
             or provider_data.get("runtime_provider")
             or ""
         ).strip()
@@ -242,100 +246,181 @@ class ProvidersRepository:
             )
         )
 
-        materialized_models = models[:]
-        if not materialized_models:
-            materialized_models = [
-                {
-                    "source": "catalog" if kind == "builtin" else "custom",
-                    "model_id": "",
-                    "display_name": None,
-                    "enabled": False,
-                    "sort_order": 0,
-                }
-            ]
-
         with transaction(self.connection):
-            self.connection.execute("DELETE FROM models WHERE provider = ?", (record_id,))
+            self.connection.execute(
+                """
+                INSERT INTO providers (
+                    id, runtime_provider, catalog_provider_id, display_name,
+                    base_url, secret_ref, preferred_model_id, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    runtime_provider = excluded.runtime_provider,
+                    catalog_provider_id = excluded.catalog_provider_id,
+                    display_name = excluded.display_name,
+                    base_url = excluded.base_url,
+                    secret_ref = excluded.secret_ref,
+                    preferred_model_id = excluded.preferred_model_id,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    record_id,
+                    str(provider_data.get("runtime_provider") or "custom"),
+                    provider_data.get("catalog_provider_id"),
+                    str(provider_data.get("display_name") or record_id),
+                    provider_data.get("base_url"),
+                    secret_ref,
+                    provider_data.get("preferred_model_id"),
+                    created_at,
+                    now,
+                ),
+            )
 
-            for index, model in enumerate(materialized_models):
-                model_id = str(model.get("model_id") or "")
-                existing_model = None
-                if existing is not None:
-                    existing_model = next(
-                        (
-                            item
-                            for item in existing.models
-                            if item.source == str(model["source"])
-                            and item.model_id == model_id
-                        ),
-                        None,
-                    )
-
+            if materialized_models is not None:
                 self.connection.execute(
-                    """
-                    INSERT INTO models (
-                        id, provider, kind, provider_display_name, base_url,
-                        secret_ref, api_key_configured, model_policy,
-                        preferred_model_id, is_enabled, source, model_id,
-                        display_name, enabled, sort_order, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        str(model.get("id") or (existing_model.id if existing_model else create_id("model"))),
-                        record_id,
-                        kind,
-                        str(provider_data["display_name"]),
-                        provider_data.get("base_url"),
-                        secret_ref,
-                        1 if bool(provider_data.get("api_key_configured", False)) else 0,
-                        str(provider_data.get("model_policy") or "all_catalog"),
-                        provider_data.get("preferred_model_id"),
-                        0 if provider_data.get("is_enabled") is False else 1,
-                        str(model["source"]),
-                        model_id,
-                        model.get("display_name"),
-                        0 if model.get("enabled") is False else 1,
-                        _as_int(model.get("sort_order", index)),
-                        existing_model.created_at if existing_model else created_at,
-                        now,
-                    ),
+                    "DELETE FROM models WHERE provider_id = ?",
+                    (record_id,),
                 )
+                for model in materialized_models:
+                    model_id = str(model.get("model_id") or model.get("modelId") or "").strip()
+                    if model_id == "":
+                        continue
+                    existing_model = None
+                    if existing is not None:
+                        existing_model = next(
+                            (item for item in existing.models if item.model_id == model_id),
+                            None,
+                        )
+                    self.connection.execute(
+                        """
+                        INSERT INTO models (
+                            id, provider_id, model_id, display_name, created_at, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            str(model.get("id") or (existing_model.id if existing_model else create_id("model"))),
+                            record_id,
+                            model_id,
+                            model.get("display_name") or model.get("displayName"),
+                            existing_model.created_at if existing_model else now,
+                            now,
+                        ),
+                    )
 
         return self.get_bundle_by_id_or_raise(record_id)
 
+    def add_model(
+        self,
+        provider_id: str,
+        *,
+        model_id: str,
+        display_name: str | None = None,
+    ) -> ProviderModelRecord:
+        provider = self.get_bundle_by_id(provider_id)
+        if provider is None:
+            raise ValueError(f"Provider not found: {provider_id}")
+        now = now_iso_timestamp()
+        record_id = create_id("model")
+        self.connection.execute(
+            """
+            INSERT INTO models (id, provider_id, model_id, display_name, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (record_id, provider_id, model_id, display_name, now, now),
+        )
+        self.connection.commit()
+        bundle = self.get_bundle_by_id_or_raise(provider_id)
+        return next(item for item in bundle.models if item.id == record_id)
+
+    def delete_model(self, provider_id: str, model_id: str) -> bool:
+        cursor = self.connection.execute(
+            "DELETE FROM models WHERE provider_id = ? AND model_id = ?",
+            (provider_id, model_id),
+        )
+        self.connection.commit()
+        return int(cursor.rowcount or 0) > 0
+
     def get_bundle_by_id(self, provider_id: str) -> ProviderBundle | None:
-        row = self.connection.execute(
-            "SELECT * FROM models WHERE provider = ? ORDER BY sort_order ASC, model_id ASC LIMIT 1",
+        provider_row = self.connection.execute(
+            "SELECT * FROM providers WHERE id = ?",
             (provider_id,),
         ).fetchone()
-        if row is None:
+        if provider_row is None:
             return None
 
-        models = self.connection.execute(
-            "SELECT * FROM models WHERE provider = ? ORDER BY sort_order ASC, model_id ASC",
+        provider = _map_provider(provider_row)
+        model_rows = self.connection.execute(
+            "SELECT * FROM models WHERE provider_id = ? ORDER BY created_at ASC, model_id ASC",
             (provider_id,),
         ).fetchall()
 
         return ProviderBundle(
-            provider=_map_provider(row),
-            models=[_map_provider_model(model_row) for model_row in models],
+            provider=provider,
+            models=[
+                _map_provider_model(model_row, provider=provider, sort_order=index)
+                for index, model_row in enumerate(model_rows)
+            ],
         )
 
     def list_bundles(self) -> list[ProviderBundle]:
         rows = self.connection.execute(
-            "SELECT provider FROM models GROUP BY provider ORDER BY MAX(updated_at) DESC, MIN(provider_display_name) ASC"
+            "SELECT id FROM providers ORDER BY updated_at DESC, display_name ASC"
         ).fetchall()
         return [self.get_bundle_by_id_or_raise(str(row[0])) for row in rows]
 
     def delete_by_id(self, provider_id: str) -> None:
-        self.connection.execute("DELETE FROM models WHERE provider = ?", (provider_id,))
-        self.connection.commit()
+        with transaction(self.connection):
+            self.connection.execute(
+                "DELETE FROM models WHERE provider_id = ?",
+                (provider_id,),
+            )
+            self.connection.execute(
+                "DELETE FROM providers WHERE id = ?",
+                (provider_id,),
+            )
 
     def get_bundle_by_id_or_raise(self, provider_id: str) -> ProviderBundle:
         bundle = self.get_bundle_by_id(provider_id)
         if bundle is None:
             raise ValueError(f"Provider not found: {provider_id}")
         return bundle
+
+
+class DefaultModelSelectionRepository:
+    def __init__(self, connection: sqlite3.Connection):
+        self.connection = connection
+
+    def get(self) -> DefaultModelSelectionRecord | None:
+        row = self.connection.execute(
+            "SELECT * FROM default_model_selection WHERE id = 1"
+        ).fetchone()
+        if row is None:
+            return None
+        return _map_default_model_selection(row)
+
+    def set(self, provider_id: str, model_id: str) -> DefaultModelSelectionRecord:
+        existing = self.get()
+        now = now_iso_timestamp()
+        created_at = existing.created_at if existing is not None else now
+        self.connection.execute(
+            """
+            INSERT INTO default_model_selection (id, provider_id, model_id, created_at, updated_at)
+            VALUES (1, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                provider_id = excluded.provider_id,
+                model_id = excluded.model_id,
+                updated_at = excluded.updated_at
+            """,
+            (provider_id, model_id, created_at, now),
+        )
+        self.connection.commit()
+        record = self.get()
+        if record is None:
+            raise ValueError("Default model selection was not persisted")
+        return record
+
+    def clear(self) -> None:
+        self.connection.execute("DELETE FROM default_model_selection WHERE id = 1")
+        self.connection.commit()
 
 
 class SessionsRepository:
@@ -760,6 +845,7 @@ class DraftAttachmentsRepository:
 class Repositories:
     workspaces: WorkspacesRepository
     providers: ProvidersRepository
+    default_model_selection: DefaultModelSelectionRepository
     sessions: SessionsRepository
     acp_event_log: AcpEventLogRepository
     attachments: AttachmentsRepository
@@ -770,6 +856,7 @@ def create_repositories(connection: sqlite3.Connection) -> Repositories:
     return Repositories(
         workspaces=WorkspacesRepository(connection),
         providers=ProvidersRepository(connection),
+        default_model_selection=DefaultModelSelectionRepository(connection),
         sessions=SessionsRepository(connection),
         acp_event_log=AcpEventLogRepository(connection),
         attachments=AttachmentsRepository(connection),
@@ -789,35 +876,49 @@ def _map_workspace(row: sqlite3.Row) -> WorkspaceRecord:
 
 
 def _map_provider(row: sqlite3.Row) -> ProviderRecord:
-    kind = str(row["kind"])
-    provider = str(row["provider"])
+    provider = str(row["id"])
+    catalog_provider_id = _nullable_str(row["catalog_provider_id"])
+    kind = "builtin" if catalog_provider_id else "custom"
     return ProviderRecord(
         id=provider,
         kind=kind,
-        runtime_provider=provider if kind == "builtin" else "custom",
-        catalog_provider_id=provider if kind == "builtin" else None,
+        runtime_provider=str(row["runtime_provider"]),
+        catalog_provider_id=catalog_provider_id,
         custom_slug=provider if kind == "custom" else None,
-        display_name=str(row["provider_display_name"]),
+        display_name=str(row["display_name"]),
         base_url=_nullable_str(row["base_url"]),
         secret_ref=str(row["secret_ref"]),
-        api_key_configured=bool(row["api_key_configured"]),
-        model_policy=str(row["model_policy"]),
+        api_key_configured=True,
+        model_policy="all_catalog" if kind == "builtin" else "custom_only",
         preferred_model_id=_nullable_str(row["preferred_model_id"]),
-        is_enabled=bool(row["is_enabled"]),
+        is_enabled=True,
         created_at=str(row["created_at"]),
         updated_at=str(row["updated_at"]),
     )
 
 
-def _map_provider_model(row: sqlite3.Row) -> ProviderModelRecord:
+def _map_provider_model(
+    row: sqlite3.Row, *, provider: ProviderRecord, sort_order: int
+) -> ProviderModelRecord:
     return ProviderModelRecord(
         id=str(row["id"]),
-        provider_id=str(row["provider"]),
-        source=str(row["source"]),
+        provider_id=str(row["provider_id"]),
+        source="catalog" if provider.catalog_provider_id else "custom",
         model_id=str(row["model_id"]),
         display_name=_nullable_str(row["display_name"]),
-        enabled=bool(row["enabled"]),
-        sort_order=int(row["sort_order"]),
+        enabled=True,
+        sort_order=sort_order,
+        created_at=str(row["created_at"]),
+        updated_at=str(row["updated_at"]),
+    )
+
+
+def _map_default_model_selection(
+    row: sqlite3.Row,
+) -> DefaultModelSelectionRecord:
+    return DefaultModelSelectionRecord(
+        provider_id=str(row["provider_id"]),
+        model_id=str(row["model_id"]),
         created_at=str(row["created_at"]),
         updated_at=str(row["updated_at"]),
     )

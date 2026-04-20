@@ -8,7 +8,7 @@ from typing import Any
 
 from fastapi.testclient import TestClient
 
-from nsbot_sidecar.api.api_server import ApiServerConfig, create_app
+from nsbot_sidecar.api.acp_app import AcpAppConfig, create_acp_app
 from nsbot_sidecar.api.acp_session import AcpJsonRpcSession
 
 
@@ -40,16 +40,11 @@ def _response_for(outgoing: list[dict[str, Any]], request_id: int) -> dict[str, 
     raise AssertionError(f"missing response for id {request_id}")
 
 
-class ApiServerTests(unittest.TestCase):
+class AcpAppTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp_dir = Path(tempfile.mkdtemp(prefix="sidecar-api-"))
-        self.config = ApiServerConfig(
-            host="127.0.0.1",
-            port=18765,
-            auth_header_value="Bearer test-token",
-            ns_bot_home=str(self.temp_dir),
-        )
-        self.app = create_app(self.config)
+        self.config = AcpAppConfig(ns_bot_home=str(self.temp_dir))
+        self.app = create_acp_app(self.config)
         self.client = TestClient(self.app)
 
     def test_health_endpoint_is_available(self) -> None:
@@ -138,7 +133,6 @@ class ApiServerTests(unittest.TestCase):
                     "id": 3,
                     "method": "_nsbot/provider/create",
                     "params": {
-                        "kind": "builtin",
                         "catalogProviderId": "openai",
                         "displayName": "OpenAI",
                         "apiKey": "sk-test",
@@ -195,11 +189,9 @@ class ApiServerTests(unittest.TestCase):
         )
         provider = repos.providers.save_bundle(
             provider_data={
-                "kind": "builtin",
                 "runtime_provider": "openai",
                 "catalog_provider_id": "openai",
                 "display_name": "OpenAI",
-                "api_key_configured": True,
                 "preferred_model_id": "gpt-5.4",
             }
         )

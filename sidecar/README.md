@@ -107,6 +107,13 @@ bash sidecar/tests/e2e_packaged_cli.sh
 bash sidecar/tests/e2e_agent_cli.sh
 ```
 
+## Runtime docs
+
+- CLI workspace/thread usage: `sidecar/docs/cli_workspace_session.md`
+- Current provider/model schema and CLI semantics: `sidecar/docs/cli_workspace_session.md#provider-model-storage-and-cli-semantics`
+
+The provider/model documentation above is the current source of truth for sidecar persistence and CLI behavior. Do not implement against the old single-table provider/model storage or the removed `providers use` flow.
+
 ## Troubleshooting
 
 ## `uv: command not found`

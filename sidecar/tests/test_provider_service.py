@@ -18,6 +18,7 @@ class ProviderServiceModelOptionsTests(unittest.TestCase):
         self.repositories = create_repositories(self.connection)
         self.service = ProviderService(
             repositories=self.repositories.providers,
+            default_model_selection=self.repositories.default_model_selection,
             secret_store=LocalSecretStore(self.temp_dir),
         )
 
@@ -34,16 +35,12 @@ class ProviderServiceModelOptionsTests(unittest.TestCase):
 
         bundle = self.repositories.providers.save_bundle(
             provider_data={
-                "kind": "builtin",
                 "runtime_provider": "openai",
                 "catalog_provider_id": "openai",
                 "display_name": "OpenAI",
                 "base_url": None,
                 "secret_ref": "sec_test_openai",
-                "api_key_configured": True,
-                "model_policy": "all_catalog",
                 "preferred_model_id": openai_model_id,
-                "is_enabled": True,
             },
             models=[],
         )
@@ -56,4 +53,52 @@ class ProviderServiceModelOptionsTests(unittest.TestCase):
         self.assertEqual(
             payload["defaultSelection"],
             {"providerId": bundle.provider.id, "modelId": openai_model_id},
+        )
+
+    def test_global_default_selection_overrides_provider_preference(self) -> None:
+        openai_model_id = str(
+            next(
+                provider for provider in list_providers() if str(provider.get("id") or "") == "openai"
+            )["models"][0]["id"]
+        )
+        anthropic_model_id = str(
+            next(
+                provider
+                for provider in list_providers()
+                if str(provider.get("id") or "") == "anthropic"
+            )["models"][0]["id"]
+        )
+
+        self.repositories.providers.save_bundle(
+            provider_data={
+                "runtime_provider": "openai",
+                "catalog_provider_id": "openai",
+                "display_name": "OpenAI",
+                "base_url": None,
+                "secret_ref": "sec_test_openai",
+                "preferred_model_id": openai_model_id,
+            },
+            models=[],
+        )
+        anthropic_bundle = self.repositories.providers.save_bundle(
+            provider_data={
+                "runtime_provider": "anthropic",
+                "catalog_provider_id": "anthropic",
+                "display_name": "Anthropic",
+                "base_url": None,
+                "secret_ref": "sec_test_anthropic",
+                "preferred_model_id": anthropic_model_id,
+            },
+            models=[],
+        )
+        self.repositories.default_model_selection.set(
+            anthropic_bundle.provider.id,
+            anthropic_model_id,
+        )
+
+        payload = self.service.model_options_payload()
+
+        self.assertEqual(
+            payload["defaultSelection"],
+            {"providerId": anthropic_bundle.provider.id, "modelId": anthropic_model_id},
         )

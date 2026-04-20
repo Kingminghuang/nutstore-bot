@@ -38,29 +38,19 @@ class CliProviderModelTests(unittest.TestCase):
     def _create_builtin_openai(self) -> str:
         bundle = self.repositories.providers.save_bundle(
             provider_data={
-                "kind": "builtin",
                 "runtime_provider": "openai",
                 "catalog_provider_id": "openai",
                 "display_name": "OpenAI",
                 "base_url": None,
                 "secret_ref": "sec_test_openai",
-                "api_key_configured": True,
-                "model_policy": "all_catalog",
                 "preferred_model_id": None,
-                "is_enabled": True,
             },
             models=[],
         )
         return bundle.provider.id
 
-    def test_providers_use_auto_selects_first_model(self) -> None:
-        connection_id = self._create_builtin_openai()
-        openai_entry = next(
-            item for item in list_providers() if str(item.get("id")) == "openai"
-        )
-        expected_model_id = str(openai_entry["models"][0]["id"])
-
-        code, stdout, _stderr = _run_cli(
+    def test_providers_use_command_is_removed(self) -> None:
+        code, stdout, stderr = _run_cli(
             [
                 "--ns-bot-home",
                 self.temp_dir,
@@ -69,13 +59,9 @@ class CliProviderModelTests(unittest.TestCase):
                 "openai",
             ]
         )
-        self.assertEqual(code, 0)
-        payload = json.loads(stdout)
-        self.assertEqual(payload["providerId"], connection_id)
-        self.assertEqual(payload["modelId"], expected_model_id)
-
-        refreshed = self.repositories.providers.get_bundle_by_id_or_raise(connection_id)
-        self.assertEqual(refreshed.provider.preferred_model_id, expected_model_id)
+        self.assertEqual(code, 2)
+        self.assertEqual(stdout, "")
+        self.assertIn("No such command 'use'", stderr)
 
     def test_providers_delete_requires_provider_id(self) -> None:
         connection_id = self._create_builtin_openai()
@@ -120,25 +106,18 @@ class CliProviderModelTests(unittest.TestCase):
     def test_models_get_returns_provider_model_tuple(self) -> None:
         bundle = self.repositories.providers.save_bundle(
             provider_data={
-                "kind": "custom",
                 "runtime_provider": "custom",
                 "catalog_provider_id": None,
-                "custom_slug": "my-gateway",
+                "id": "my-gateway",
                 "display_name": "My Gateway",
                 "base_url": "https://llm.example.com/v1",
                 "secret_ref": "sec_test_custom",
-                "api_key_configured": True,
-                "model_policy": "custom_only",
                 "preferred_model_id": "model-a",
-                "is_enabled": True,
             },
             models=[
                 {
-                    "source": "custom",
                     "model_id": "model-a",
                     "display_name": "Model A",
-                    "enabled": True,
-                    "sort_order": 0,
                 },
             ],
         )
@@ -157,7 +136,7 @@ class CliProviderModelTests(unittest.TestCase):
         self.assertEqual(payload["providerId"], bundle.provider.id)
         self.assertEqual(payload["modelId"], "model-a")
 
-    def test_models_set_default_updates_provider_preference(self) -> None:
+    def test_models_set_default_updates_global_selection(self) -> None:
         connection_id = self._create_builtin_openai()
         openai_entry = next(
             item for item in list_providers() if str(item.get("id")) == "openai"
@@ -180,10 +159,11 @@ class CliProviderModelTests(unittest.TestCase):
         self.assertEqual(payload["providerId"], connection_id)
         self.assertEqual(payload["modelId"], model_ids[0])
 
-        refreshed = self.repositories.providers.get_bundle_by_id_or_raise(
-            connection_id
-        )
-        self.assertEqual(refreshed.provider.preferred_model_id, model_ids[0])
+        selection = self.repositories.default_model_selection.get()
+        self.assertIsNotNone(selection)
+        assert selection is not None
+        self.assertEqual(selection.provider_id, connection_id)
+        self.assertEqual(selection.model_id, model_ids[0])
 
     def test_models_list_works_without_provider_filter(self) -> None:
         self._create_builtin_openai()
@@ -249,32 +229,22 @@ class CliProviderModelTests(unittest.TestCase):
     def test_models_remove_can_infer_provider_id_when_unique(self) -> None:
         bundle = self.repositories.providers.save_bundle(
             provider_data={
-                "kind": "custom",
                 "runtime_provider": "custom",
                 "catalog_provider_id": None,
-                "custom_slug": "demo-gateway",
+                "id": "demo-gateway",
                 "display_name": "Demo Gateway",
                 "base_url": "https://llm.example.com/v1",
                 "secret_ref": "sec_test_custom",
-                "api_key_configured": True,
-                "model_policy": "custom_only",
                 "preferred_model_id": "demo-model-alpha",
-                "is_enabled": True,
             },
             models=[
                 {
-                    "source": "custom",
                     "model_id": "demo-model-alpha",
                     "display_name": "Demo Model Alpha",
-                    "enabled": True,
-                    "sort_order": 0,
                 },
                 {
-                    "source": "custom",
                     "model_id": "demo-model-beta",
                     "display_name": "Demo Model Beta",
-                    "enabled": True,
-                    "sort_order": 1,
                 },
             ],
         )
@@ -423,16 +393,6 @@ class CliProviderModelTests(unittest.TestCase):
         self.assertIn("No such option: --provider-id", stderr)
 
     def test_agent_run_help_uses_thread_workspace_model_flags(self) -> None:
-        connection_id = self._create_builtin_openai()
-        _run_cli(
-            [
-                "--ns-bot-home",
-                self.temp_dir,
-                "providers",
-                "use",
-                "openai",
-            ]
-        )
         code, stdout, _stderr = _run_cli(
             [
                 "--ns-bot-home",

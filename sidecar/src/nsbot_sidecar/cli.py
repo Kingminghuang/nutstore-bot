@@ -126,6 +126,7 @@ def _build_services(ns_bot_home_value: str, db_path: str | None = None):
     secret_store = LocalSecretStore(ns_bot_home_value)
     provider_service = ProviderService(
         repositories=repositories.providers,
+        default_model_selection=repositories.default_model_selection,
         secret_store=secret_store,
     )
     return database, repositories, secret_store, provider_service
@@ -330,46 +331,6 @@ def _handle_providers_command(args: SimpleNamespace) -> int:
             _print_json({"ok": True, "deletedProviderId": args.provider_id})
             return 0
 
-        if args.providers_command == "use":
-            target_ref = str(args.provider or "").strip()
-            if target_ref == "":
-                raise ValueError("Provider id is required")
-
-            model_options = provider_service.model_options_payload()
-            group = _find_target_group(model_options, provider_ref=target_ref)
-            if group is None:
-                raise ValueError(
-                    f"No available connected provider found for '{target_ref}'"
-                )
-
-            provider_id = str(group.get("providerId") or "")
-            requested_model = str(args.model or "").strip()
-            model_id = requested_model or _first_model_id(group)
-            if model_id is None:
-                raise ValueError(f"No available models for '{target_ref}'")
-
-            models = group.get("models")
-            allowed_ids = {
-                str(model.get("modelId") or "")
-                for model in (models if isinstance(models, list) else [])
-            }
-            if model_id not in allowed_ids:
-                raise ValueError(
-                    f"Model '{model_id}' is not available for provider '{provider_id}'"
-                )
-
-            updated = provider_service.update_provider(
-                provider_id, {"preferredModelId": model_id}
-            )
-            _print_json(
-                {
-                    "ok": True,
-                    "providerId": _normalize_provider_ref(updated),
-                    "modelId": model_id,
-                }
-            )
-            return 0
-
         raise ValueError(f"Unknown providers command: {args.providers_command}")
     finally:
         database.close()
@@ -395,23 +356,13 @@ def _handle_models_command(args: SimpleNamespace) -> int:
             if api_key == "":
                 raise ValueError("API key is required")
 
-            payload = provider_service.create_provider(
-                {
-                    "kind": "custom",
-                    "customSlug": name,
-                    "displayName": name,
-                    "baseUrl": base_url,
-                    "apiKey": api_key,
-                    "customModels": [
-                        {
-                            "modelId": model_id,
-                            "displayName": model_id,
-                            "enabled": True,
-                        }
-                    ],
-                    "preferredModelId": model_id,
-                    "isEnabled": True,
-                }
+            payload = provider_service.add_custom_model(
+                provider_id=name,
+                base_url=base_url,
+                api_key=api_key,
+                model_id=model_id,
+                provider_display_name=name,
+                model_display_name=model_id,
             )
             _print_json(payload)
             return 0
@@ -473,20 +424,20 @@ def _handle_models_command(args: SimpleNamespace) -> int:
             if bundle is None:
                 raise ValueError(f"Provider not found: {provider_id}")
 
-            updated = provider_service.update_provider(
-                provider_id,
-                {
-                    "preferredModelId": model_id,
-                    "isEnabled": bundle.provider.is_enabled,
-                },
-            )
+            provider_service.set_default_model(provider_id, model_id)
             _print_json(
                 {
                     "ok": True,
                     "providerId": provider_id,
                     "modelId": model_id,
                     "action": "set-default",
-                    "providerRef": _normalize_provider_ref(updated),
+                    "providerRef": _normalize_provider_ref(
+                        {
+                            "catalogProviderId": bundle.provider.catalog_provider_id,
+                            "customSlug": bundle.provider.custom_slug,
+                            "runtimeProvider": bundle.provider.runtime_provider,
+                        }
+                    ),
                 }
             )
             return 0
@@ -510,42 +461,11 @@ def _handle_models_command(args: SimpleNamespace) -> int:
             raise ValueError(f"Provider not found: {provider_id}")
 
         if args.models_command == "remove":
-            if bundle.provider.kind != "custom":
+            if bundle.provider.catalog_provider_id is not None:
                 raise ValueError("models remove is only supported for custom providers")
-            custom_models = [
-                {
-                    "id": model.id,
-                    "modelId": model.model_id,
-                    "displayName": model.display_name,
-                    "enabled": model.enabled,
-                }
-                for model in bundle.models
-                if model.source == "custom" and model.model_id != model_id
-            ]
-            if len(custom_models) == len(
-                [model for model in bundle.models if model.source == "custom"]
-            ):
+            if not any(model.model_id == model_id for model in bundle.models):
                 raise ValueError(f"Model '{model_id}' not found in provider '{provider_id}'")
-
-            next_preferred = bundle.provider.preferred_model_id
-            if next_preferred == model_id:
-                replacement = next(
-                    (
-                        str(model.get("modelId") or "")
-                        for model in custom_models
-                        if bool(model.get("enabled", True))
-                    ),
-                    None,
-                )
-                next_preferred = replacement
-
-            provider_service.update_provider(
-                provider_id,
-                {
-                    "customModels": custom_models,
-                    "preferredModelId": next_preferred,
-                },
-            )
+            provider_service.remove_model(provider_id, model_id)
             _print_json(
                 {
                     "ok": True,
@@ -1451,26 +1371,6 @@ def providers_list(ctx: typer.Context) -> None:
             )
         )
     )
-
-
-@providers_app.command("use")
-def providers_use(
-    ctx: typer.Context,
-    provider: str = typer.Argument(..., help="Provider id or connection id"),
-    model: str = typer.Option("", "--model", help="Preferred model id"),
-) -> None:
-    _run_with_error_handling(
-        lambda: _handle_providers_command(
-            SimpleNamespace(
-                ns_bot_home=_ns_bot_home_from_ctx(ctx),
-                db_path=_db_path_from_ctx(ctx),
-                providers_command="use",
-                provider=provider,
-                model=model,
-            )
-        )
-    )
-
 
 @providers_app.command("delete")
 def providers_delete(

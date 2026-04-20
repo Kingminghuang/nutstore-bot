@@ -28,19 +28,12 @@ class RepositoriesTests(unittest.TestCase):
 
         provider = self.repositories.providers.save_bundle(
             provider_data={
-                "kind": "builtin",
                 "runtime_provider": "openai",
                 "catalog_provider_id": "openai",
                 "display_name": "OpenAI",
-                "api_key_configured": True,
                 "preferred_model_id": "gpt-5.4",
             },
-            models=[
-                {
-                    "source": "catalog",
-                    "model_id": "gpt-5.4",
-                }
-            ],
+            models=[],
         )
 
         session = self.repositories.sessions.create(
@@ -115,15 +108,12 @@ class RepositoriesTests(unittest.TestCase):
     def test_provider_fields_survive_reopening_database(self) -> None:
         provider = self.repositories.providers.save_bundle(
             provider_data={
-                "kind": "builtin",
                 "runtime_provider": "openai",
                 "catalog_provider_id": "openai",
                 "display_name": "OpenAI",
-                "api_key_configured": True,
-                "model_policy": "restricted",
                 "preferred_model_id": "gpt-5.4",
             },
-            models=[{"source": "catalog", "model_id": "gpt-5.4"}],
+            models=[],
         )
 
         self.connection.close()
@@ -134,6 +124,20 @@ class RepositoriesTests(unittest.TestCase):
         reopened_provider = reopened.providers.get_bundle_by_id_or_raise(
             provider.provider.id
         )
-        self.assertEqual(reopened_provider.provider.model_policy, "restricted")
+        self.assertEqual(reopened_provider.provider.model_policy, "all_catalog")
         self.assertEqual(reopened_provider.provider.preferred_model_id, "gpt-5.4")
         self.assertEqual(reopened_provider.provider.api_key_configured, True)
+
+    def test_default_model_selection_survives_reopening_database(self) -> None:
+        self.repositories.default_model_selection.set("openai", "gpt-5.4")
+
+        self.connection.close()
+        reopened_connection = connect_database(self.temp_dir)
+        self.addCleanup(reopened_connection.close)
+        reopened = create_repositories(reopened_connection)
+
+        selection = reopened.default_model_selection.get()
+        self.assertIsNotNone(selection)
+        assert selection is not None
+        self.assertEqual(selection.provider_id, "openai")
+        self.assertEqual(selection.model_id, "gpt-5.4")
