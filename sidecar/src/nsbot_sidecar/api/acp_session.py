@@ -24,6 +24,7 @@ from nsbot_sidecar.runtime.engine import create_runtime_engine
 from nsbot_sidecar.runtime.types import (
     RunMetadata,
     RuntimeCancelledError,
+    RuntimeProcessError,
     RuntimeWorkerConfig,
 )
 from nsbot_sidecar.application.timeline_service import serialize_session_summary
@@ -190,6 +191,7 @@ class AcpJsonRpcSession:
         self._session_cancelled: dict[str, bool] = {}
         self._session_mcp_connections: dict[str, _SessionMcpConnection] = {}
         self._turn_plan_entries: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        self._turn_tool_call_statuses: dict[tuple[str, str], dict[str, str]] = {}
         self._auth_state: _AuthState | None = None
 
         self._client_capabilities: dict[str, Any] = {
@@ -1335,6 +1337,9 @@ class AcpJsonRpcSession:
     def _plan_entries_key(self, session_id: str, turn_id: str) -> tuple[str, str]:
         return (session_id, turn_id)
 
+    def _tool_call_statuses_key(self, session_id: str, turn_id: str) -> tuple[str, str]:
+        return (session_id, turn_id)
+
     async def _emit_full_plan_update(
         self,
         session_id: str,
@@ -2102,6 +2107,7 @@ class AcpJsonRpcSession:
         session_id = str(params.get("sessionId") or "")
         stop_reason = "end_turn"
         turn_id: str | None = None
+        saw_agent_message_delta = False
 
         try:
             if not session_id:
@@ -2137,6 +2143,9 @@ class AcpJsonRpcSession:
 
             turn_id = create_id("acpturn")
             self._turn_plan_entries[self._plan_entries_key(session_id, turn_id)] = []
+            self._turn_tool_call_statuses[
+                self._tool_call_statuses_key(session_id, turn_id)
+            ] = {}
 
             before_summary = self._session_summary_payload(session_id)
             refreshed_summary = self.state.session_service.timeline_service.refresh_session_summary(
@@ -2228,6 +2237,11 @@ class AcpJsonRpcSession:
                 )
 
             def event_callback(event: dict[str, Any]) -> None:
+                nonlocal saw_agent_message_delta
+                if str(event.get("type") or "") == "delta":
+                    payload = event.get("payload") or {}
+                    if str(payload.get("text") or ""):
+                        saw_agent_message_delta = True
                 anyio.from_thread.run(
                     self._handle_runtime_event,
                     session_id,
@@ -2272,20 +2286,30 @@ class AcpJsonRpcSession:
                     refreshed_summary,
                     turn_id=turn_id,
                 )
-                await self._emit_session_update(
-                    session_id,
-                    {
-                        "sessionUpdate": "agent_message_chunk",
-                        "content": {
-                            "type": "text",
-                            "text": final_answer,
+                if not saw_agent_message_delta:
+                    await self._emit_session_update(
+                        session_id,
+                        {
+                            "sessionUpdate": "agent_message_chunk",
+                            "content": {
+                                "type": "text",
+                                "text": final_answer,
+                            },
                         },
-                    },
-                    turn_id=turn_id,
-                )
+                        turn_id=turn_id,
+                    )
 
         except RuntimeCancelledError:
             stop_reason = "cancelled"
+        except RuntimeProcessError as exc:
+            mapped_stop_reason = self._map_runtime_error_to_stop_reason(
+                code=exc.code, message=exc.message
+            )
+            if mapped_stop_reason is not None:
+                stop_reason = mapped_stop_reason
+            else:
+                await self._send_error(req_id, -32000, str(exc))
+                return
         except Exception as exc:  # noqa: BLE001
             if str(exc) == "cancelled":
                 stop_reason = "cancelled"
@@ -2294,10 +2318,45 @@ class AcpJsonRpcSession:
                 return
         finally:
             if turn_id is not None:
+                if stop_reason == "cancelled":
+                    await self._emit_cancelled_active_tool_calls(session_id, turn_id)
+                self._turn_tool_call_statuses.pop(
+                    self._tool_call_statuses_key(session_id, turn_id), None
+                )
                 self._turn_plan_entries.pop(
                     self._plan_entries_key(session_id, turn_id), None
                 )
         await self._send_result(req_id, {"stopReason": stop_reason})
+
+    def _map_runtime_error_to_stop_reason(
+        self, *, code: str | None, message: str | None
+    ) -> str | None:
+        normalized_code = str(code or "").strip().lower()
+        normalized_message = str(message or "").strip().lower()
+
+        if normalized_code in {"cancelled", "canceled"}:
+            return "cancelled"
+        if normalized_code in {
+            "max_tokens",
+            "max_tokens_exceeded",
+            "context_length_exceeded",
+        }:
+            return "max_tokens"
+        if normalized_code in {"max_turn_requests", "max_turns"}:
+            return "max_turn_requests"
+        if normalized_code in {"refusal", "model_refusal"}:
+            return "refusal"
+
+        if "max token" in normalized_message:
+            return "max_tokens"
+        if "max turn" in normalized_message:
+            return "max_turn_requests"
+        if "refus" in normalized_message:
+            return "refusal"
+        if "cancel" in normalized_message:
+            return "cancelled"
+
+        return None
 
     async def _handle_runtime_event(
         self, session_id: str, turn_id: str, event: dict[str, Any]
@@ -2589,6 +2648,44 @@ class AcpJsonRpcSession:
             record_event=True,
         )
 
+    async def _emit_cancelled_active_tool_calls(
+        self, session_id: str, turn_id: str
+    ) -> None:
+        key = self._tool_call_statuses_key(session_id, turn_id)
+        statuses = self._turn_tool_call_statuses.get(key) or {}
+        pending_call_ids = [
+            call_id
+            for call_id, status in statuses.items()
+            if status in {"pending", "in_progress"}
+        ]
+        for call_id in pending_call_ids:
+            await self._emit_session_update(
+                session_id,
+                {
+                    "sessionUpdate": "tool_call_update",
+                    "toolCallId": call_id,
+                    "status": "cancelled",
+                },
+                turn_id=turn_id,
+                record_event=True,
+            )
+
+    def _track_tool_call_status_from_update(
+        self, *, session_id: str, turn_id: str | None, update: dict[str, Any]
+    ) -> None:
+        if turn_id is None:
+            return
+        session_update = str(update.get("sessionUpdate") or "")
+        if session_update not in {"tool_call", "tool_call_update"}:
+            return
+        tool_call_id = str(update.get("toolCallId") or "").strip()
+        if tool_call_id == "":
+            return
+        status = str(update.get("status") or "").strip() or "pending"
+        key = self._tool_call_statuses_key(session_id, turn_id)
+        statuses = self._turn_tool_call_statuses.setdefault(key, {})
+        statuses[tool_call_id] = status
+
     def _handle_client_response(self, payload: dict[str, Any]) -> None:
         rpc_id = payload.get("id")
         if not isinstance(rpc_id, int):
@@ -2704,6 +2801,9 @@ class AcpJsonRpcSession:
         turn_id: str | None = None,
         record_event: bool = True,
     ) -> None:
+        self._track_tool_call_status_from_update(
+            session_id=session_id, turn_id=turn_id, update=update
+        )
         payload = {"sessionId": session_id, "update": update}
         if record_event:
             self._persist_session_update_event(payload, turn_id=turn_id)

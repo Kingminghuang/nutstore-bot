@@ -16,7 +16,7 @@ import anyio
 from nsbot_sidecar.api.acp_app import AcpAppConfig, create_acp_app
 from nsbot_sidecar.api.acp_session import AcpJsonRpcSession
 from nsbot_sidecar.infrastructure.secret_store import ProviderSecretPayload
-from nsbot_sidecar.runtime.types import RuntimeCancelledError
+from nsbot_sidecar.runtime.types import RuntimeCancelledError, RuntimeProcessError
 
 
 class _InMemoryTransport:
@@ -58,11 +58,12 @@ class _FakeEngine:
         permission_requester=None,
     ):
         del turn_id, auth_context, metadata, is_cancelled, permission_requester
+        final_text = f"ok: {user_input}"
         if event_callback is not None:
             await anyio.to_thread.run_sync(
-                event_callback, {"type": "delta", "payload": {"text": "chunk"}}
+                event_callback, {"type": "delta", "payload": {"text": final_text}}
             )
-        return {"final_answer": f"ok: {user_input}"}
+        return {"final_answer": final_text}
 
 
 class _BlockingCancellableEngine:
@@ -88,6 +89,40 @@ class _BlockingCancellableEngine:
         while is_cancelled is not None and not is_cancelled():
             await asyncio.sleep(0.01)
         raise RuntimeCancelledError()
+
+
+class _FinalOnlyEngine:
+    async def process_async(
+        self,
+        turn_id,
+        user_input,
+        auth_context,
+        metadata,
+        event_callback=None,
+        is_cancelled=None,
+        permission_requester=None,
+    ):
+        del turn_id, auth_context, metadata, event_callback, is_cancelled, permission_requester
+        return {"final_answer": f"ok: {user_input}"}
+
+
+class _ErrorEngine:
+    def __init__(self, code: str, message: str) -> None:
+        self.code = code
+        self.message = message
+
+    async def process_async(
+        self,
+        turn_id,
+        user_input,
+        auth_context,
+        metadata,
+        event_callback=None,
+        is_cancelled=None,
+        permission_requester=None,
+    ):
+        del turn_id, user_input, auth_context, metadata, event_callback, is_cancelled, permission_requester
+        raise RuntimeProcessError(self.code, self.message)
 
 
 class AcpSessionTests(unittest.TestCase):
@@ -1052,6 +1087,55 @@ class AcpSessionTests(unittest.TestCase):
             asyncio.run(_invoke_prompt())
         response = _response_for(transport.outgoing, 3)
         self.assertEqual(response["result"]["stopReason"], "end_turn")
+        agent_updates = [
+            payload
+            for payload in transport.outgoing
+            if payload.get("method") == "session/update"
+            and payload.get("params", {}).get("update", {}).get("sessionUpdate")
+            == "agent_message_chunk"
+        ]
+        self.assertEqual(len(agent_updates), 1)
+        self.assertEqual(
+            agent_updates[0]["params"]["update"]["content"]["text"],
+            "ok: ping",
+        )
+
+    def test_prompt_emits_final_answer_when_no_streaming_delta(self) -> None:
+        session = self.app_state.repositories.sessions.create(
+            workspace_id=self.workspace.id,
+            active_provider_id=self.provider.provider.id,
+            active_model_id="gpt-5.4",
+        )
+        transport = _InMemoryTransport([])
+        with patch(
+            "nsbot_sidecar.api.acp_session.create_runtime_engine",
+            return_value=_FinalOnlyEngine(),
+        ):
+            async def _invoke_prompt() -> None:
+                session_runner = AcpJsonRpcSession(transport, self.app_state)
+                await session_runner._handle_prompt_request(
+                    31,
+                    {
+                        "sessionId": session.id,
+                        "prompt": [{"type": "text", "text": "ping"}],
+                    },
+                )
+
+            asyncio.run(_invoke_prompt())
+        response = _response_for(transport.outgoing, 31)
+        self.assertEqual(response["result"]["stopReason"], "end_turn")
+        agent_updates = [
+            payload
+            for payload in transport.outgoing
+            if payload.get("method") == "session/update"
+            and payload.get("params", {}).get("update", {}).get("sessionUpdate")
+            == "agent_message_chunk"
+        ]
+        self.assertEqual(len(agent_updates), 1)
+        self.assertEqual(
+            agent_updates[0]["params"]["update"]["content"]["text"],
+            "ok: ping",
+        )
 
     def test_prompt_can_be_cancelled(self) -> None:
         session = self.app_state.repositories.sessions.create(
@@ -1100,6 +1184,92 @@ class AcpSessionTests(unittest.TestCase):
                 for payload in transport.outgoing
             )
         )
+
+    def test_prompt_maps_runtime_error_code_to_stop_reason(self) -> None:
+        session = self.app_state.repositories.sessions.create(
+            workspace_id=self.workspace.id,
+            active_provider_id=self.provider.provider.id,
+            active_model_id="gpt-5.4",
+        )
+        transport = _InMemoryTransport([])
+        with patch(
+            "nsbot_sidecar.api.acp_session.create_runtime_engine",
+            return_value=_ErrorEngine("max_tokens", "token budget exceeded"),
+        ):
+            async def _invoke_prompt() -> None:
+                session_runner = AcpJsonRpcSession(transport, self.app_state)
+                await session_runner._handle_prompt_request(
+                    41,
+                    {
+                        "sessionId": session.id,
+                        "prompt": [{"type": "text", "text": "ping"}],
+                    },
+                )
+
+            asyncio.run(_invoke_prompt())
+        response = _response_for(transport.outgoing, 41)
+        self.assertEqual(response["result"]["stopReason"], "max_tokens")
+
+    def test_prompt_keeps_unknown_runtime_error_as_jsonrpc_error(self) -> None:
+        session = self.app_state.repositories.sessions.create(
+            workspace_id=self.workspace.id,
+            active_provider_id=self.provider.provider.id,
+            active_model_id="gpt-5.4",
+        )
+        transport = _InMemoryTransport([])
+        with patch(
+            "nsbot_sidecar.api.acp_session.create_runtime_engine",
+            return_value=_ErrorEngine("unauthorized", "Provider is missing an API key"),
+        ):
+            async def _invoke_prompt() -> None:
+                session_runner = AcpJsonRpcSession(transport, self.app_state)
+                await session_runner._handle_prompt_request(
+                    42,
+                    {
+                        "sessionId": session.id,
+                        "prompt": [{"type": "text", "text": "ping"}],
+                    },
+                )
+
+            asyncio.run(_invoke_prompt())
+        response = _response_for(transport.outgoing, 42)
+        self.assertIn("error", response)
+        self.assertEqual(response["error"]["code"], -32000)
+
+    def test_cancelled_turn_emits_cancelled_for_pending_tool_calls(self) -> None:
+        session = self.app_state.repositories.sessions.create(
+            workspace_id=self.workspace.id,
+            active_provider_id=self.provider.provider.id,
+            active_model_id="gpt-5.4",
+        )
+        transport = _InMemoryTransport([])
+        session_runner = AcpJsonRpcSession(transport, self.app_state)
+
+        async def _invoke() -> None:
+            await session_runner._emit_session_update(
+                session.id,
+                {
+                    "sessionUpdate": "tool_call",
+                    "toolCallId": "tool_1",
+                    "title": "read",
+                    "kind": "read",
+                    "status": "pending",
+                },
+                turn_id="turn-1",
+            )
+            await session_runner._emit_cancelled_active_tool_calls(session.id, "turn-1")
+
+        asyncio.run(_invoke())
+        updates = [
+            payload["params"]["update"]
+            for payload in transport.outgoing
+            if payload.get("method") == "session/update"
+        ]
+        self.assertEqual(updates[0]["sessionUpdate"], "tool_call")
+        self.assertEqual(updates[0]["status"], "pending")
+        self.assertEqual(updates[1]["sessionUpdate"], "tool_call_update")
+        self.assertEqual(updates[1]["toolCallId"], "tool_1")
+        self.assertEqual(updates[1]["status"], "cancelled")
 
     def test_edit_and_prompt_rejects_non_latest_user_event(self) -> None:
         session = self.app_state.repositories.sessions.create(
