@@ -42,11 +42,35 @@ class StorageTests(unittest.TestCase):
                 str(row[1])
                 for row in connection.execute("PRAGMA table_info(models)").fetchall()
             }
-            self.assertIn("provider", model_columns)
+            self.assertIn("provider_id", model_columns)
             self.assertIn("model_id", model_columns)
             self.assertNotIn("health_status", model_columns)
             self.assertNotIn("health_message", model_columns)
             self.assertNotIn("last_validated_at", model_columns)
+
+            session_columns = {
+                str(row[1])
+                for row in connection.execute("PRAGMA table_info(sessions)").fetchall()
+            }
+            self.assertIn("session_config_json", session_columns)
+            self.assertIn("session_meta_json", session_columns)
+
+            self.assertEqual(
+                connection.execute("PRAGMA foreign_key_list(sessions)").fetchall(),
+                [],
+            )
+            self.assertEqual(
+                connection.execute("PRAGMA foreign_key_list(acp_event_log)").fetchall(),
+                [],
+            )
+            self.assertEqual(
+                connection.execute("PRAGMA foreign_key_list(attachments)").fetchall(),
+                [],
+            )
+            self.assertEqual(
+                connection.execute("PRAGMA foreign_key_list(draft_attachments)").fetchall(),
+                [],
+            )
         finally:
             connection.close()
 

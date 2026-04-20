@@ -111,7 +111,14 @@ class SessionService:
         return serialize_workspace(workspace)
 
     def delete_workspace(self, workspace_id: str) -> None:
-        self._get_workspace_or_404(workspace_id)
+        workspace = self._get_workspace_or_404(workspace_id)
+        for draft_attachment in self.draft_attachments.list_by_workspace_id(workspace.id):
+            self.attachment_store.delete_file(draft_attachment.storage_path)
+        self.draft_attachments.delete_by_workspace_id(workspace.id)
+
+        sessions = self.sessions.list_by_workspace_id(workspace.id)
+        for session in sessions:
+            self.delete_session(session.id)
         self.workspaces.delete_by_id(workspace_id)
 
     def workspace_sidecar_index_status_payload(
@@ -203,6 +210,10 @@ class SessionService:
 
     def delete_session(self, session_id: str) -> None:
         session = self._get_session_or_404(session_id)
+        for attachment in self.attachments.list_by_session_id(session.id):
+            self.attachment_store.delete_file(attachment.storage_path)
+        self.attachments.delete_by_session_id(session.id)
+        self.timeline_service.acp_event_log.delete_by_session_id(session.id)
         try:
             runtime_sessions = SessionManager(
                 str(self.attachment_store.attachments_dir.parent)

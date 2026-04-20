@@ -3,6 +3,7 @@ from __future__ import annotations
 import sqlite3
 from dataclasses import dataclass
 from datetime import UTC, datetime
+import json
 from typing import Any
 from uuid import uuid4
 
@@ -106,6 +107,8 @@ class SessionRecord:
     message_count: int
     active_provider_id: str | None
     active_model_id: str | None
+    session_config: dict[str, Any]
+    session_meta: dict[str, Any]
     created_at: str
     updated_at: str
     last_message_at: str | None
@@ -175,6 +178,13 @@ class WorkspacesRepository:
         if row is None:
             raise ValueError(f"Workspace not found: {workspace_id}")
         return _map_workspace(row)
+
+    def get_by_real_path(self, real_path: str) -> WorkspaceRecord | None:
+        row = self.connection.execute(
+            "SELECT * FROM workspaces WHERE real_path = ?",
+            (real_path,),
+        ).fetchone()
+        return _map_workspace(row) if row is not None else None
 
     def list(self) -> list[WorkspaceRecord]:
         rows = self.connection.execute(
@@ -447,8 +457,9 @@ class SessionsRepository:
             INSERT INTO sessions (
                 id, workspace_id, session_key, title, title_source, title_status,
                 title_generation_attempts, last_message_preview, message_count,
-                active_provider_id, active_model_id, created_at, updated_at, last_message_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                active_provider_id, active_model_id, session_config_json, session_meta_json,
+                created_at, updated_at, last_message_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 record_id,
@@ -462,6 +473,8 @@ class SessionsRepository:
                 0,
                 active_provider_id,
                 active_model_id,
+                "{}",
+                "{}",
                 now,
                 now,
                 None,
@@ -480,10 +493,51 @@ class SessionsRepository:
 
     def list_by_workspace_id(self, workspace_id: str) -> list[SessionRecord]:
         rows = self.connection.execute(
-            "SELECT * FROM sessions WHERE workspace_id = ? ORDER BY updated_at DESC, created_at DESC",
+            "SELECT * FROM sessions WHERE workspace_id = ? ORDER BY updated_at DESC, id DESC",
             (workspace_id,),
         ).fetchall()
         return [_map_session(row) for row in rows]
+
+    def list_page(
+        self,
+        *,
+        limit: int,
+        workspace_id: str | None = None,
+        cursor_updated_at: str | None = None,
+        cursor_id: str | None = None,
+    ) -> tuple[list[SessionRecord], str | None]:
+        where_parts: list[str] = []
+        params: list[object] = []
+        if workspace_id is not None:
+            where_parts.append("workspace_id = ?")
+            params.append(workspace_id)
+        if cursor_updated_at is not None and cursor_id is not None:
+            where_parts.append("(updated_at < ? OR (updated_at = ? AND id < ?))")
+            params.extend([cursor_updated_at, cursor_updated_at, cursor_id])
+
+        where_sql = f"WHERE {' AND '.join(where_parts)}" if where_parts else ""
+        params.append(limit + 1)
+        rows = self.connection.execute(
+            f"""
+            SELECT *
+            FROM sessions
+            {where_sql}
+            ORDER BY updated_at DESC, id DESC
+            LIMIT ?
+            """,
+            tuple(params),
+        ).fetchall()
+
+        has_more = len(rows) > limit
+        if has_more:
+            rows = rows[:limit]
+        records = [_map_session(row) for row in rows]
+        next_cursor = records[-1].id if has_more and records else None
+        return records, next_cursor
+
+    def get_cursor_payload(self, session_id: str) -> tuple[str, str]:
+        session = self.get_by_id(session_id)
+        return session.updated_at, session.id
 
     def delete_by_id(self, session_id: str) -> None:
         self.connection.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
@@ -515,6 +569,16 @@ class SessionsRepository:
                 "active_provider_id", existing.active_provider_id
             ),
             "active_model_id": updates.get("active_model_id", existing.active_model_id),
+            "session_config_json": json.dumps(
+                updates.get("session_config", existing.session_config),
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+            "session_meta_json": json.dumps(
+                updates.get("session_meta", existing.session_meta),
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
             "title": updates.get("title", existing.title),
             "title_source": updates.get("title_source", existing.title_source),
             "title_status": updates.get("title_status", existing.title_status),
@@ -534,6 +598,8 @@ class SessionsRepository:
                 message_count = ?,
                 active_provider_id = ?,
                 active_model_id = ?,
+                session_config_json = ?,
+                session_meta_json = ?,
                 title = ?,
                 title_source = ?,
                 title_status = ?,
@@ -547,6 +613,8 @@ class SessionsRepository:
                 payload["message_count"],
                 payload["active_provider_id"],
                 payload["active_model_id"],
+                payload["session_config_json"],
+                payload["session_meta_json"],
                 payload["title"],
                 payload["title_source"],
                 payload["title_status"],
@@ -658,6 +726,13 @@ class AcpEventLogRepository:
         )
         self.connection.commit()
 
+    def delete_by_session_id(self, session_id: str) -> None:
+        self.connection.execute(
+            "DELETE FROM acp_event_log WHERE session_id = ?",
+            (session_id,),
+        )
+        self.connection.commit()
+
     def _next_sequence_number(self, session_id: str) -> int:
         row = self.connection.execute(
             "SELECT COALESCE(MAX(sequence_no), 0) FROM acp_event_log WHERE session_id = ?",
@@ -750,6 +825,17 @@ class AttachmentsRepository:
         ).fetchall()
         return [_map_attachment(row) for row in rows]
 
+    def list_by_workspace_id(self, workspace_id: str) -> list[AttachmentRecord]:
+        rows = self.connection.execute(
+            """
+            SELECT * FROM attachments
+            WHERE workspace_id = ?
+            ORDER BY created_at ASC, id ASC
+            """,
+            (workspace_id,),
+        ).fetchall()
+        return [_map_attachment(row) for row in rows]
+
     def update_status(self, attachment_id: str, status: str) -> AttachmentRecord:
         self.connection.execute(
             "UPDATE attachments SET status = ?, updated_at = ? WHERE id = ?",
@@ -761,6 +847,13 @@ class AttachmentsRepository:
     def delete_by_id(self, attachment_id: str) -> None:
         self.connection.execute(
             "DELETE FROM attachments WHERE id = ?", (attachment_id,)
+        )
+        self.connection.commit()
+
+    def delete_by_session_id(self, session_id: str) -> None:
+        self.connection.execute(
+            "DELETE FROM attachments WHERE session_id = ?",
+            (session_id,),
         )
         self.connection.commit()
 
@@ -837,6 +930,13 @@ class DraftAttachmentsRepository:
         self.connection.execute(
             "DELETE FROM draft_attachments WHERE id = ?",
             (draft_attachment_id,),
+        )
+        self.connection.commit()
+
+    def delete_by_workspace_id(self, workspace_id: str) -> None:
+        self.connection.execute(
+            "DELETE FROM draft_attachments WHERE workspace_id = ?",
+            (workspace_id,),
         )
         self.connection.commit()
 
@@ -937,6 +1037,8 @@ def _map_session(row: sqlite3.Row) -> SessionRecord:
         message_count=int(row["message_count"]),
         active_provider_id=_nullable_str(row["active_provider_id"]),
         active_model_id=_nullable_str(row["active_model_id"]),
+        session_config=_json_object_or_empty(row["session_config_json"]),
+        session_meta=_json_object_or_empty(row["session_meta_json"]),
         created_at=str(row["created_at"]),
         updated_at=str(row["updated_at"]),
         last_message_at=_nullable_str(row["last_message_at"]),
@@ -981,6 +1083,16 @@ def _map_draft_attachment(row: sqlite3.Row) -> DraftAttachmentRecord:
         created_at=str(row["created_at"]),
         updated_at=str(row["updated_at"]),
     )
+
+
+def _json_object_or_empty(value: object) -> dict[str, Any]:
+    if value is None:
+        return {}
+    try:
+        parsed = json.loads(str(value))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
 
 
 def _nullable_str(value: object) -> str | None:

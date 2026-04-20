@@ -27,7 +27,6 @@ class ThreadLocalConnection:
     def _create_connection(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self._database_path, check_same_thread=False)
         connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA foreign_keys = ON;")
         connection.execute("PRAGMA journal_mode = WAL;")
         with self._connections_guard:
             self._connections.append(connection)
@@ -129,14 +128,18 @@ CREATE TABLE IF NOT EXISTS sessions (
   message_count INTEGER NOT NULL DEFAULT 0,
   active_provider_id TEXT,
   active_model_id TEXT,
+    session_config_json TEXT NOT NULL DEFAULT '{}',
+    session_meta_json TEXT NOT NULL DEFAULT '{}',
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
-  last_message_at TEXT,
-    FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
+    last_message_at TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_sessions_workspace_updated
-ON sessions(workspace_id, updated_at DESC);
+ON sessions(workspace_id, updated_at DESC, id DESC);
+
+CREATE INDEX IF NOT EXISTS idx_sessions_updated
+ON sessions(updated_at DESC, id DESC);
 
 CREATE TABLE IF NOT EXISTS acp_event_log (
   id TEXT PRIMARY KEY,
@@ -145,8 +148,7 @@ CREATE TABLE IF NOT EXISTS acp_event_log (
   sequence_no INTEGER NOT NULL,
   event_type TEXT NOT NULL,
   event_json TEXT NOT NULL,
-  created_at TEXT NOT NULL,
-  FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+    created_at TEXT NOT NULL
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS uq_acp_event_log_session_sequence
@@ -165,9 +167,7 @@ CREATE TABLE IF NOT EXISTS attachments (
   storage_path TEXT NOT NULL UNIQUE,
   status TEXT NOT NULL CHECK (status IN ('uploaded', 'consumed', 'deleted', 'missing')),
   created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL,
-  FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE,
-  FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
+    updated_at TEXT NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_attachments_session_status
@@ -181,8 +181,7 @@ CREATE TABLE IF NOT EXISTS draft_attachments (
   size_bytes INTEGER NOT NULL,
   storage_path TEXT NOT NULL UNIQUE,
   created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL,
-  FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
+    updated_at TEXT NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_draft_attachments_workspace_created
@@ -207,7 +206,6 @@ def connect_database(
     target_path = Path(db_path).expanduser().resolve() if db_path else paths.database
     bootstrap_connection = sqlite3.connect(target_path, check_same_thread=False)
     bootstrap_connection.row_factory = sqlite3.Row
-    bootstrap_connection.execute("PRAGMA foreign_keys = ON;")
     bootstrap_connection.execute("PRAGMA journal_mode = WAL;")
     try:
         initialize_schema(bootstrap_connection)
