@@ -250,6 +250,34 @@ class AcpSessionTests(unittest.TestCase):
                 {"type": "sse", "name": "legacy-sse", "url": "https://example.com/sse"}
             )
 
+    def test_tool_kind_mapping_matches_acp_enum(self) -> None:
+        session_runner = AcpJsonRpcSession(_InMemoryTransport([]), self.app_state)
+        self.assertEqual(session_runner._tool_kind_for_name("read"), "read")
+        self.assertEqual(session_runner._tool_kind_for_name("edit"), "edit")
+        self.assertEqual(session_runner._tool_kind_for_name("write"), "edit")
+        self.assertEqual(session_runner._tool_kind_for_name("find"), "search")
+        self.assertEqual(session_runner._tool_kind_for_name("grep"), "search")
+        self.assertEqual(
+            session_runner._tool_kind_for_name("python_exec_agent"), "execute"
+        )
+        self.assertEqual(session_runner._tool_kind_for_name("unknown_tool"), "other")
+        self.assertEqual(
+            session_runner._permission_kind_for_request({"kind": "write"}), "edit"
+        )
+        self.assertEqual(
+            session_runner._permission_kind_for_request({"kind": "edit"}), "edit"
+        )
+        self.assertEqual(
+            session_runner._permission_kind_for_request(
+                {"kind": "python_exec_agent"}
+            ),
+            "execute",
+        )
+        self.assertEqual(
+            session_runner._permission_kind_for_request({"kind": "code"}),
+            "execute",
+        )
+
     def test_timeline_list(self) -> None:
         session = self.app_state.repositories.sessions.create(
             workspace_id=self.workspace.id,
@@ -274,6 +302,471 @@ class AcpSessionTests(unittest.TestCase):
         asyncio.run(AcpJsonRpcSession(transport, self.app_state).run())
         result = _response_for(transport.outgoing, 2)["result"]
         self.assertEqual(len(result["events"]), 1)
+
+    def test_session_load_replays_history_before_response(self) -> None:
+        session = self.app_state.repositories.sessions.create(
+            workspace_id=self.workspace.id,
+            active_provider_id=self.provider.provider.id,
+            active_model_id="gpt-5.4",
+        )
+        self.app_state.repositories.acp_event_log.append(
+            session_id=session.id,
+            event_type="user_message_chunk",
+            event_json=json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "method": "session/update",
+                    "params": {
+                        "sessionId": session.id,
+                        "update": {
+                            "sessionUpdate": "user_message_chunk",
+                            "content": {"type": "text", "text": "hello"},
+                        },
+                    },
+                }
+            ),
+        )
+        transport = _InMemoryTransport(
+            [
+                {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "authenticate",
+                    "params": {"methodId": "USE_OPENAI"},
+                },
+                {
+                    "jsonrpc": "2.0",
+                    "id": 2,
+                    "method": "session/load",
+                    "params": {"sessionId": session.id, "mcpServers": []},
+                },
+            ]
+        )
+        asyncio.run(AcpJsonRpcSession(transport, self.app_state).run())
+        load_response_index = next(
+            index
+            for index, payload in enumerate(transport.outgoing)
+            if payload.get("id") == 2
+        )
+        replay_index = next(
+            index
+            for index, payload in enumerate(transport.outgoing)
+            if payload.get("method") == "session/update"
+            and payload.get("params", {}).get("sessionId") == session.id
+        )
+        self.assertLess(replay_index, load_response_index)
+
+    def test_session_list_paginates_with_cursor(self) -> None:
+        workspace_path = Path(self.workspace.real_path).resolve()
+        workspace_path.mkdir(parents=True, exist_ok=True)
+        self.app_state.repositories.workspaces.update(
+            self.workspace.id,
+            real_path=str(workspace_path),
+        )
+        for index in range(101):
+            session = self.app_state.repositories.sessions.create(
+                workspace_id=self.workspace.id,
+                active_provider_id=self.provider.provider.id,
+                active_model_id="gpt-5.4",
+            )
+            self.app_state.repositories.sessions.touch(
+                session.id,
+                updated_at=f"2026-04-20T00:{index // 60:02d}:{index % 60:02d}Z",
+            )
+
+        transport = _InMemoryTransport(
+            [
+                {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "session/list",
+                    "params": {"cwd": str(workspace_path)},
+                }
+            ]
+        )
+        asyncio.run(AcpJsonRpcSession(transport, self.app_state).run())
+        first_page = _response_for(transport.outgoing, 1)["result"]
+        self.assertEqual(len(first_page["sessions"]), 100)
+        self.assertIn("nextCursor", first_page)
+
+        transport = _InMemoryTransport(
+            [
+                {
+                    "jsonrpc": "2.0",
+                    "id": 2,
+                    "method": "session/list",
+                    "params": {
+                        "cwd": str(workspace_path),
+                        "cursor": first_page["nextCursor"],
+                    },
+                }
+            ]
+        )
+        asyncio.run(AcpJsonRpcSession(transport, self.app_state).run())
+        second_page = _response_for(transport.outgoing, 2)["result"]
+        self.assertEqual(len(second_page["sessions"]), 1)
+        self.assertNotIn("nextCursor", second_page)
+
+    def test_thought_level_persists_across_session_load(self) -> None:
+        session = self.app_state.repositories.sessions.create(
+            workspace_id=self.workspace.id,
+            active_provider_id=self.provider.provider.id,
+            active_model_id="gpt-5.4",
+        )
+        transport = _InMemoryTransport(
+            [
+                {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "session/set_config_option",
+                    "params": {
+                        "sessionId": session.id,
+                        "configId": "thought_level",
+                        "value": "high",
+                    },
+                },
+                {
+                    "jsonrpc": "2.0",
+                    "id": 2,
+                    "method": "authenticate",
+                    "params": {"methodId": "USE_OPENAI"},
+                },
+                {
+                    "jsonrpc": "2.0",
+                    "id": 3,
+                    "method": "session/load",
+                    "params": {"sessionId": session.id, "mcpServers": []},
+                },
+            ]
+        )
+        asyncio.run(AcpJsonRpcSession(transport, self.app_state).run())
+        config_options = _response_for(transport.outgoing, 3)["result"]["configOptions"]
+        thought_option = next(
+            item for item in config_options if item.get("id") == "thought_level"
+        )
+        self.assertEqual(thought_option["currentValue"], "high")
+
+    def test_set_config_option_emits_config_option_update(self) -> None:
+        session = self.app_state.repositories.sessions.create(
+            workspace_id=self.workspace.id,
+            active_provider_id=self.provider.provider.id,
+            active_model_id="gpt-5.4",
+        )
+        transport = _InMemoryTransport(
+            [
+                {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "session/set_config_option",
+                    "params": {
+                        "sessionId": session.id,
+                        "configId": "thought_level",
+                        "value": "high",
+                    },
+                }
+            ]
+        )
+        asyncio.run(AcpJsonRpcSession(transport, self.app_state).run())
+        response = _response_for(transport.outgoing, 1)
+        self.assertIn("result", response)
+        notification = next(
+            payload
+            for payload in transport.outgoing
+            if payload.get("method") == "session/update"
+            and payload.get("params", {}).get("update", {}).get("sessionUpdate")
+            == "config_option_update"
+        )
+        thought_option = next(
+            item
+            for item in notification["params"]["update"]["configOptions"]
+            if item.get("id") == "thought_level"
+        )
+        self.assertEqual(thought_option["currentValue"], "high")
+
+    def test_update_meta_emits_session_info_update(self) -> None:
+        session = self.app_state.repositories.sessions.create(
+            workspace_id=self.workspace.id,
+            active_provider_id=self.provider.provider.id,
+            active_model_id="gpt-5.4",
+        )
+        transport = _InMemoryTransport(
+            [
+                {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "_nsbot/session/update_meta",
+                    "params": {
+                        "sessionId": session.id,
+                        "title": "Renamed Session",
+                    },
+                }
+            ]
+        )
+        asyncio.run(AcpJsonRpcSession(transport, self.app_state).run())
+        response = _response_for(transport.outgoing, 1)
+        self.assertEqual(response["result"]["title"], "Renamed Session")
+        notification = next(
+            payload
+            for payload in transport.outgoing
+            if payload.get("method") == "session/update"
+            and payload.get("params", {}).get("update", {}).get("sessionUpdate")
+            == "session_info_update"
+        )
+        self.assertEqual(notification["params"]["update"]["title"], "Renamed Session")
+
+    def test_runtime_planning_emits_full_plan_state(self) -> None:
+        session = self.app_state.repositories.sessions.create(
+            workspace_id=self.workspace.id,
+            active_provider_id=self.provider.provider.id,
+            active_model_id="gpt-5.4",
+        )
+        transport = _InMemoryTransport([])
+        session_runner = AcpJsonRpcSession(transport, self.app_state)
+
+        async def _invoke() -> None:
+            await session_runner._handle_runtime_event(
+                session.id,
+                "turn-1",
+                {
+                    "type": "timeline_entry",
+                    "payload": {
+                        "entry_kind": "planning",
+                        "content_text": "Step one",
+                    },
+                },
+            )
+            await session_runner._handle_runtime_event(
+                session.id,
+                "turn-1",
+                {
+                    "type": "timeline_entry",
+                    "payload": {
+                        "entry_kind": "planning",
+                        "content_text": "Step two",
+                    },
+                },
+            )
+
+        asyncio.run(_invoke())
+        plan_updates = [
+            payload["params"]["update"]
+            for payload in transport.outgoing
+            if payload.get("method") == "session/update"
+            and payload.get("params", {}).get("update", {}).get("sessionUpdate")
+            == "plan"
+        ]
+        self.assertEqual(len(plan_updates), 2)
+        self.assertEqual(len(plan_updates[0]["entries"]), 1)
+        self.assertEqual(len(plan_updates[1]["entries"]), 2)
+        self.assertEqual(plan_updates[1]["entries"][0]["content"], "Step one")
+        self.assertEqual(plan_updates[1]["entries"][1]["content"], "Step two")
+
+    def test_runtime_action_emits_richer_tool_call_updates(self) -> None:
+        session = self.app_state.repositories.sessions.create(
+            workspace_id=self.workspace.id,
+            active_provider_id=self.provider.provider.id,
+            active_model_id="gpt-5.4",
+        )
+        transport = _InMemoryTransport([])
+        session_runner = AcpJsonRpcSession(transport, self.app_state)
+
+        async def _invoke() -> None:
+            await session_runner._handle_runtime_event(
+                session.id,
+                "turn-1",
+                {
+                    "type": "timeline_entry",
+                    "payload": {
+                        "entry_kind": "action",
+                        "content_json": json.dumps(
+                            {
+                                "toolCalls": [
+                                    {
+                                        "id": "call_1",
+                                        "name": "read",
+                                        "argumentsText": json.dumps({"path": "/tmp/x.txt"}),
+                                    }
+                                ],
+                                "observations": ["Found file"],
+                                "actionOutput": {"result": "ok"},
+                                "toolDetailsByCallId": {
+                                    "call_1": {
+                                        "details": {
+                                            "firstChangedLine": 9,
+                                            "diff": "@@ -1 +1 @@",
+                                        }
+                                    }
+                                },
+                                "error": None,
+                                "usage": {"inputTokens": 1, "outputTokens": 2},
+                                "durationMs": 12,
+                            }
+                        ),
+                    },
+                },
+            )
+
+        asyncio.run(_invoke())
+        tool_events = [
+            payload for payload in transport.outgoing if payload.get("method") == "session/update"
+        ]
+        self.assertEqual(tool_events[0]["params"]["update"]["sessionUpdate"], "tool_call")
+        self.assertEqual(tool_events[0]["params"]["update"]["kind"], "read")
+        self.assertEqual(tool_events[0]["params"]["update"]["rawInput"]["arguments"]["path"], "/tmp/x.txt")
+        self.assertEqual(tool_events[1]["params"]["update"]["status"], "in_progress")
+        self.assertEqual(tool_events[2]["params"]["update"]["status"], "completed")
+        self.assertTrue(tool_events[2]["params"]["update"]["content"])
+        self.assertEqual(
+            tool_events[2]["params"]["update"]["rawOutput"]["actionOutput"]["result"],
+            "ok",
+        )
+        self.assertEqual(
+            tool_events[2]["params"]["update"]["rawOutput"]["details"]["firstChangedLine"],
+            9,
+        )
+        self.assertTrue(
+            str(tool_events[2]["params"]["update"]["rawOutput"]["locations"][0]["path"]).endswith(
+                "/tmp/x.txt"
+            )
+        )
+        self.assertEqual(
+            tool_events[2]["params"]["update"]["rawOutput"]["locations"][0]["line"],
+            9,
+        )
+
+    def test_runtime_action_read_emits_stable_summary_and_truncation_notice(self) -> None:
+        session = self.app_state.repositories.sessions.create(
+            workspace_id=self.workspace.id,
+            active_provider_id=self.provider.provider.id,
+            active_model_id="gpt-5.4",
+        )
+        transport = _InMemoryTransport([])
+        session_runner = AcpJsonRpcSession(transport, self.app_state)
+
+        async def _invoke() -> None:
+            await session_runner._handle_runtime_event(
+                session.id,
+                "turn-1",
+                {
+                    "type": "timeline_entry",
+                    "payload": {
+                        "entry_kind": "action",
+                        "content_json": json.dumps(
+                            {
+                                "toolCalls": [
+                                    {
+                                        "id": "call_read",
+                                        "name": "read",
+                                        "argumentsText": json.dumps(
+                                            {"path": "notes.txt", "offset": 7, "limit": 5}
+                                        ),
+                                    }
+                                ],
+                                "observations": ["line 7", "line 8"],
+                                "actionOutput": {"result": "ok"},
+                                "toolDetailsByCallId": {
+                                    "call_read": {
+                                        "details": {
+                                            "truncation": {
+                                                "truncated": True,
+                                                "outputLines": 5,
+                                            }
+                                        }
+                                    }
+                                },
+                                "error": None,
+                            }
+                        ),
+                    },
+                },
+            )
+
+        asyncio.run(_invoke())
+        tool_events = [
+            payload for payload in transport.outgoing if payload.get("method") == "session/update"
+        ]
+        completed_update = tool_events[2]["params"]["update"]
+        raw_output = completed_update["rawOutput"]
+        self.assertEqual(raw_output["locations"][0]["line"], 7)
+        self.assertTrue(str(raw_output["locations"][0]["path"]).endswith("/notes.txt"))
+        content_blocks = completed_update["content"]
+        self.assertEqual(content_blocks[0]["content"]["text"], "Read notes.txt starting at line 7.")
+        self.assertIn(
+            "Output was truncated. Continue with offset=12.",
+            [block["content"]["text"] for block in content_blocks],
+        )
+
+    def test_runtime_action_prefers_per_call_tool_results_content(self) -> None:
+        session = self.app_state.repositories.sessions.create(
+            workspace_id=self.workspace.id,
+            active_provider_id=self.provider.provider.id,
+            active_model_id="gpt-5.4",
+        )
+        transport = _InMemoryTransport([])
+        session_runner = AcpJsonRpcSession(transport, self.app_state)
+
+        async def _invoke() -> None:
+            await session_runner._handle_runtime_event(
+                session.id,
+                "turn-1",
+                {
+                    "type": "timeline_entry",
+                    "payload": {
+                        "entry_kind": "action",
+                        "content_json": json.dumps(
+                            {
+                                "toolCalls": [
+                                    {
+                                        "id": "call_1",
+                                        "name": "read",
+                                        "argumentsText": json.dumps({"path": "a.txt"}),
+                                    },
+                                    {
+                                        "id": "call_2",
+                                        "name": "read",
+                                        "argumentsText": json.dumps({"path": "b.txt"}),
+                                    },
+                                ],
+                                "observations": ["global observation"],
+                                "actionOutput": {"result": "global"},
+                                "toolResults": [
+                                    {
+                                        "callId": "call_1",
+                                        "content": [{"type": "text", "text": "content-a"}],
+                                        "details": {"firstChangedLine": 3},
+                                    },
+                                    {
+                                        "callId": "call_2",
+                                        "content": [{"type": "text", "text": "content-b"}],
+                                        "details": {"firstChangedLine": 8},
+                                    },
+                                ],
+                                "error": None,
+                            }
+                        ),
+                    },
+                },
+            )
+
+        asyncio.run(_invoke())
+        updates = [
+            payload["params"]["update"]
+            for payload in transport.outgoing
+            if payload.get("method") == "session/update"
+            and payload.get("params", {}).get("update", {}).get("sessionUpdate") == "tool_call_update"
+            and payload.get("params", {}).get("update", {}).get("status") == "completed"
+        ]
+        self.assertEqual(len(updates), 2)
+
+        by_call_id = {str(update.get("toolCallId")): update for update in updates}
+        call_1_texts = [item["content"]["text"] for item in by_call_id["call_1"]["content"]]
+        call_2_texts = [item["content"]["text"] for item in by_call_id["call_2"]["content"]]
+        self.assertIn("content-a", call_1_texts)
+        self.assertNotIn("content-b", call_1_texts)
+        self.assertIn("content-b", call_2_texts)
+        self.assertNotIn("content-a", call_2_texts)
+        self.assertEqual(by_call_id["call_1"]["rawOutput"]["details"]["firstChangedLine"], 3)
+        self.assertEqual(by_call_id["call_2"]["rawOutput"]["details"]["firstChangedLine"], 8)
 
     def test_prefixed_extension_method_is_accepted(self) -> None:
         transport = _InMemoryTransport(

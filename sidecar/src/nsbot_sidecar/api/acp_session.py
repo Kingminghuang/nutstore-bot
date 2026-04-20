@@ -26,6 +26,7 @@ from nsbot_sidecar.runtime.types import (
     RuntimeCancelledError,
     RuntimeWorkerConfig,
 )
+from nsbot_sidecar.application.timeline_service import serialize_session_summary
 
 
 _ATTACHMENT_TEXT_MAX_BYTES = 50 * 1024
@@ -187,8 +188,8 @@ class AcpJsonRpcSession:
         self._pending_client_calls: dict[int, _ClientRequestWaiter] = {}
         self._session_actors: dict[str, _SessionActor] = {}
         self._session_cancelled: dict[str, bool] = {}
-        self._session_thought_levels: dict[str, str] = {}
         self._session_mcp_connections: dict[str, _SessionMcpConnection] = {}
+        self._turn_plan_entries: dict[tuple[str, str], list[dict[str, Any]]] = {}
         self._auth_state: _AuthState | None = None
 
         self._client_capabilities: dict[str, Any] = {
@@ -396,10 +397,14 @@ class AcpJsonRpcSession:
                 if not session_id:
                     await self._send_error(req_id, -32000, "sessionId is required")
                     return
-                await self._send_result(
-                    req_id,
-                    self.state.session_service.update_session(session_id, params),
+                before = self._session_summary_payload(session_id)
+                result = self.state.session_service.update_session(session_id, params)
+                await self._emit_session_info_update_if_changed(
+                    session_id,
+                    before,
+                    result,
                 )
+                await self._send_result(req_id, result)
                 return
             if method == "_nsbot/session/delete":
                 session_id = str(
@@ -537,7 +542,14 @@ class AcpJsonRpcSession:
                 await self._send_result(req_id, result)
                 return
             if method == "session/set_config_option":
-                await self._send_result(req_id, self._handle_set_config_option(params))
+                result = self._handle_set_config_option(params)
+                session_id = str(params.get("sessionId") or "")
+                if session_id:
+                    await self._emit_config_option_update(
+                        session_id,
+                        result.get("configOptions") or [],
+                    )
+                await self._send_result(req_id, result)
                 return
             if method == "session/cancel":
                 session_id = str(params.get("sessionId") or "")
@@ -850,15 +862,64 @@ class AcpJsonRpcSession:
 
     def _find_or_create_workspace(self, cwd: str):
         normalized = str(Path(cwd).expanduser().resolve())
-        for workspace in self.state.repositories.workspaces.list():
-            if workspace.real_path == normalized:
-                return workspace
+        workspace = self.state.repositories.workspaces.get_by_real_path(normalized)
+        if workspace is not None:
+            return workspace
         name = Path(normalized).name or "workspace"
         return self.state.repositories.workspaces.create(
             name=name,
             path_label=normalized,
             real_path=normalized,
         )
+
+    def _session_config(self, session_id: str) -> dict[str, Any]:
+        session = self.state.repositories.sessions.get_by_id(session_id)
+        return dict(session.session_config)
+
+    def _session_summary_payload(self, session_id: str) -> dict[str, Any]:
+        session = self.state.repositories.sessions.get_by_id(session_id)
+        return serialize_session_summary(session)
+
+    def _session_thought_level(self, session_id: str) -> str | None:
+        config = self._session_config(session_id)
+        value = config.get("thought_level")
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+        return None
+
+    def _update_session_config_value(
+        self, session_id: str, key: str, value: str | None
+    ) -> None:
+        session = self.state.repositories.sessions.get_by_id(session_id)
+        config = dict(session.session_config)
+        if value is None:
+            config.pop(key, None)
+        else:
+            config[key] = value
+        self.state.repositories.sessions.touch(session_id, session_config=config)
+
+    def _decode_session_list_cursor(self, cursor: str) -> tuple[str, str]:
+        try:
+            decoded = base64.urlsafe_b64decode(cursor.encode("utf-8")).decode("utf-8")
+            payload = json.loads(decoded)
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError("cursor is invalid") from exc
+        if not isinstance(payload, dict):
+            raise RuntimeError("cursor is invalid")
+        updated_at = payload.get("updatedAt")
+        session_id = payload.get("sessionId")
+        if not isinstance(updated_at, str) or not updated_at.strip():
+            raise RuntimeError("cursor is invalid")
+        if not isinstance(session_id, str) or not session_id.strip():
+            raise RuntimeError("cursor is invalid")
+        return updated_at, session_id
+
+    def _encode_session_list_cursor(self, updated_at: str, session_id: str) -> str:
+        payload = json.dumps(
+            {"updatedAt": updated_at, "sessionId": session_id},
+            separators=(",", ":"),
+        )
+        return base64.urlsafe_b64encode(payload.encode("utf-8")).decode("utf-8")
 
     def _default_selection(self) -> dict[str, str]:
         payload = self.state.provider_service.model_options_payload()
@@ -905,7 +966,7 @@ class AcpJsonRpcSession:
                         if isinstance(values, list):
                             reasoning_values = [str(v) for v in values if str(v)]
 
-        thought_level = self._session_thought_levels.get(session_id)
+        thought_level = self._session_thought_level(session_id)
         if not thought_level:
             thought_level = (
                 "medium"
@@ -985,27 +1046,52 @@ class AcpJsonRpcSession:
 
     def _handle_session_list(self, params: dict[str, Any]) -> dict[str, Any]:
         cwd = str(params.get("cwd") or "").strip()
-        normalized = str(Path(cwd).expanduser().resolve()) if cwd else ""
+        workspace_id: str | None = None
+        if cwd:
+            normalized = str(Path(cwd).expanduser().resolve())
+            workspace = self.state.repositories.workspaces.get_by_real_path(normalized)
+            if workspace is None:
+                return {"sessions": []}
+            workspace_id = workspace.id
 
-        sessions: list[dict[str, Any]] = []
+        cursor_value = str(params.get("cursor") or "").strip()
+        cursor_updated_at: str | None = None
+        cursor_session_id: str | None = None
+        if cursor_value:
+            cursor_updated_at, cursor_session_id = self._decode_session_list_cursor(
+                cursor_value
+            )
+
+        page_size = 100
+        page, next_marker = self.state.repositories.sessions.list_page(
+            limit=page_size,
+            workspace_id=workspace_id,
+            cursor_updated_at=cursor_updated_at,
+            cursor_id=cursor_session_id,
+        )
         workspaces = {ws.id: ws for ws in self.state.repositories.workspaces.list()}
-        for workspace in workspaces.values():
-            if normalized and str(workspace.real_path) != normalized:
+        sessions_payload: list[dict[str, Any]] = []
+        for session in page:
+            workspace = workspaces.get(session.workspace_id)
+            if workspace is None:
                 continue
-            for session in self.state.repositories.sessions.list_by_workspace_id(
-                workspace.id
-            ):
-                sessions.append(
-                    {
-                        "sessionId": session.id,
-                        "cwd": workspace.real_path,
-                        "title": session.title,
-                        "updatedAt": session.updated_at,
-                    }
-                )
+            sessions_payload.append(
+                {
+                    "sessionId": session.id,
+                    "cwd": workspace.real_path,
+                    "title": session.title,
+                    "updatedAt": session.updated_at,
+                }
+            )
 
-        sessions.sort(key=lambda item: str(item.get("updatedAt") or ""), reverse=True)
-        return {"sessions": sessions}
+        result: dict[str, Any] = {"sessions": sessions_payload}
+        if next_marker is not None and page:
+            last = page[-1]
+            result["nextCursor"] = self._encode_session_list_cursor(
+                last.updated_at,
+                last.id,
+            )
+        return result
 
     async def _replay_session_history(self, session_id: str) -> None:
         events = self.state.repositories.acp_event_log.list_by_session_id(session_id)
@@ -1066,6 +1152,7 @@ class AcpJsonRpcSession:
             raise RuntimeError("sessionId is required")
         self._ensure_session_exists(session_id)
         self._configure_session_mcp_servers(session_id, params)
+        await self._replay_session_history(session_id)
         return {"configOptions": self._config_options_for_session(session_id)}
 
     def _handle_session_resume(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -1207,7 +1294,7 @@ class AcpJsonRpcSession:
         elif config_id == "model":
             self.state.repositories.sessions.touch(session.id, active_model_id=value)
         elif config_id == "thought_level":
-            self._session_thought_levels[session_id] = value
+            self._update_session_config_value(session_id, "thought_level", value)
         else:
             raise RuntimeError(f"Unsupported config option: {config_id}")
 
@@ -1244,6 +1331,278 @@ class AcpJsonRpcSession:
                 limit=limit,
             )
         }
+
+    def _plan_entries_key(self, session_id: str, turn_id: str) -> tuple[str, str]:
+        return (session_id, turn_id)
+
+    async def _emit_full_plan_update(
+        self,
+        session_id: str,
+        turn_id: str,
+        entries: list[dict[str, Any]],
+    ) -> None:
+        await self._emit_session_update(
+            session_id,
+            {
+                "sessionUpdate": "plan",
+                "entries": entries,
+            },
+            turn_id=turn_id,
+        )
+
+    def _tool_call_raw_input(self, tool_call: dict[str, Any]) -> dict[str, Any]:
+        arguments_text = tool_call.get("argumentsText")
+        parsed_arguments: Any = arguments_text
+        if isinstance(arguments_text, str):
+            try:
+                parsed_arguments = json.loads(arguments_text)
+            except Exception:
+                parsed_arguments = arguments_text
+        return {
+            "name": str(tool_call.get("name") or "Tool call"),
+            "arguments": parsed_arguments,
+        }
+
+    def _workspace_root_for_session(self, session_id: str) -> Path | None:
+        try:
+            session = self.state.repositories.sessions.get_by_id(session_id)
+            workspace = self.state.repositories.workspaces.get_by_id(session.workspace_id)
+            return Path(workspace.real_path).expanduser().resolve()
+        except Exception:
+            return None
+
+    def _resolve_tool_path(
+        self,
+        value: Any,
+        *,
+        workspace_root: Path | None,
+    ) -> str | None:
+        if not isinstance(value, str):
+            return None
+        candidate = value.strip()
+        if candidate == "":
+            return None
+        path = Path(candidate).expanduser()
+        if not path.is_absolute() and workspace_root is not None:
+            path = workspace_root / path
+        with suppress(Exception):
+            return str(path.resolve())
+        return str(path)
+
+    def _tool_call_locations(
+        self,
+        *,
+        name: str,
+        raw_input: dict[str, Any],
+        details: dict[str, Any] | None,
+        workspace_root: Path | None,
+    ) -> list[dict[str, Any]]:
+        lowered = name.strip().lower()
+        arguments = raw_input.get("arguments")
+        if not isinstance(arguments, dict):
+            arguments = {}
+        path_value: Any = arguments.get("path")
+        if lowered in {"ls", "find", "grep"} and path_value in {None, ""}:
+            path_value = "."
+        resolved = self._resolve_tool_path(path_value, workspace_root=workspace_root)
+        if resolved is None:
+            return []
+
+        location: dict[str, Any] = {"path": resolved}
+        if lowered == "read":
+            offset_value = arguments.get("offset")
+            if isinstance(offset_value, int) and offset_value >= 1:
+                location["line"] = offset_value
+
+        first_changed_line = None
+        if isinstance(details, dict):
+            candidate = details.get("firstChangedLine")
+            if isinstance(candidate, int) and candidate >= 1:
+                first_changed_line = candidate
+        if first_changed_line is not None and not isinstance(location.get("line"), int):
+            location["line"] = first_changed_line
+        return [location]
+
+    def _tool_call_summary_text(
+        self,
+        *,
+        name: str,
+        raw_input: dict[str, Any],
+    ) -> str | None:
+        lowered = name.strip().lower()
+        arguments = raw_input.get("arguments")
+        if not isinstance(arguments, dict):
+            arguments = {}
+        path_value = arguments.get("path")
+        path_label = str(path_value).strip() if path_value is not None else ""
+
+        if lowered == "read":
+            offset_value = arguments.get("offset")
+            if isinstance(offset_value, int) and offset_value >= 1 and path_label:
+                return f"Read {path_label} starting at line {offset_value}."
+            if path_label:
+                return f"Read {path_label}."
+        if lowered == "write" and path_label:
+            return f"Wrote {path_label}."
+        if lowered == "edit" and path_label:
+            return f"Edited {path_label}."
+        if lowered == "grep":
+            pattern = arguments.get("pattern")
+            if isinstance(pattern, str) and pattern.strip():
+                if path_label:
+                    return f'Searched {path_label} for "{pattern}".'
+                return f'Searched for "{pattern}".'
+            if path_label:
+                return f"Searched {path_label}."
+        if lowered == "find":
+            pattern = arguments.get("pattern")
+            if isinstance(pattern, str) and pattern.strip():
+                if path_label:
+                    return f'Found paths in {path_label} using "{pattern}".'
+                return f'Found paths using "{pattern}".'
+            if path_label:
+                return f"Found paths in {path_label}."
+        if lowered == "ls":
+            if path_label:
+                return f"Listed {path_label}."
+            return "Listed workspace entries."
+        return None
+
+    def _tool_call_detail_notice(
+        self,
+        *,
+        name: str,
+        raw_input: dict[str, Any],
+        details: dict[str, Any] | None,
+    ) -> str | None:
+        if not isinstance(details, dict):
+            return None
+        truncation = details.get("truncation")
+        if not isinstance(truncation, dict):
+            return None
+        if not bool(truncation.get("truncated")):
+            return None
+
+        lowered = name.strip().lower()
+        if lowered != "read":
+            return "Output was truncated."
+
+        arguments = raw_input.get("arguments")
+        if not isinstance(arguments, dict):
+            return "Output was truncated."
+        offset_value = arguments.get("offset")
+        output_lines = truncation.get("outputLines")
+        if not isinstance(offset_value, int) or offset_value < 1:
+            return "Output was truncated."
+        if not isinstance(output_lines, int) or output_lines < 0:
+            return "Output was truncated."
+        return f"Output was truncated. Continue with offset={offset_value + output_lines}."
+
+    def _tool_call_update_content(
+        self,
+        *,
+        name: str,
+        raw_input: dict[str, Any],
+        raw_output: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        content: list[dict[str, Any]] = []
+        summary_text = self._tool_call_summary_text(name=name, raw_input=raw_input)
+        if summary_text:
+            content.append(
+                {
+                    "type": "content",
+                    "content": {"type": "text", "text": summary_text},
+                }
+            )
+
+        tool_result = raw_output.get("toolResult")
+        per_call_text_blocks: list[str] = []
+        if isinstance(tool_result, dict):
+            result_content = tool_result.get("content")
+            if isinstance(result_content, list):
+                for item in result_content:
+                    if not isinstance(item, dict):
+                        continue
+                    if str(item.get("type") or "").strip().lower() != "text":
+                        continue
+                    text = str(item.get("text") or "").strip()
+                    if text:
+                        per_call_text_blocks.append(text)
+
+        if per_call_text_blocks:
+            for block in per_call_text_blocks:
+                content.append(
+                    {
+                        "type": "content",
+                        "content": {"type": "text", "text": block},
+                    }
+                )
+        else:
+            observations = raw_output.get("observations")
+            if isinstance(observations, list) and observations:
+                observation_text = "\n".join(
+                    str(item).strip() for item in observations if str(item).strip()
+                ).strip()
+                if observation_text:
+                    content.append(
+                        {
+                            "type": "content",
+                            "content": {"type": "text", "text": observation_text},
+                        }
+                    )
+
+            action_output = raw_output.get("actionOutput")
+            if action_output not in (None, "", []):
+                if not isinstance(action_output, str):
+                    try:
+                        action_output = json.dumps(action_output, ensure_ascii=False)
+                    except Exception:
+                        action_output = str(action_output)
+                if str(action_output).strip():
+                    content.append(
+                        {
+                            "type": "content",
+                            "content": {
+                                "type": "text",
+                                "text": str(action_output).strip(),
+                            },
+                        }
+                    )
+
+        detail_notice = self._tool_call_detail_notice(
+            name=name,
+            raw_input=raw_input,
+            details=raw_output.get("details")
+            if isinstance(raw_output.get("details"), dict)
+            else None,
+        )
+        if detail_notice:
+            content.append(
+                {
+                    "type": "content",
+                    "content": {"type": "text", "text": detail_notice},
+                }
+            )
+
+        error_text = ""
+        if isinstance(tool_result, dict):
+            error_payload = tool_result.get("error")
+            if isinstance(error_payload, dict):
+                message = str(error_payload.get("message") or "").strip()
+                if message:
+                    error_text = message
+            elif error_payload not in (None, "", {}):
+                error_text = str(error_payload).strip()
+        if not error_text:
+            error_text = str(raw_output.get("error") or "").strip()
+        if error_text:
+            content.append(
+                {
+                    "type": "content",
+                    "content": {"type": "text", "text": error_text},
+                }
+            )
+        return content
 
     async def _extract_prompt_text(
         self, session_id: str, blocks: list[dict[str, Any]]
@@ -1742,6 +2101,7 @@ class AcpJsonRpcSession:
     async def _handle_prompt_request(self, req_id: Any, params: dict[str, Any]) -> None:
         session_id = str(params.get("sessionId") or "")
         stop_reason = "end_turn"
+        turn_id: str | None = None
 
         try:
             if not session_id:
@@ -1776,11 +2136,19 @@ class AcpJsonRpcSession:
             self._session_cancelled[session_id] = False
 
             turn_id = create_id("acpturn")
+            self._turn_plan_entries[self._plan_entries_key(session_id, turn_id)] = []
 
-            self.state.session_service.timeline_service.refresh_session_summary(
+            before_summary = self._session_summary_payload(session_id)
+            refreshed_summary = self.state.session_service.timeline_service.refresh_session_summary(
                 session_id,
                 active_provider_id=session.active_provider_id,
                 active_model_id=session.active_model_id,
+            )
+            await self._emit_session_info_update_if_changed(
+                session_id,
+                before_summary,
+                refreshed_summary,
+                turn_id=turn_id,
             )
 
             await self._emit_session_update(
@@ -1814,7 +2182,7 @@ class AcpJsonRpcSession:
             if not api_key:
                 raise RuntimeError("Provider is missing an API key")
 
-            thought_level = self._session_thought_levels.get(session_id)
+            thought_level = self._session_thought_level(session_id)
             if not thought_level and isinstance(meta, dict):
                 selected = meta.get("selectedReasoningEffort")
                 if isinstance(selected, str) and selected.strip():
@@ -1879,11 +2247,30 @@ class AcpJsonRpcSession:
 
             final_answer = str(result.get("final_answer") or "").strip()
             if final_answer:
-                self.state.session_service.timeline_service.refresh_session_summary(
+                plan_key = self._plan_entries_key(session_id, turn_id)
+                plan_entries = self._turn_plan_entries.get(plan_key) or []
+                if plan_entries:
+                    completed_entries = [
+                        {**entry, "status": "completed"} for entry in plan_entries
+                    ]
+                    self._turn_plan_entries[plan_key] = completed_entries
+                    await self._emit_full_plan_update(
+                        session_id,
+                        turn_id,
+                        completed_entries,
+                    )
+                before_summary = self._session_summary_payload(session_id)
+                refreshed_summary = self.state.session_service.timeline_service.refresh_session_summary(
                     session_id,
                     active_provider_id=session.active_provider_id,
                     active_model_id=session.active_model_id,
                     trigger_title_generation=True,
+                )
+                await self._emit_session_info_update_if_changed(
+                    session_id,
+                    before_summary,
+                    refreshed_summary,
+                    turn_id=turn_id,
                 )
                 await self._emit_session_update(
                     session_id,
@@ -1905,6 +2292,11 @@ class AcpJsonRpcSession:
             else:
                 await self._send_error(req_id, -32000, str(exc))
                 return
+        finally:
+            if turn_id is not None:
+                self._turn_plan_entries.pop(
+                    self._plan_entries_key(session_id, turn_id), None
+                )
         await self._send_result(req_id, {"stopReason": stop_reason})
 
     async def _handle_runtime_event(
@@ -1965,20 +2357,17 @@ class AcpJsonRpcSession:
             return
 
         if entry_kind == "planning":
-            await self._emit_session_update(
-                session_id,
+            plan_key = self._plan_entries_key(session_id, turn_id)
+            entries = list(self._turn_plan_entries.get(plan_key) or [])
+            entries.append(
                 {
-                    "sessionUpdate": "plan",
-                    "entries": [
-                        {
-                            "content": str(payload.get("content_text") or ""),
-                            "priority": "medium",
-                            "status": "pending",
-                        }
-                    ],
-                },
-                turn_id=turn_id,
+                    "content": str(payload.get("content_text") or ""),
+                    "priority": "medium",
+                    "status": "pending",
+                }
             )
+            self._turn_plan_entries[plan_key] = entries
+            await self._emit_full_plan_update(session_id, turn_id, entries)
             return
 
         if entry_kind != "action":
@@ -2002,6 +2391,28 @@ class AcpJsonRpcSession:
             else ""
         )
         status = "failed" if error_text else "completed"
+        tool_details_by_call_id = content_json.get("toolDetailsByCallId")
+        if not isinstance(tool_details_by_call_id, dict):
+            tool_details_by_call_id = {}
+        tool_results_by_call_id: dict[str, dict[str, Any]] = {}
+        tool_results = content_json.get("toolResults")
+        if isinstance(tool_results, list):
+            for item in tool_results:
+                if not isinstance(item, dict):
+                    continue
+                call_id = str(item.get("callId") or "").strip()
+                if call_id == "":
+                    continue
+                payload = {k: v for k, v in item.items() if k != "callId"}
+                tool_results_by_call_id[call_id] = payload
+        tool_results_by_call_id_raw = content_json.get("toolResultsByCallId")
+        if isinstance(tool_results_by_call_id_raw, dict):
+            for key, value in tool_results_by_call_id_raw.items():
+                if not isinstance(key, str) or key.strip() == "":
+                    continue
+                if isinstance(value, dict):
+                    tool_results_by_call_id[key] = value
+        workspace_root = self._workspace_root_for_session(session_id)
 
         if not isinstance(tool_calls, list):
             return
@@ -2011,6 +2422,40 @@ class AcpJsonRpcSession:
             tool_call_id = str(tool_call.get("id") or create_id("tool"))
             name = str(tool_call.get("name") or "Tool call")
             kind = self._tool_kind_for_name(name)
+            raw_input = self._tool_call_raw_input(tool_call)
+            tool_result = tool_results_by_call_id.get(tool_call_id)
+            if not isinstance(tool_result, dict):
+                tool_result = None
+            call_detail_payload = tool_details_by_call_id.get(tool_call_id)
+            details = None
+            if isinstance(tool_result, dict):
+                maybe_details = tool_result.get("details")
+                if isinstance(maybe_details, dict) and maybe_details:
+                    details = maybe_details
+            if isinstance(call_detail_payload, dict):
+                maybe_details = call_detail_payload.get("details")
+                if details is None and isinstance(maybe_details, dict) and maybe_details:
+                    details = maybe_details
+            raw_output = {
+                "observations": content_json.get("observations") or [],
+                "actionOutput": content_json.get("actionOutput"),
+                "error": content_json.get("error"),
+                "usage": content_json.get("usage") or {},
+                "durationMs": content_json.get("durationMs") or 0,
+                "toolResult": tool_result,
+                "details": details,
+                "locations": self._tool_call_locations(
+                    name=name,
+                    raw_input=raw_input,
+                    details=details,
+                    workspace_root=workspace_root,
+                ),
+            }
+            update_content = self._tool_call_update_content(
+                name=name,
+                raw_input=raw_input,
+                raw_output=raw_output,
+            )
 
             await self._emit_session_update(
                 session_id,
@@ -2020,6 +2465,17 @@ class AcpJsonRpcSession:
                     "title": name,
                     "kind": kind,
                     "status": "pending",
+                    "rawInput": raw_input,
+                },
+                turn_id=turn_id,
+            )
+            await self._emit_session_update(
+                session_id,
+                {
+                    "sessionUpdate": "tool_call_update",
+                    "toolCallId": tool_call_id,
+                    "status": "in_progress",
+                    "rawInput": raw_input,
                 },
                 turn_id=turn_id,
             )
@@ -2029,6 +2485,8 @@ class AcpJsonRpcSession:
                     "sessionUpdate": "tool_call_update",
                     "toolCallId": tool_call_id,
                     "status": status,
+                    "content": update_content,
+                    "rawOutput": raw_output,
                 },
                 turn_id=turn_id,
             )
@@ -2150,18 +2608,22 @@ class AcpJsonRpcSession:
 
     def _permission_kind_for_request(self, request: dict[str, Any]) -> str:
         kind = str(request.get("kind") or "").strip().lower()
-        if kind in {"write", "edit", "python_exec_agent"}:
-            return kind
-        if kind in {"execute", "python", "code"}:
-            return "python_exec_agent"
+        if kind in {"write", "edit"}:
+            return "edit"
+        if kind in {"python_exec_agent", "execute", "python", "code"}:
+            return "execute"
         return "other"
 
     def _tool_kind_for_name(self, tool_name: str) -> str:
         lowered = tool_name.strip().lower()
+        if lowered == "read":
+            return "read"
         if lowered in {"write", "edit"}:
-            return lowered
+            return "edit"
+        if lowered in {"find", "grep"}:
+            return "search"
         if lowered == "python_exec_agent":
-            return "python_exec_agent"
+            return "execute"
         return "other"
 
     def _next_client_rpc_id(self) -> int:
@@ -2246,6 +2708,74 @@ class AcpJsonRpcSession:
         if record_event:
             self._persist_session_update_event(payload, turn_id=turn_id)
         await self._send_notification("session/update", payload)
+
+    async def _emit_config_option_update(
+        self,
+        session_id: str,
+        config_options: list[dict[str, Any]],
+        *,
+        turn_id: str | None = None,
+    ) -> None:
+        await self._emit_session_update(
+            session_id,
+            {
+                "sessionUpdate": "config_option_update",
+                "configOptions": config_options,
+            },
+            turn_id=turn_id,
+        )
+
+    async def _emit_session_info_update_if_changed(
+        self,
+        session_id: str,
+        before: dict[str, Any] | None,
+        after: dict[str, Any] | None,
+        *,
+        turn_id: str | None = None,
+    ) -> None:
+        if not isinstance(after, dict):
+            return
+        before = before if isinstance(before, dict) else {}
+
+        update: dict[str, Any] = {"sessionUpdate": "session_info_update"}
+        changed = False
+
+        before_title = before.get("title")
+        after_title = after.get("title")
+        if before_title != after_title:
+            update["title"] = after_title
+            changed = True
+
+        before_updated_at = before.get("updatedAt")
+        after_updated_at = after.get("updatedAt")
+        if before_updated_at != after_updated_at:
+            update["updatedAt"] = after_updated_at
+            changed = True
+
+        meta_keys = [
+            "messageCount",
+            "lastMessageAt",
+            "lastMessagePreview",
+            "activeProviderId",
+            "activeModelId",
+            "titleSource",
+        ]
+        meta_update: dict[str, Any] = {}
+        for key in meta_keys:
+            if before.get(key) != after.get(key):
+                meta_update[key] = after.get(key)
+        if meta_update:
+            update["_meta"] = meta_update
+            changed = True
+
+        if not changed:
+            return
+
+        await self._emit_session_update(
+            session_id,
+            update,
+            turn_id=turn_id,
+        )
 
     def _persist_session_update_event(
         self, params: dict[str, Any], *, turn_id: str | None = None

@@ -21,7 +21,10 @@ from nsbot_sidecar.runtime.memory import MemoryConsolidator
 from nsbot_sidecar.providers.direct_model import DirectModelConfig
 from nsbot_sidecar.runtime.native_code_agent import NativeCodeAgent
 from nsbot_sidecar.providers.direct_model import DirectModelError
-from nsbot_sidecar.runtime.engine import SmolagentsRuntimeEngine
+from nsbot_sidecar.runtime.engine import (
+    SmolagentsRuntimeEngine,
+    _collect_tool_results_by_call_id,
+)
 from nsbot_sidecar.runtime.types import (
     RunMetadata,
     RuntimeProcessError,
@@ -583,6 +586,53 @@ class RuntimeEngineTests(unittest.TestCase):
             event_callback=callback,
             is_cancelled=is_cancelled,
         )
+
+    def test_collect_tool_results_by_call_id_from_nested_action_output(self) -> None:
+        action_output = {
+            "items": [
+                {
+                    "call_id": "call-read",
+                    "tool_name": "read",
+                    "details": {"truncation": {"truncated": True, "outputLines": 10}},
+                    "content": [{"type": "text", "text": "ok"}],
+                    "is_error": False,
+                },
+                {
+                    "nested": {
+                        "call_id": "call-edit",
+                        "details": {"diff": "@@ -1 +1 @@", "firstChangedLine": 3},
+                        "error": {"code": "execution_failed", "message": "boom"},
+                        "is_error": True,
+                    }
+                },
+                {
+                    "call_id": "call-empty",
+                    "details": {},
+                },
+            ]
+        }
+
+        results_by_call_id = _collect_tool_results_by_call_id(action_output)
+        self.assertEqual(
+            results_by_call_id["call-read"]["details"]["truncation"]["outputLines"],
+            10,
+        )
+        self.assertEqual(
+            results_by_call_id["call-edit"]["details"]["firstChangedLine"],
+            3,
+        )
+        self.assertEqual(results_by_call_id["call-read"]["toolName"], "read")
+        self.assertFalse(results_by_call_id["call-read"]["isError"])
+        self.assertEqual(
+            results_by_call_id["call-read"]["content"][0]["text"],
+            "ok",
+        )
+        self.assertEqual(
+            results_by_call_id["call-edit"]["error"]["message"],
+            "boom",
+        )
+        self.assertTrue(results_by_call_id["call-edit"]["isError"])
+        self.assertNotIn("call-empty", results_by_call_id)
 
 
 if __name__ == "__main__":

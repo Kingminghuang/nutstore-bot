@@ -362,6 +362,15 @@ class SmolagentsRuntimeEngine:
                                 else tool_call.arguments,
                             }
                         )
+                    tool_results_by_call_id = _collect_tool_results_by_call_id(
+                        event.action_output
+                    )
+                    tool_details_by_call_id = {
+                        call_id: {"details": result_payload["details"]}
+                        for call_id, result_payload in tool_results_by_call_id.items()
+                        if isinstance(result_payload.get("details"), dict)
+                        and result_payload.get("details")
+                    }
                     timeline_entry_payload = {
                         "session_id": session_key,
                         "turn_id": turn_id,
@@ -383,6 +392,11 @@ class SmolagentsRuntimeEngine:
                                 "actionOutput": _serialize_action_output(
                                     event.action_output
                                 ),
+                                "toolDetailsByCallId": tool_details_by_call_id,
+                                "toolResults": [
+                                    {"callId": call_id, **result_payload}
+                                    for call_id, result_payload in tool_results_by_call_id.items()
+                                ],
                                 "error": None
                                 if event.error is None
                                 else str(event.error),
@@ -526,6 +540,67 @@ def _serialize_action_output(value: Any) -> Any:
         json.dumps(value, ensure_ascii=False)
         return value
     except TypeError:
+        return str(value)
+
+
+def _collect_tool_results_by_call_id(action_output: Any) -> dict[str, dict[str, Any]]:
+    results_by_call_id: dict[str, dict[str, Any]] = {}
+    seen: set[int] = set()
+
+    def _walk(node: Any) -> None:
+        node_id = id(node)
+        if node_id in seen:
+            return
+        seen.add(node_id)
+
+        if isinstance(node, dict):
+            call_id = node.get("call_id")
+            if not isinstance(call_id, str) or call_id.strip() == "":
+                call_id = node.get("callId")
+            if isinstance(call_id, str) and call_id.strip() != "":
+                result_payload: dict[str, Any] = {}
+                if isinstance(node.get("details"), dict) and node.get("details"):
+                    details_payload = _json_safe_value(node.get("details"))
+                    if isinstance(details_payload, dict) and details_payload:
+                        result_payload["details"] = details_payload
+                content_value = node.get("content")
+                if content_value not in (None, "", []):
+                    result_payload["content"] = _json_safe_value(content_value)
+                if isinstance(node.get("tool_name"), str) and node.get("tool_name").strip():
+                    result_payload["toolName"] = str(node.get("tool_name")).strip()
+                error_value = node.get("error")
+                if error_value not in (None, "", {}):
+                    result_payload["error"] = _json_safe_value(error_value)
+                if isinstance(node.get("is_error"), bool):
+                    result_payload["isError"] = bool(node.get("is_error"))
+                if result_payload:
+                    results_by_call_id[call_id] = result_payload
+            for value in node.values():
+                _walk(value)
+            return
+
+        if isinstance(node, list):
+            for item in node:
+                _walk(item)
+
+    _walk(action_output)
+    return results_by_call_id
+
+
+def _json_safe_value(value: Any) -> Any:
+    try:
+        json.dumps(value, ensure_ascii=False)
+        return value
+    except TypeError:
+        if isinstance(value, dict):
+            output: dict[str, Any] = {}
+            for key, item in value.items():
+                if not isinstance(key, str):
+                    continue
+                output[key] = _json_safe_value(item)
+            return output
+        if isinstance(value, list):
+            return [_json_safe_value(item) for item in value]
         return str(value)
 
 
