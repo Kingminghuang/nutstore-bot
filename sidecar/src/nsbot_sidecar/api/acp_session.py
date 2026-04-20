@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+from contextlib import suppress
 from concurrent.futures import Future
 import json
 import mimetypes
@@ -45,6 +46,12 @@ class _ClientRequestWaiter:
     future: Future
     session_id: str
     turn_id: str | None = None
+
+
+@dataclass
+class _SessionMcpConnection:
+    client: Any
+    tools: list[Any]
 
 
 class JsonRpcTransport(Protocol):
@@ -91,6 +98,7 @@ class AcpJsonRpcSession:
         self._prompt_tasks: dict[str, asyncio.Task[Any]] = {}
         self._session_cancel_events: dict[str, threading.Event] = {}
         self._session_thought_levels: dict[str, str] = {}
+        self._session_mcp_connections: dict[str, _SessionMcpConnection] = {}
 
         self._client_capabilities: dict[str, Any] = {
             "fs": {"readTextFile": False, "writeTextFile": False},
@@ -105,10 +113,12 @@ class AcpJsonRpcSession:
                 payload = await self.transport.receive_json()
                 await self._dispatch(payload)
         except EOFError:
+            self._close_all_mcp_connections()
             self._cancel_all_sessions()
         except RuntimeError as exc:
             # Starlette may raise RuntimeError on abrupt client disconnect in tests/runtime.
             if "WebSocket is not connected" in str(exc):
+                self._close_all_mcp_connections()
                 self._cancel_all_sessions()
                 return
             raise
@@ -141,6 +151,7 @@ class AcpJsonRpcSession:
                 return
             if method == "disconnect":
                 await self._send_result(req_id, {})
+                self._close_all_mcp_connections()
                 await self.transport.close()
                 return
             if method == "session/new":
@@ -487,6 +498,10 @@ class AcpJsonRpcSession:
                     "audio": True,
                     "embeddedContext": True,
                 },
+                "mcpCapabilities": {
+                    "http": True,
+                    "sse": False,
+                },
                 "sessionCapabilities": {
                     "list": {},
                     "resume": {},
@@ -644,6 +659,13 @@ class AcpJsonRpcSession:
             active_provider_id=selection["providerId"],
             active_model_id=selection["modelId"],
         )
+        try:
+            self._configure_session_mcp_servers(session.id, params)
+        except Exception:
+            self._close_session_mcp_connection(session.id)
+            with suppress(Exception):
+                self.state.repositories.sessions.delete_by_id(session.id)
+            raise
 
         return {
             "sessionId": session.id,
@@ -732,6 +754,7 @@ class AcpJsonRpcSession:
         if not session_id:
             raise RuntimeError("sessionId is required")
         self._ensure_session_exists(session_id)
+        self._configure_session_mcp_servers(session_id, params)
         return {"configOptions": self._config_options_for_session(session_id)}
 
     def _handle_session_resume(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -739,7 +762,124 @@ class AcpJsonRpcSession:
         if not session_id:
             raise RuntimeError("sessionId is required")
         self._ensure_session_exists(session_id)
+        self._configure_session_mcp_servers(session_id, params)
         return {"configOptions": self._config_options_for_session(session_id)}
+
+    def _configure_session_mcp_servers(
+        self, session_id: str, params: dict[str, Any]
+    ) -> None:
+        raw_servers = params.get("mcpServers")
+        if raw_servers is None:
+            return
+        if not isinstance(raw_servers, list):
+            raise RuntimeError("mcpServers must be an array")
+
+        self._close_session_mcp_connection(session_id)
+        if not raw_servers:
+            return
+
+        from smolagents import MCPClient
+
+        server_parameters = [
+            self._normalize_mcp_server_parameter(server) for server in raw_servers
+        ]
+        client = MCPClient(server_parameters, structured_output=True)
+        tools = list(client.get_tools())
+        self._session_mcp_connections[session_id] = _SessionMcpConnection(
+            client=client,
+            tools=tools,
+        )
+
+    def _normalize_mcp_server_parameter(self, value: Any) -> Any:
+        if not isinstance(value, dict):
+            raise RuntimeError("Each mcpServers entry must be an object")
+
+        transport_type = str(value.get("type") or "").strip().lower()
+        if transport_type == "":
+            if isinstance(value.get("url"), str) and str(value.get("url")).strip():
+                transport_type = "http"
+            else:
+                transport_type = "stdio"
+
+        if transport_type == "stdio":
+            command = str(value.get("command") or "").strip()
+            if not command:
+                raise RuntimeError("stdio MCP server requires command")
+
+            raw_args = value.get("args")
+            if raw_args is None:
+                args: list[str] = []
+            elif isinstance(raw_args, list):
+                args = [str(item) for item in raw_args]
+            else:
+                raise RuntimeError("stdio MCP server args must be an array")
+
+            raw_env = value.get("env")
+            env_map: dict[str, str] = {}
+            if raw_env is not None:
+                if not isinstance(raw_env, list):
+                    raise RuntimeError("stdio MCP server env must be an array")
+                for item in raw_env:
+                    if not isinstance(item, dict):
+                        raise RuntimeError("stdio MCP env entries must be objects")
+                    key = str(item.get("name") or "").strip()
+                    if not key:
+                        raise RuntimeError("stdio MCP env entry name is required")
+                    env_map[key] = str(item.get("value") or "")
+
+            from mcp import StdioServerParameters
+
+            return StdioServerParameters(
+                command=command,
+                args=args,
+                env=env_map or None,
+            )
+
+        if transport_type == "http":
+            url = str(value.get("url") or "").strip()
+            if not url:
+                raise RuntimeError("http MCP server requires url")
+
+            raw_headers = value.get("headers")
+            headers: dict[str, str] = {}
+            if raw_headers is not None:
+                if not isinstance(raw_headers, list):
+                    raise RuntimeError("http MCP server headers must be an array")
+                for item in raw_headers:
+                    if not isinstance(item, dict):
+                        raise RuntimeError("http MCP header entries must be objects")
+                    name = str(item.get("name") or "").strip()
+                    if not name:
+                        raise RuntimeError("http MCP header name is required")
+                    headers[name] = str(item.get("value") or "")
+
+            return {
+                "url": url,
+                "transport": "streamable-http",
+                "headers": headers,
+            }
+
+        if transport_type == "sse":
+            raise RuntimeError("MCP transport 'sse' is not supported")
+
+        raise RuntimeError(f"Unsupported MCP transport type: {transport_type}")
+
+    def _session_mcp_tools(self, session_id: str) -> list[Any]:
+        connection = self._session_mcp_connections.get(session_id)
+        if connection is None:
+            return []
+        return list(connection.tools)
+
+    def _close_session_mcp_connection(self, session_id: str) -> None:
+        connection = self._session_mcp_connections.pop(session_id, None)
+        if connection is None:
+            return
+        with suppress(Exception):
+            connection.client.disconnect()
+
+    def _close_all_mcp_connections(self) -> None:
+        for session_id in list(self._session_mcp_connections.keys()):
+            self._close_session_mcp_connection(session_id)
 
     def _handle_set_config_option(self, params: dict[str, Any]) -> dict[str, Any]:
         session_id = str(params.get("sessionId") or "")
@@ -1394,7 +1534,10 @@ class AcpJsonRpcSession:
                 workspace_path=workspace.real_path, session_key=session_id
             )
 
-            engine = create_runtime_engine(config)
+            engine = create_runtime_engine(
+                config,
+                extra_tools=self._session_mcp_tools(session_id),
+            )
 
             def permission_requester(request: dict[str, Any]) -> str:
                 enriched_request = {

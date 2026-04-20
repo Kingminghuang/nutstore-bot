@@ -74,6 +74,7 @@ class SmolagentsRuntimeEngine:
         *,
         model_factory=None,
         consolidator_factory=None,
+        extra_tools: list[Any] | None = None,
     ):
         self.config = config
         self.context_builder = ContextBuilder()
@@ -81,6 +82,7 @@ class SmolagentsRuntimeEngine:
         self.memory_store = MemoryStore(config.ns_bot_home)
         self.model_factory = model_factory
         self.consolidator_factory = consolidator_factory
+        self.extra_tools = list(extra_tools or [])
 
     def process(
         self,
@@ -188,6 +190,8 @@ class SmolagentsRuntimeEngine:
             permission_requester=permission_requester,
             auto_allow=permission_requester is None,
         )
+        if self.extra_tools:
+            tools = [*tools, *self.extra_tools]
         code_executor = LocalCodeExecutor(
             turn_id=turn_id,
             workspace_path=workspace_path,
@@ -522,9 +526,11 @@ def create_runtime_engine(
     *,
     model_factory=None,
     consolidator_factory=None,
+    extra_tools: list[Any] | None = None,
 ) -> RuntimeEngine:
     return SmolagentsRuntimeEngine(
         config,
         model_factory=model_factory,
         consolidator_factory=consolidator_factory,
+        extra_tools=extra_tools,
     )

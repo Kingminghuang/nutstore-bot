@@ -477,6 +477,51 @@ class RuntimeEngineTests(unittest.TestCase):
         self.assertEqual(created["code_kwargs"]["logger"].level, 0)
         self.assertEqual(created["main_kwargs"]["logger"].level, 0)
 
+    def test_runtime_engine_appends_extra_tools_to_workspace_tools(self) -> None:
+        created: dict[str, object] = {}
+        extra_tool = object()
+
+        class FakeCodeAgent:
+            def __init__(self, *args, **kwargs):
+                del args
+                created["code_tools"] = list(kwargs["tools"])
+                created["code_instance"] = self
+
+        class FakeToolCallingAgent:
+            def __init__(self, *args, **kwargs):
+                del args
+                created["main_tools"] = list(kwargs["tools"])
+                self.memory = type("Memory", (), {"steps": []})()
+
+            def run(self, *args, **kwargs):
+                del args, kwargs
+                return iter(())
+
+        with patch(
+            "nsbot_sidecar.runtime.engine.NativeCodeAgent",
+            FakeCodeAgent,
+        ), patch(
+            "nsbot_sidecar.runtime.engine.NativeToolCallingAgent",
+            FakeToolCallingAgent,
+        ):
+            service = SmolagentsRuntimeEngine(
+                self._config(),
+                model_factory=lambda: FakeStreamingModel("ok"),
+                extra_tools=[extra_tool],
+            )
+            service.process(
+                turn_id="turn-extra-tools",
+                user_input="task",
+                auth_context={},
+                metadata=RunMetadata(
+                    workspace_path=str(self.workspace_a),
+                    session_key=None,
+                ),
+            )
+
+        self.assertIn(extra_tool, created["code_tools"])
+        self.assertIn(extra_tool, created["main_tools"])
+
     def test_has_delta_when_console_output_disabled(self) -> None:
         service = SmolagentsRuntimeEngine(
             replace(self._config(), allow_console_output=False),

@@ -127,7 +127,35 @@ class AcpSessionTests(unittest.TestCase):
             ]
         )
         asyncio.run(AcpJsonRpcSession(transport, self.app_state).run())
-        self.assertEqual(_response_for(transport.outgoing, 1)["result"]["protocolVersion"], 1)
+        result = _response_for(transport.outgoing, 1)["result"]
+        self.assertEqual(result["protocolVersion"], 1)
+        self.assertEqual(result["agentCapabilities"]["mcpCapabilities"]["http"], True)
+        self.assertEqual(result["agentCapabilities"]["mcpCapabilities"]["sse"], False)
+
+    def test_normalize_mcp_http_server_parameter(self) -> None:
+        session_runner = AcpJsonRpcSession(_InMemoryTransport([]), self.app_state)
+        normalized = session_runner._normalize_mcp_server_parameter(
+            {
+                "type": "http",
+                "name": "demo-http",
+                "url": "https://example.com/mcp",
+                "headers": [
+                    {"name": "Authorization", "value": "Bearer token"},
+                    {"name": "X-Tenant", "value": "abc"},
+                ],
+            }
+        )
+        self.assertEqual(normalized["transport"], "streamable-http")
+        self.assertEqual(normalized["url"], "https://example.com/mcp")
+        self.assertEqual(normalized["headers"]["Authorization"], "Bearer token")
+        self.assertEqual(normalized["headers"]["X-Tenant"], "abc")
+
+    def test_normalize_mcp_sse_server_parameter_rejected(self) -> None:
+        session_runner = AcpJsonRpcSession(_InMemoryTransport([]), self.app_state)
+        with self.assertRaisesRegex(RuntimeError, "not supported"):
+            session_runner._normalize_mcp_server_parameter(
+                {"type": "sse", "name": "legacy-sse", "url": "https://example.com/sse"}
+            )
 
     def test_timeline_list(self) -> None:
         session = self.app_state.repositories.sessions.create(
