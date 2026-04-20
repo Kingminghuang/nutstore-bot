@@ -169,13 +169,19 @@ class AcpAppTests(unittest.TestCase):
                 {
                     "jsonrpc": "2.0",
                     "id": 5,
+                    "method": "authenticate",
+                    "params": {"methodId": "USE_OPENAI"},
+                },
+                {
+                    "jsonrpc": "2.0",
+                    "id": 6,
                     "method": "session/load",
                     "params": {"sessionId": session_id},
                 }
             ]
         )
         asyncio.run(AcpJsonRpcSession(load_transport, self.app.state).run())
-        load_resp = _response_for(load_transport.outgoing, 5)
+        load_resp = _response_for(load_transport.outgoing, 6)
         self.assertIn("configOptions", load_resp["result"])
 
     def test_acp_session_timeline_list_returns_events(self) -> None:

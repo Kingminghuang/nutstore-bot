@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import threading
 import tempfile
 import time
@@ -131,6 +132,93 @@ class AcpSessionTests(unittest.TestCase):
         self.assertEqual(result["protocolVersion"], 1)
         self.assertEqual(result["agentCapabilities"]["mcpCapabilities"]["http"], True)
         self.assertEqual(result["agentCapabilities"]["mcpCapabilities"]["sse"], False)
+        method_ids = {str(method.get("id") or "") for method in result["authMethods"]}
+        self.assertIn("USE_OPENAI", method_ids)
+        self.assertIn("USE_ANTHROPIC", method_ids)
+        self.assertIn("USE_GEMINI", method_ids)
+        self.assertIn("USE_DEEPSEEK", method_ids)
+        self.assertIn("GATEWAY", method_ids)
+
+    def test_authenticate_with_meta_api_key_updates_provider_secret(self) -> None:
+        transport = _InMemoryTransport(
+            [
+                {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "authenticate",
+                    "params": {
+                        "methodId": "USE_OPENAI",
+                        "_meta": {"api-key": "sk-meta-openai"},
+                    },
+                }
+            ]
+        )
+        asyncio.run(AcpJsonRpcSession(transport, self.app_state).run())
+        result = _response_for(transport.outgoing, 1)["result"]
+        self.assertEqual(result["_meta"]["auth"]["keySource"], "meta")
+        self.assertEqual(result["_meta"]["auth"]["targetProviderId"], "openai")
+        bundle = self.app_state.repositories.providers.get_bundle_by_id_or_raise("openai")
+        secret = self.app_state.secret_store.load_provider_secret(bundle.provider.secret_ref)
+        self.assertIsNotNone(secret)
+        self.assertEqual(secret.api_key, "sk-meta-openai")
+
+    def test_authenticate_falls_back_to_default_provider_secret(self) -> None:
+        self.app_state.provider_service.set_default_model(
+            self.provider.provider.id, "gpt-5.4"
+        )
+        transport = _InMemoryTransport(
+            [
+                {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "authenticate",
+                    "params": {
+                        "methodId": "USE_ANTHROPIC",
+                    },
+                }
+            ]
+        )
+        with patch.dict(os.environ, {"OPENAI_API_KEY": ""}, clear=False):
+            asyncio.run(AcpJsonRpcSession(transport, self.app_state).run())
+        result = _response_for(transport.outgoing, 1)["result"]
+        self.assertEqual(result["_meta"]["auth"]["targetProviderId"], "anthropic")
+        self.assertEqual(
+            result["_meta"]["auth"]["effectiveProviderId"], self.provider.provider.id
+        )
+        self.assertEqual(result["_meta"]["auth"]["keySource"], "default_provider_secret")
+
+    def test_authenticate_rejects_unknown_method(self) -> None:
+        transport = _InMemoryTransport(
+            [
+                {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "authenticate",
+                    "params": {"methodId": "NOT_SUPPORTED"},
+                }
+            ]
+        )
+        asyncio.run(AcpJsonRpcSession(transport, self.app_state).run())
+        response = _response_for(transport.outgoing, 1)
+        self.assertEqual(response["error"]["code"], -32000)
+        self.assertIn("unsupported authentication method", response["error"]["message"])
+
+    def test_session_new_requires_authenticate(self) -> None:
+        workspace_path = self.workspace.real_path
+        transport = _InMemoryTransport(
+            [
+                {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "session/new",
+                    "params": {"cwd": workspace_path, "mcpServers": []},
+                }
+            ]
+        )
+        asyncio.run(AcpJsonRpcSession(transport, self.app_state).run())
+        response = _response_for(transport.outgoing, 1)
+        self.assertEqual(response["error"]["code"], -32000)
+        self.assertIn("Authentication required", response["error"]["message"])
 
     def test_normalize_mcp_http_server_parameter(self) -> None:
         session_runner = AcpJsonRpcSession(_InMemoryTransport([]), self.app_state)

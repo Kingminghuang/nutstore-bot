@@ -105,6 +105,7 @@ class AcpStdioIntegrationTests(unittest.TestCase):
                 )
 
                 await conn.ext_method("nsbot/provider/catalog", {})
+                await conn.authenticate(method_id="USE_OPENAI")
 
                 session = await conn.new_session(cwd=str(workspace))
                 sessions = await conn.list_sessions(cwd=str(workspace))
@@ -169,6 +170,7 @@ class AcpStdioIntegrationTests(unittest.TestCase):
                         "preferredModelId": "gpt-5.4",
                     },
                 )
+                await conn.authenticate(method_id="USE_OPENAI")
 
                 session = await conn.new_session(cwd=str(workspace))
 
@@ -242,9 +244,17 @@ class AcpStdioIntegrationTests(unittest.TestCase):
                 )
                 self.assertIn("id", provider["result"])
 
-                session = await _send_jsonrpc_request(
+                authenticate = await _send_jsonrpc_request(
                     proc,
                     3,
+                    "authenticate",
+                    {"methodId": "USE_OPENAI"},
+                )
+                self.assertIn("result", authenticate)
+
+                session = await _send_jsonrpc_request(
+                    proc,
+                    4,
                     "session/new",
                     {"cwd": str(workspace), "mcpServers": []},
                 )
@@ -253,7 +263,7 @@ class AcpStdioIntegrationTests(unittest.TestCase):
 
                 loaded = await _send_jsonrpc_request(
                     proc,
-                    4,
+                    5,
                     "session/load",
                     {
                         "cwd": str(workspace),

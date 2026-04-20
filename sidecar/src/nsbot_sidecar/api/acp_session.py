@@ -20,6 +20,7 @@ from urllib.parse import unquote, urlparse
 from nsbot_sidecar.infrastructure.local_paths import nsbot_home
 from nsbot_sidecar.infrastructure.repositories import create_id
 from nsbot_sidecar.infrastructure.storage import transaction
+from nsbot_sidecar.providers.provider_catalog import list_providers
 from nsbot_sidecar.runtime.engine import create_runtime_engine
 from nsbot_sidecar.runtime.types import (
     RunMetadata,
@@ -52,6 +53,16 @@ class _ClientRequestWaiter:
 class _SessionMcpConnection:
     client: Any
     tools: list[Any]
+
+
+@dataclass(frozen=True)
+class _AuthState:
+    method_id: str
+    target_provider_id: str
+    effective_provider_id: str
+    key_source: str
+    gateway_protocol: str | None = None
+    gateway_base_url: str | None = None
 
 
 class JsonRpcTransport(Protocol):
@@ -99,6 +110,7 @@ class AcpJsonRpcSession:
         self._session_cancel_events: dict[str, threading.Event] = {}
         self._session_thought_levels: dict[str, str] = {}
         self._session_mcp_connections: dict[str, _SessionMcpConnection] = {}
+        self._auth_state: _AuthState | None = None
 
         self._client_capabilities: dict[str, Any] = {
             "fs": {"readTextFile": False, "writeTextFile": False},
@@ -147,7 +159,7 @@ class AcpJsonRpcSession:
                 await self._send_result(req_id, self._handle_initialize(params))
                 return
             if method == "authenticate":
-                await self._send_result(req_id, {"_meta": {}})
+                await self._send_result(req_id, self._handle_authenticate(params))
                 return
             if method == "disconnect":
                 await self._send_result(req_id, {})
@@ -155,6 +167,7 @@ class AcpJsonRpcSession:
                 await self.transport.close()
                 return
             if method == "session/new":
+                self._ensure_authenticated()
                 await self._send_result(req_id, self._handle_session_new(params))
                 return
             if method == "session/list":
@@ -285,9 +298,11 @@ class AcpJsonRpcSession:
                 await self._send_result(req_id, {})
                 return
             if method == "session/load":
+                self._ensure_authenticated()
                 await self._send_result(req_id, await self._handle_session_load(params))
                 return
             if method == "session/resume":
+                self._ensure_authenticated()
                 await self._send_result(req_id, self._handle_session_resume(params))
                 return
             if method == "_nsbot/session/update_meta":
@@ -446,6 +461,7 @@ class AcpJsonRpcSession:
                 await self._send_result(req_id, {"cancelled": True})
                 return
             if method == "session/prompt":
+                self._ensure_authenticated()
                 session_id = str(params.get("sessionId") or "")
                 if not session_id:
                     await self._send_error(req_id, -32000, "sessionId is required")
@@ -524,14 +540,229 @@ class AcpJsonRpcSession:
                 "title": "Nutstore Sidecar",
                 "version": "0.1.0",
             },
-            "authMethods": [
+            "authMethods": self._supported_auth_methods(),
+        }
+
+    def _supported_auth_methods(self) -> list[dict[str, Any]]:
+        methods: list[dict[str, Any]] = []
+        for provider in list_providers():
+            provider_id = str(provider.get("id") or "").strip().lower()
+            if not provider_id:
+                continue
+            provider_label = str(provider.get("label") or provider_id).strip() or provider_id
+            methods.append(
                 {
-                    "id": "api-key",
-                    "name": "API Key",
-                    "type": "env_var",
-                    "vars": [{"name": "OPENAI_API_KEY"}],
+                    "id": self._auth_method_id_for_provider(provider_id),
+                    "name": f"Use {provider_label}",
+                    "description": f"Authenticate with the configured API key for {provider_label}",
+                    "_meta": {"api-key": {"provider": provider_id}},
                 }
-            ],
+            )
+
+        methods.append(
+            {
+                "id": "GATEWAY",
+                "name": "AI API Gateway",
+                "description": "Authenticate with a custom OpenAI-compatible gateway provider",
+                "_meta": {"gateway": {"protocol": "custom", "baseUrl": ""}},
+            }
+        )
+        return methods
+
+    def _auth_method_id_for_provider(self, provider_id: str) -> str:
+        normalized = re.sub(r"[^A-Za-z0-9]+", "_", provider_id).strip("_").upper()
+        return f"USE_{normalized}"
+
+    def _auth_method_to_provider_map(self) -> dict[str, str]:
+        mapping: dict[str, str] = {}
+        for provider in list_providers():
+            provider_id = str(provider.get("id") or "").strip().lower()
+            if not provider_id:
+                continue
+            mapping[self._auth_method_id_for_provider(provider_id)] = provider_id
+        return mapping
+
+    def _gateway_provider_id(self, protocol: str) -> str:
+        slug = re.sub(r"[^a-z0-9]+", "-", protocol.strip().lower()).strip("-")
+        if not slug:
+            slug = "custom"
+        return f"gateway-{slug}"
+
+    def _ensure_authenticated(self) -> None:
+        if self._auth_state is None:
+            raise RuntimeError("Authentication required")
+
+    def _extract_meta_api_key(self, meta: Any) -> str | None:
+        if not isinstance(meta, dict):
+            return None
+        api_key_meta = meta.get("api-key")
+        if isinstance(api_key_meta, str):
+            key = api_key_meta.strip()
+            return key or None
+        if isinstance(api_key_meta, dict):
+            value = api_key_meta.get("value")
+            if isinstance(value, str):
+                key = value.strip()
+                return key or None
+        return None
+
+    def _provider_secret_api_key(self, provider_id: str) -> str | None:
+        bundle = self.state.repositories.providers.get_bundle_by_id(provider_id)
+        if bundle is None:
+            return None
+        secret_payload = self.state.secret_store.load_provider_secret(
+            bundle.provider.secret_ref
+        )
+        if secret_payload is None:
+            return None
+        key = str(secret_payload.api_key or "").strip()
+        return key or None
+
+    def _resolve_api_key_for_auth(
+        self, *, target_provider_id: str, explicit_api_key: str | None
+    ) -> tuple[str, str, str]:
+        if explicit_api_key:
+            return explicit_api_key, "meta", target_provider_id
+
+        env_key = str(os.environ.get("OPENAI_API_KEY") or "").strip()
+        if env_key:
+            return env_key, "env", target_provider_id
+
+        target_secret = self._provider_secret_api_key(target_provider_id)
+        if target_secret:
+            return target_secret, "provider_secret", target_provider_id
+
+        fallback_provider_id: str | None = None
+        fallback_secret: str | None = None
+        try:
+            selection = self._default_selection()
+            fallback_provider_id = str(selection["providerId"] or "").strip()
+            if fallback_provider_id:
+                fallback_secret = self._provider_secret_api_key(fallback_provider_id)
+        except Exception:
+            fallback_provider_id = None
+            fallback_secret = None
+
+        if fallback_secret:
+            return fallback_secret, "default_provider_secret", fallback_provider_id or target_provider_id
+
+        if fallback_provider_id:
+            raise RuntimeError(
+                f"API key is missing for provider '{target_provider_id}' and fallback provider '{fallback_provider_id}'"
+            )
+        raise RuntimeError(f"API key is missing for provider '{target_provider_id}'")
+
+    def _upsert_provider_for_auth(
+        self,
+        *,
+        provider_id: str,
+        api_key: str,
+        gateway_protocol: str | None = None,
+        gateway_base_url: str | None = None,
+    ) -> None:
+        existing = self.state.repositories.providers.get_bundle_by_id(provider_id)
+        if gateway_protocol is not None:
+            provider_payload: dict[str, Any] = {
+                "kind": "custom",
+                "customSlug": provider_id,
+                "displayName": f"Gateway ({gateway_protocol})",
+                "baseUrl": gateway_base_url,
+                "apiKey": api_key,
+            }
+            if existing is None:
+                self.state.provider_service.create_provider(provider_payload)
+            else:
+                self.state.provider_service.update_provider(provider_id, provider_payload)
+            return
+
+        if existing is None:
+            self.state.provider_service.create_provider(
+                {
+                    "kind": "builtin",
+                    "catalogProviderId": provider_id,
+                    "displayName": provider_id,
+                    "apiKey": api_key,
+                }
+            )
+            return
+
+        self.state.provider_service.update_provider(provider_id, {"apiKey": api_key})
+
+    def _handle_authenticate(self, params: dict[str, Any]) -> dict[str, Any]:
+        method_id = str(params.get("methodId") or "").strip()
+        if not method_id:
+            raise RuntimeError("methodId is required")
+
+        supported_methods = self._auth_method_to_provider_map()
+        target_provider_id: str
+        gateway_protocol: str | None = None
+        gateway_base_url: str | None = None
+
+        meta = params.get("_meta")
+
+        if method_id in supported_methods:
+            target_provider_id = supported_methods[method_id]
+        elif method_id == "GATEWAY":
+            gateway_meta = meta.get("gateway") if isinstance(meta, dict) else None
+            if not isinstance(gateway_meta, dict):
+                raise RuntimeError("Malformed gateway payload: gateway object is required")
+
+            protocol_value = gateway_meta.get("protocol")
+            if not isinstance(protocol_value, str) or not protocol_value.strip():
+                raise RuntimeError("Malformed gateway payload: gateway.protocol is required")
+            gateway_protocol = protocol_value.strip().lower()
+
+            base_url_value = gateway_meta.get("baseUrl")
+            if not isinstance(base_url_value, str) or not base_url_value.strip():
+                raise RuntimeError("Malformed gateway payload: gateway.baseUrl is required")
+            gateway_base_url = base_url_value.strip()
+
+            target_provider_id = self._gateway_provider_id(gateway_protocol)
+        else:
+            raise RuntimeError("unsupported authentication method")
+
+        explicit_api_key = self._extract_meta_api_key(meta)
+        api_key, key_source, effective_provider_id = self._resolve_api_key_for_auth(
+            target_provider_id=target_provider_id,
+            explicit_api_key=explicit_api_key,
+        )
+
+        if method_id == "GATEWAY":
+            self._upsert_provider_for_auth(
+                provider_id=target_provider_id,
+                api_key=api_key,
+                gateway_protocol=gateway_protocol,
+                gateway_base_url=gateway_base_url,
+            )
+        elif key_source in {"meta", "env"}:
+            self._upsert_provider_for_auth(
+                provider_id=target_provider_id,
+                api_key=api_key,
+            )
+
+        self._auth_state = _AuthState(
+            method_id=method_id,
+            target_provider_id=target_provider_id,
+            effective_provider_id=effective_provider_id,
+            key_source=key_source,
+            gateway_protocol=gateway_protocol,
+            gateway_base_url=gateway_base_url,
+        )
+        return {
+            "_meta": {
+                "auth": {
+                    "methodId": method_id,
+                    "targetProviderId": target_provider_id,
+                    "effectiveProviderId": effective_provider_id,
+                    "keySource": key_source,
+                    "gateway": {
+                        "protocol": gateway_protocol,
+                        "baseUrl": gateway_base_url,
+                    }
+                    if gateway_protocol is not None
+                    else None,
+                }
+            }
         }
 
     def _ensure_session_exists(self, session_id: str):
