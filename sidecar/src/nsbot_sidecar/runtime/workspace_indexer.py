@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import csv
-from datetime import date, datetime, time, timezone
+from datetime import date, datetime, time, timedelta, timezone
 import json
 import logging
 import os
 from pathlib import Path
+import tempfile
 from typing import Any
 import xml.etree.ElementTree as ET
 import zipfile
@@ -18,9 +19,11 @@ LOGGER = logging.getLogger(__name__)
 SUPPORTED_SOURCE_EXTENSIONS = {".pdf", ".docx", ".xlsx"}
 MARKDOWN_SOURCE_EXTENSIONS = {".pdf", ".docx"}
 MANIFEST_FILE_NAME = ".index-manifest.json"
+INDEX_REFRESH_WINDOW = timedelta(days=1)
+READ_ONLY_FILE_MODE = 0o444
 
 
-class WorkspaceSidecarIndexer:
+class WorkspaceIndexer:
     def enqueue(
         self,
         background_tasks: BackgroundTasks | None,
@@ -41,7 +44,7 @@ class WorkspaceSidecarIndexer:
             self.index_workspace(workspace_id, workspace_real_path)
         except Exception:  # noqa: BLE001
             LOGGER.exception(
-                "Workspace sidecar indexing failed",
+                "Workspace indexing failed",
                 extra={
                     "workspace_id": workspace_id,
                     "workspace_path": workspace_real_path,
@@ -52,7 +55,7 @@ class WorkspaceSidecarIndexer:
         workspace_path = Path(workspace_real_path).expanduser().resolve()
         if not workspace_path.exists() or not workspace_path.is_dir():
             LOGGER.warning(
-                "Skip workspace sidecar indexing because workspace is missing",
+                "Skip Workspace indexing because workspace is missing",
                 extra={
                     "workspace_id": workspace_id,
                     "workspace_path": str(workspace_path),
@@ -68,7 +71,8 @@ class WorkspaceSidecarIndexer:
         if not isinstance(sources, dict):
             sources = {}
 
-        last_indexed_at = datetime.now(timezone.utc).isoformat()
+        indexed_at = datetime.now(timezone.utc)
+        last_indexed_at = indexed_at.isoformat()
         scanned_count = 0
         converted_count = 0
         skipped_count = 0
@@ -82,17 +86,17 @@ class WorkspaceSidecarIndexer:
             signature = _build_signature(source_file)
             manifest_entry = sources.get(relative_key)
 
-            if _is_unchanged(manifest_entry, signature, output_file):
+            if _is_unchanged(manifest_entry, signature, output_file, indexed_at):
                 skipped_count += 1
                 continue
 
             output_file.parent.mkdir(parents=True, exist_ok=True)
             try:
-                _convert_file(source_file, output_file)
+                _convert_file_to_readonly_output(source_file, output_file)
             except Exception:  # noqa: BLE001
                 failed_count += 1
                 LOGGER.exception(
-                    "Workspace sidecar file conversion failed",
+                    "Workspace indexing file conversion failed",
                     extra={
                         "workspace_id": workspace_id,
                         "workspace_path": str(workspace_path),
@@ -122,7 +126,7 @@ class WorkspaceSidecarIndexer:
 
         _write_manifest(manifest_path, manifest)
         LOGGER.info(
-            "Workspace sidecar indexing completed",
+            "Workspace indexing completed",
             extra={
                 "workspace_id": workspace_id,
                 "workspace_path": str(workspace_path),
@@ -186,11 +190,51 @@ def _build_signature(source_path: Path) -> dict[str, int]:
 
 
 def _is_unchanged(
-    manifest_entry: Any, signature: dict[str, int], output_path: Path
+    manifest_entry: Any,
+    signature: dict[str, int],
+    output_path: Path,
+    indexed_at: datetime,
 ) -> bool:
     if not isinstance(manifest_entry, dict):
         return False
-    return manifest_entry.get("signature") == signature and output_path.exists()
+    if manifest_entry.get("signature") != signature or not output_path.exists():
+        return False
+    last_updated_at = _parse_updated_at(manifest_entry.get("updatedAt"))
+    if last_updated_at is None:
+        return False
+    return indexed_at - last_updated_at < INDEX_REFRESH_WINDOW
+
+
+def _parse_updated_at(value: Any) -> datetime | None:
+    if not isinstance(value, str) or value.strip() == "":
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _convert_file_to_readonly_output(source_path: Path, output_path: Path) -> None:
+    file_descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{output_path.name}.",
+        suffix=".tmp",
+        dir=str(output_path.parent),
+    )
+    os.close(file_descriptor)
+    temporary_output = Path(temporary_name)
+    try:
+        _convert_file(source_path, temporary_output)
+        os.replace(temporary_output, output_path)
+        _set_read_only(output_path)
+    finally:
+        temporary_output.unlink(missing_ok=True)
+
+
+def _set_read_only(path: Path) -> None:
+    path.chmod(READ_ONLY_FILE_MODE)
 
 
 def _convert_file(source_path: Path, output_path: Path) -> None:

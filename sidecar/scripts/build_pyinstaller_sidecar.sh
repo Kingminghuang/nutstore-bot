@@ -41,6 +41,6 @@ uv run --project "${SIDECAR_ROOT}" --with pyinstaller pyinstaller \
   --distpath "${DIST_DIR}" \
   --workpath "${BUILD_DIR}" \
   --specpath "${SPEC_DIR}" \
-  "${SIDECAR_ROOT}/src/nsbot_sidecar/cli.py"
+  "${SIDECAR_ROOT}/src/nsbot_sidecar/cli/__main__.py"
 
 echo "Built sidecar binary at: ${DIST_DIR}/nsbot-sidecar"

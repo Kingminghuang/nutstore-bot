@@ -354,7 +354,7 @@ class AcpJsonRpcSession:
                     return
                 await self._send_result(
                     req_id,
-                    self.state.session_service.workspace_sidecar_index_status_payload(
+                    self.state.session_service.workspace_index_status_payload(
                         workspace_id
                     ),
                 )

@@ -492,7 +492,7 @@ build_python_cli_payload() {
     --distpath "${DIST_ROOT}"
     --workpath "${BUILD_ROOT}"
     --specpath "${SPEC_ROOT}"
-    "${SIDECAR_ROOT}/src/nsbot_sidecar/cli.py"
+    "${SIDECAR_ROOT}/src/nsbot_sidecar/cli/__main__.py"
   )
 
   case "$(uname -s)/$(uname -m)" in

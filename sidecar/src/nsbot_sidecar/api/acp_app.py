@@ -14,7 +14,7 @@ from nsbot_sidecar.application.timeline_service import TimelineService
 from nsbot_sidecar.infrastructure.repositories import create_repositories
 from nsbot_sidecar.infrastructure.secret_store import LocalSecretStore
 from nsbot_sidecar.infrastructure.storage import connect_database
-from nsbot_sidecar.runtime.workspace_sidecar_indexer import WorkspaceSidecarIndexer
+from nsbot_sidecar.runtime.workspace_indexer import WorkspaceIndexer
 
 
 @dataclass(frozen=True)
@@ -43,7 +43,7 @@ def create_acp_app(config: AcpAppConfig | None = None) -> FastAPI:
             sessions=repositories.sessions,
             acp_event_log=repositories.acp_event_log,
         ),
-        workspace_sidecar_indexer=WorkspaceSidecarIndexer(),
+        workspace_indexer=WorkspaceIndexer(),
     )
 
     @asynccontextmanager

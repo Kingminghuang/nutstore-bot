@@ -15,22 +15,22 @@ import click
 from fastapi import HTTPException
 import typer
 
-from nsbot_sidecar._cli_agent import (
+from ._agent import (
     handle_cancel_command as _handle_cancel_command_impl,
     handle_run_command as _handle_run_command_impl,
     handle_worker_command as _handle_worker_command_impl,
 )
-from nsbot_sidecar._cli_index_tasks import (
+from ._index_tasks import (
     handle_index_cancel_command as _handle_index_cancel_command_impl,
     handle_index_status_command as _handle_index_status_command_impl,
     handle_index_submit_command as _handle_index_submit_command_impl,
     handle_index_worker_command as _handle_index_worker_command_impl,
 )
-from nsbot_sidecar._cli_models import handle_models_command as _handle_models_command_impl
-from nsbot_sidecar._cli_providers import (
+from ._models import handle_models_command as _handle_models_command_impl
+from ._providers import (
     handle_providers_command as _handle_providers_command_impl,
 )
-from nsbot_sidecar._cli_threads import (
+from ._threads import (
     handle_thread_delete_command as _handle_thread_delete_command_impl,
     handle_thread_get_command as _handle_thread_get_command_impl,
     handle_thread_snapshot_command as _handle_thread_snapshot_command_impl,
@@ -40,14 +40,14 @@ from nsbot_sidecar._cli_threads import (
     list_thread_event_rows as _list_thread_event_rows_impl,
     timeline_event_to_thread_event_row as _timeline_event_to_thread_event_row_impl,
 )
-from nsbot_sidecar._cli_workspaces import (
+from ._workspaces import (
     handle_workspaces_command as _handle_workspaces_command_impl,
 )
-from nsbot_sidecar._cli_events import (
+from ._events import (
     _TIMELINE_DEPRECATION_NOTICE,
     _build_codex_thread_events,
 )
-from nsbot_sidecar._cli_state import (
+from ._state import (
     _derive_thread_status,
     _find_active_index_task,
     _index_manifest_payload,
@@ -65,7 +65,7 @@ from nsbot_sidecar._cli_state import (
     _write_pid_file,
     _write_run_record,
 )
-from nsbot_sidecar._cli_support import (
+from ._support import (
     HELP_OPTION_NAMES,
     _build_acp_app_config,
     _build_runtime_target_resolution,

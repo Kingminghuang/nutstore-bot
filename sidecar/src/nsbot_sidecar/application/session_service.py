@@ -28,7 +28,7 @@ ModelTitleGenerator = Callable[[str, str], str | None]
 LOGGER = logging.getLogger(__name__)
 
 
-class WorkspaceSidecarIndexerProtocol(Protocol):
+class WorkspaceIndexerProtocol(Protocol):
     def enqueue(
         self,
         background_tasks: BackgroundTasks | None,
@@ -50,7 +50,7 @@ class SessionService:
     ns_bot_home: str | None
     timeline_service: TimelineService
     model_title_generator: ModelTitleGenerator | None = None
-    workspace_sidecar_indexer: WorkspaceSidecarIndexerProtocol | None = None
+    workspace_indexer: WorkspaceIndexerProtocol | None = None
 
     def list_workspaces_payload(self) -> dict[str, list[dict[str, Any]]]:
         return {
@@ -96,8 +96,8 @@ class SessionService:
                 detail="Directory path is already registered",
             ) from exc
 
-        if self.workspace_sidecar_indexer is not None:
-            self.workspace_sidecar_indexer.enqueue(
+        if self.workspace_indexer is not None:
+            self.workspace_indexer.enqueue(
                 background_tasks,
                 workspace_id=workspace.id,
                 workspace_real_path=str(resolved_path),
@@ -112,11 +112,11 @@ class SessionService:
             self.delete_session(session.id)
         self.workspaces.delete_by_id(workspace_id)
 
-    def workspace_sidecar_index_status_payload(
+    def workspace_index_status_payload(
         self, workspace_id: str
     ) -> dict[str, Any]:
         workspace = self._get_workspace_or_404(workspace_id)
-        if self.workspace_sidecar_indexer is None:
+        if self.workspace_indexer is None:
             workspace_path = Path(workspace.real_path).expanduser().resolve()
             sidecar_root = workspace_path / ".sidecar"
             return {
@@ -135,7 +135,7 @@ class SessionService:
                 },
                 "sourceCount": 0,
             }
-        return self.workspace_sidecar_indexer.status(workspace.id, workspace.real_path)
+        return self.workspace_indexer.status(workspace.id, workspace.real_path)
 
     def update_workspace(
         self, workspace_id: str, payload: dict[str, Any]

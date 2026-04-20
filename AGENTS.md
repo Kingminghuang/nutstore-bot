@@ -62,7 +62,7 @@
 - Do not design or implement database migrations, compatibility layers, backward-compatibility shims, or transitional fallback paths unless the user explicitly overrides this rule for a specific task.
 
 ## Runtime Architecture Guardrails
-- Runtime call sites (`sidecar/src/nsbot_sidecar/api/acp_session.py`, `sidecar/src/nsbot_sidecar/cli.py`, and `sidecar/src/nsbot_sidecar/runtime/worker.py`) must use the `nsbot_sidecar.runtime.engine` interface.
+- Runtime call sites (`sidecar/src/nsbot_sidecar/api/acp_session.py`, `sidecar/src/nsbot_sidecar/cli/__init__.py`, and `sidecar/src/nsbot_sidecar/runtime/worker.py`) must use the `nsbot_sidecar.runtime.engine` interface.
 - Keep `execute_runtime_turn` as the thin application entry point to RuntimeEngine.
 - Runtime interaction is ACP-only over stdio (desktop path: Frontend IPC -> Tauri bridge -> sidecar stdio JSON-RPC). Do not add or restore `/runs*` endpoints, `run.*` event streams, HTTP `edit-and-run` style paths, or frontend-facing ACP websocket routes.
 - `sidecar` has no standalone HTTP server surface. Any new business capability must go through ACP methods, not REST.

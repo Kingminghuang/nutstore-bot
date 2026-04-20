@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 import json
+import stat
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from nsbot_sidecar.runtime.workspace_sidecar_indexer import WorkspaceSidecarIndexer
+from nsbot_sidecar.runtime.workspace_indexer import WorkspaceIndexer
 
 
 class FakeBackgroundTasks:
@@ -17,12 +19,12 @@ class FakeBackgroundTasks:
         self.calls.append((func, args))
 
 
-class WorkspaceSidecarIndexerTests(unittest.TestCase):
+class WorkspaceIndexerTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.temp_dir = Path(tempfile.mkdtemp(prefix="workspace-sidecar-indexer-"))
+        self.temp_dir = Path(tempfile.mkdtemp(prefix="workspace-indexer-"))
         self.workspace = self.temp_dir / "workspace"
         self.workspace.mkdir(parents=True, exist_ok=True)
-        self.indexer = WorkspaceSidecarIndexer()
+        self.indexer = WorkspaceIndexer()
 
     def test_enqueue_uses_background_tasks(self) -> None:
         background_tasks = FakeBackgroundTasks()
@@ -43,7 +45,7 @@ class WorkspaceSidecarIndexerTests(unittest.TestCase):
         (self.workspace / "docs" / ".private" / "skip.xlsx").write_bytes(b"xlsx")
 
         with patch(
-            "nsbot_sidecar.runtime.workspace_sidecar_indexer._convert_file",
+            "nsbot_sidecar.runtime.workspace_indexer._convert_file",
             side_effect=lambda _source, output: output.write_text("converted", encoding="utf-8"),
         ):
             self.indexer.index_workspace("ws_1", str(self.workspace))
@@ -66,10 +68,10 @@ class WorkspaceSidecarIndexerTests(unittest.TestCase):
             converted_files.append(source)
             output.write_text(source.read_text(encoding="utf-8", errors="ignore"), encoding="utf-8")
 
-        with patch("nsbot_sidecar.runtime.workspace_sidecar_indexer._convert_file", side_effect=_fake_convert):
+        with patch("nsbot_sidecar.runtime.workspace_indexer._convert_file", side_effect=_fake_convert):
             self.indexer.index_workspace("ws_1", str(self.workspace))
             self.indexer.index_workspace("ws_1", str(self.workspace))
-            source_file.write_bytes(b"%PDF-b")
+            source_file.write_bytes(b"%PDF-b-updated")
             self.indexer.index_workspace("ws_1", str(self.workspace))
 
         self.assertEqual(len(converted_files), 2)
@@ -80,7 +82,7 @@ class WorkspaceSidecarIndexerTests(unittest.TestCase):
         source_file.write_bytes(b"xlsx")
 
         with patch(
-            "nsbot_sidecar.runtime.workspace_sidecar_indexer._convert_file",
+            "nsbot_sidecar.runtime.workspace_indexer._convert_file",
             side_effect=lambda _source, output: output.write_text("converted", encoding="utf-8"),
         ):
             self.indexer.index_workspace("ws_1", str(self.workspace))
@@ -90,7 +92,7 @@ class WorkspaceSidecarIndexerTests(unittest.TestCase):
         source_file.unlink()
 
         with patch(
-            "nsbot_sidecar.runtime.workspace_sidecar_indexer._convert_file",
+            "nsbot_sidecar.runtime.workspace_indexer._convert_file",
             side_effect=lambda _source, output: output.write_text("converted", encoding="utf-8"),
         ):
             self.indexer.index_workspace("ws_1", str(self.workspace))
@@ -109,7 +111,7 @@ class WorkspaceSidecarIndexerTests(unittest.TestCase):
         (self.workspace / "c.xlsx").write_bytes(b"xlsx")
 
         with patch(
-            "nsbot_sidecar.runtime.workspace_sidecar_indexer._convert_file",
+            "nsbot_sidecar.runtime.workspace_indexer._convert_file",
             side_effect=lambda _source, output: output.write_text("converted", encoding="utf-8"),
         ):
             self.indexer.index_workspace("ws_1", str(self.workspace))
@@ -117,3 +119,54 @@ class WorkspaceSidecarIndexerTests(unittest.TestCase):
         self.assertTrue((self.workspace / ".sidecar" / "a.PDF.md").exists())
         self.assertTrue((self.workspace / ".sidecar" / "b.docx.md").exists())
         self.assertTrue((self.workspace / ".sidecar" / "c.xlsx.csv").exists())
+
+    def test_reindexes_unchanged_file_after_refresh_window(self) -> None:
+        source_file = self.workspace / "report.pdf"
+        source_file.write_bytes(b"%PDF-same")
+
+        converted_files: list[Path] = []
+
+        def _fake_convert(source: Path, output: Path) -> None:
+            converted_files.append(source)
+            output.write_text("converted", encoding="utf-8")
+
+        with patch(
+            "nsbot_sidecar.runtime.workspace_indexer._convert_file",
+            side_effect=_fake_convert,
+        ):
+            self.indexer.index_workspace("ws_1", str(self.workspace))
+
+            manifest_path = self.workspace / ".sidecar" / ".index-manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["sources"]["report.pdf"]["updatedAt"] = (
+                datetime.now(timezone.utc) - timedelta(days=2)
+            ).isoformat()
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+            self.indexer.index_workspace("ws_1", str(self.workspace))
+
+        self.assertEqual(len(converted_files), 2)
+
+    def test_reindex_replaces_read_only_output_atomically(self) -> None:
+        source_file = self.workspace / "nested" / "report.pdf"
+        source_file.parent.mkdir(parents=True, exist_ok=True)
+        source_file.write_text("version-a", encoding="utf-8")
+
+        def _fake_convert(source: Path, output: Path) -> None:
+            output.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+
+        with patch(
+            "nsbot_sidecar.runtime.workspace_indexer._convert_file",
+            side_effect=_fake_convert,
+        ):
+            self.indexer.index_workspace("ws_1", str(self.workspace))
+
+            output_file = self.workspace / ".sidecar" / "nested" / "report.pdf.md"
+            self.assertEqual(output_file.read_text(encoding="utf-8"), "version-a")
+            self.assertEqual(stat.S_IMODE(output_file.stat().st_mode) & 0o222, 0)
+
+            source_file.write_text("version-b-updated", encoding="utf-8")
+            self.indexer.index_workspace("ws_1", str(self.workspace))
+
+        self.assertEqual(output_file.read_text(encoding="utf-8"), "version-b-updated")
+        self.assertEqual(stat.S_IMODE(output_file.stat().st_mode) & 0o222, 0)

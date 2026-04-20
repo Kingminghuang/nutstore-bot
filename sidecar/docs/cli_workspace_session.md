@@ -4,7 +4,7 @@
 
 This section is the current source of truth for sidecar provider/model persistence.
 If implementation and older notes disagree, follow this document and the current
-code in `storage.py`, `provider_service.py`, and `cli.py`.
+code in `storage.py`, `provider_service.py`, and the `nsbot_sidecar.cli` package.
 
 ### Storage model
 
@@ -138,8 +138,8 @@ uv run python -m nsbot_sidecar.cli workspaces update \
   --name "new name" \
   --path-label "/visible/path"
 
-# Check sidecar index status
-uv run python -m nsbot_sidecar.cli workspaces sidecar-index-status --workspace-id ws_xxx
+# Check workspace index status
+uv run python -m nsbot_sidecar.cli workspaces index status --workspace-id ws_xxx
 
 # Delete workspace
 uv run python -m nsbot_sidecar.cli workspaces delete --workspace-id ws_xxx

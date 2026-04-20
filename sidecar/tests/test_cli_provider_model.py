@@ -28,6 +28,8 @@ def _run_cli(argv: list[str]) -> tuple[int, str, str]:
 class CliProviderModelTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp_dir = tempfile.mkdtemp(prefix="sidecar-cli-")
+        self.workspace_dir = Path(self.temp_dir) / "workspace"
+        self.workspace_dir.mkdir(parents=True, exist_ok=True)
         self.connection = connect_database(self.temp_dir)
         self.repositories = create_repositories(self.connection)
 
@@ -48,6 +50,14 @@ class CliProviderModelTests(unittest.TestCase):
             models=[],
         )
         return bundle.provider.id
+
+    def _create_workspace(self) -> str:
+        workspace = self.repositories.workspaces.create(
+            name="Workspace",
+            path_label=str(self.workspace_dir),
+            real_path=str(self.workspace_dir),
+        )
+        return workspace.id
 
     def test_providers_use_command_is_removed(self) -> None:
         code, stdout, stderr = _run_cli(
@@ -357,6 +367,269 @@ class CliProviderModelTests(unittest.TestCase):
         payload = json.loads(stdout)
         self.assertEqual(payload["workspace_id"], "workspace_x")
         self.assertEqual(payload["thread_id"], "thread_x")
+
+    def test_workspaces_index_submit_creates_background_task(self) -> None:
+        workspace_id = self._create_workspace()
+
+        with mock.patch.object(
+            cli_module.uuid,
+            "uuid4",
+            return_value=mock.Mock(hex="abc123"),
+        ), mock.patch.object(
+            cli_module.subprocess,
+            "Popen",
+            return_value=mock.Mock(pid=4321),
+        ):
+            code, stdout, stderr = _run_cli(
+                [
+                    "--ns-bot-home",
+                    self.temp_dir,
+                    "workspaces",
+                    "index",
+                    "submit",
+                    "--workspace-id",
+                    workspace_id,
+                ]
+            )
+
+        self.assertEqual(code, 0)
+        self.assertEqual(stderr, "")
+        payload = json.loads(stdout)
+        self.assertEqual(payload["taskId"], "index_abc123")
+        self.assertEqual(payload["workspaceId"], workspace_id)
+        self.assertEqual(payload["status"], "pending")
+        self.assertFalse(payload["reused"])
+        self.assertEqual(payload["pid"], 4321)
+        record = cli_module._read_index_task_record(self.temp_dir, "index_abc123")
+        self.assertEqual(record["workspaceId"], workspace_id)
+
+    def test_workspaces_index_submit_reuses_active_task(self) -> None:
+        workspace_id = self._create_workspace()
+        cli_module._write_index_task_record(
+            self.temp_dir,
+            "index_existing",
+            {
+                "taskId": "index_existing",
+                "workspaceId": workspace_id,
+                "workspacePath": str(self.workspace_dir),
+                "status": "running",
+                "createdAt": "2026-01-01T00:00:00+00:00",
+                "updatedAt": "2026-01-01T00:00:00+00:00",
+                "startedAt": "2026-01-01T00:00:00+00:00",
+                "finishedAt": None,
+                "pid": 9001,
+                "error": None,
+            },
+        )
+
+        with mock.patch.object(cli_module.subprocess, "Popen") as popen:
+            code, stdout, stderr = _run_cli(
+                [
+                    "--ns-bot-home",
+                    self.temp_dir,
+                    "workspaces",
+                    "index",
+                    "submit",
+                    "--workspace-id",
+                    workspace_id,
+                ]
+            )
+
+        self.assertEqual(code, 0)
+        self.assertEqual(stderr, "")
+        payload = json.loads(stdout)
+        self.assertEqual(payload["taskId"], "index_existing")
+        self.assertTrue(payload["reused"])
+        popen.assert_not_called()
+
+    def test_workspaces_index_status_reads_task_record(self) -> None:
+        cli_module._write_index_task_record(
+            self.temp_dir,
+            "index_status",
+            {
+                "taskId": "index_status",
+                "workspaceId": "workspace_x",
+                "workspacePath": str(self.workspace_dir),
+                "status": "succeeded",
+                "createdAt": "2026-01-01T00:00:00+00:00",
+                "updatedAt": "2026-01-01T00:01:00+00:00",
+                "startedAt": "2026-01-01T00:00:10+00:00",
+                "finishedAt": "2026-01-01T00:01:00+00:00",
+                "pid": 123,
+                "error": None,
+            },
+        )
+
+        with mock.patch.object(
+            cli_module,
+            "_index_manifest_payload",
+            return_value={"status": "indexed", "stats": {"converted": 1}},
+        ):
+            code, stdout, stderr = _run_cli(
+                [
+                    "--ns-bot-home",
+                    self.temp_dir,
+                    "workspaces",
+                    "index",
+                    "status",
+                    "--task-id",
+                    "index_status",
+                ]
+            )
+
+        self.assertEqual(code, 0)
+        self.assertEqual(stderr, "")
+        payload = json.loads(stdout)
+        self.assertEqual(payload["taskId"], "index_status")
+        self.assertEqual(payload["status"], "succeeded")
+        self.assertEqual(payload["manifest"]["status"], "indexed")
+
+    def test_workspaces_index_status_reads_workspace_manifest_payload(self) -> None:
+        workspace_id = self._create_workspace()
+
+        with mock.patch.object(
+            cli_module,
+            "_build_session_service",
+        ) as build_session_service:
+            database = mock.Mock()
+            session_service = mock.Mock()
+            session_service.workspace_index_status_payload.return_value = {
+                "workspaceId": workspace_id,
+                "status": "indexed",
+                "stats": {"converted": 3},
+            }
+            build_session_service.return_value = (database, mock.Mock(), session_service)
+
+            code, stdout, stderr = _run_cli(
+                [
+                    "--ns-bot-home",
+                    self.temp_dir,
+                    "workspaces",
+                    "index",
+                    "status",
+                    "--workspace-id",
+                    workspace_id,
+                ]
+            )
+
+        self.assertEqual(code, 0)
+        self.assertEqual(stderr, "")
+        payload = json.loads(stdout)
+        self.assertEqual(payload["workspaceId"], workspace_id)
+        self.assertEqual(payload["status"], "indexed")
+        self.assertEqual(payload["stats"]["converted"], 3)
+        database.close.assert_called_once()
+
+    def test_workspaces_index_cancel_prints_canceled_and_updates_task(self) -> None:
+        cli_module._write_index_task_record(
+            self.temp_dir,
+            "index_cancel",
+            {
+                "taskId": "index_cancel",
+                "workspaceId": "workspace_x",
+                "workspacePath": str(self.workspace_dir),
+                "status": "running",
+                "createdAt": "2026-01-01T00:00:00+00:00",
+                "updatedAt": "2026-01-01T00:01:00+00:00",
+                "startedAt": "2026-01-01T00:00:10+00:00",
+                "finishedAt": None,
+                "pid": 123,
+                "error": None,
+            },
+        )
+        pid_file = cli_module._index_task_pid_file(self.temp_dir, "index_cancel")
+        pid_file.write_text("4242", encoding="utf-8")
+
+        with mock.patch.object(cli_module.os, "kill") as kill:
+            code, stdout, stderr = _run_cli(
+                [
+                    "--ns-bot-home",
+                    self.temp_dir,
+                    "workspaces",
+                    "index",
+                    "cancel",
+                    "--task-id",
+                    "index_cancel",
+                ]
+            )
+
+        self.assertEqual(code, 0)
+        self.assertEqual(stdout.strip(), "Canceled")
+        self.assertEqual(stderr, "")
+        kill.assert_called_once_with(4242, 15)
+        self.assertFalse(pid_file.exists())
+        payload = cli_module._read_index_task_record(self.temp_dir, "index_cancel")
+        self.assertEqual(payload["status"], "canceled")
+        self.assertIsNotNone(payload["finishedAt"])
+        self.assertIsNone(payload["pid"])
+
+    def test_workspaces_index_cancel_help_uses_task_id_flag(self) -> None:
+        code, stdout, _stderr = _run_cli(
+            [
+                "--ns-bot-home",
+                self.temp_dir,
+                "workspaces",
+                "index",
+                "cancel",
+                "--help",
+            ]
+        )
+        self.assertEqual(code, 0)
+        self.assertIn("--task-id", stdout)
+
+    def test_workspaces_sidecar_index_status_command_is_removed(self) -> None:
+        code, _stdout, stderr = _run_cli(
+            [
+                "--ns-bot-home",
+                self.temp_dir,
+                "workspaces",
+                "sidecar-index-status",
+                "--workspace-id",
+                "workspace_x",
+            ]
+        )
+        self.assertNotEqual(code, 0)
+        self.assertIn("No such command", stderr)
+
+    def test_workspaces_index_worker_updates_task_record(self) -> None:
+        cli_module._write_index_task_record(
+            self.temp_dir,
+            "index_worker",
+            {
+                "taskId": "index_worker",
+                "workspaceId": "workspace_x",
+                "workspacePath": str(self.workspace_dir),
+                "status": "pending",
+                "createdAt": "2026-01-01T00:00:00+00:00",
+                "updatedAt": "2026-01-01T00:00:00+00:00",
+                "startedAt": None,
+                "finishedAt": None,
+                "pid": None,
+                "error": None,
+            },
+        )
+
+        indexer = mock.Mock()
+        indexer.status.return_value = {"status": "indexed", "stats": {"converted": 2}}
+        with mock.patch.object(cli_module, "WorkspaceIndexer", return_value=indexer):
+            code, stdout, stderr = _run_cli(
+                [
+                    "--ns-bot-home",
+                    self.temp_dir,
+                    "workspaces",
+                    "index",
+                    "worker",
+                    "--task-id",
+                    "index_worker",
+                ]
+            )
+
+        self.assertEqual(code, 0)
+        self.assertEqual(stdout, "")
+        self.assertEqual(stderr, "")
+        record = cli_module._read_index_task_record(self.temp_dir, "index_worker")
+        self.assertEqual(record["status"], "succeeded")
+        self.assertEqual(record["manifest"]["stats"]["converted"], 2)
 
     def test_codex_adapter_maps_plan_to_todo_and_action_thought_to_reasoning(self) -> None:
         runtime_events = [
