@@ -70,6 +70,7 @@ function renderMainContent(
     onAllowPermissionRequest?: () => void
     onAllowAlwaysPermissionRequest?: () => void
     onRejectPermissionRequest?: () => void
+    onRejectAlwaysPermissionRequest?: () => void
     onCancelPermissionRequest?: () => void
   }
 ) {
@@ -105,6 +106,7 @@ function renderMainContent(
       onAllowPermissionRequest={options?.onAllowPermissionRequest ?? vi.fn()}
       onAllowAlwaysPermissionRequest={options?.onAllowAlwaysPermissionRequest ?? vi.fn()}
       onRejectPermissionRequest={options?.onRejectPermissionRequest ?? vi.fn()}
+      onRejectAlwaysPermissionRequest={options?.onRejectAlwaysPermissionRequest ?? vi.fn()}
       onCancelPermissionRequest={options?.onCancelPermissionRequest ?? vi.fn()}
       isTurnPending={options?.isTurnPending ?? false}
     />
@@ -177,6 +179,7 @@ describe("MainContent model selector", () => {
         onAllowPermissionRequest={vi.fn()}
         onAllowAlwaysPermissionRequest={vi.fn()}
         onRejectPermissionRequest={vi.fn()}
+        onRejectAlwaysPermissionRequest={vi.fn()}
         onCancelPermissionRequest={vi.fn()}
       />
     )
@@ -217,6 +220,7 @@ describe("MainContent model selector", () => {
         onAllowPermissionRequest={vi.fn()}
         onAllowAlwaysPermissionRequest={vi.fn()}
         onRejectPermissionRequest={vi.fn()}
+        onRejectAlwaysPermissionRequest={vi.fn()}
         onCancelPermissionRequest={vi.fn()}
         onOpenSettings={onOpenSettings}
       />
@@ -684,6 +688,7 @@ describe("MainContent model selector", () => {
         onAllowPermissionRequest={vi.fn()}
         onAllowAlwaysPermissionRequest={vi.fn()}
         onRejectPermissionRequest={vi.fn()}
+        onRejectAlwaysPermissionRequest={vi.fn()}
         onCancelPermissionRequest={vi.fn()}
         isTurnPending={true}
       />
@@ -758,6 +763,7 @@ describe("MainContent model selector", () => {
         onAllowPermissionRequest={vi.fn()}
         onAllowAlwaysPermissionRequest={vi.fn()}
         onRejectPermissionRequest={vi.fn()}
+        onRejectAlwaysPermissionRequest={vi.fn()}
         onCancelPermissionRequest={vi.fn()}
       />
     )
@@ -894,6 +900,7 @@ describe("MainContent model selector", () => {
         onAllowPermissionRequest={vi.fn()}
         onAllowAlwaysPermissionRequest={vi.fn()}
         onRejectPermissionRequest={vi.fn()}
+        onRejectAlwaysPermissionRequest={vi.fn()}
         onCancelPermissionRequest={vi.fn()}
       />
     )
@@ -999,6 +1006,7 @@ describe("MainContent model selector", () => {
         onAllowPermissionRequest={vi.fn()}
         onAllowAlwaysPermissionRequest={vi.fn()}
         onRejectPermissionRequest={vi.fn()}
+        onRejectAlwaysPermissionRequest={vi.fn()}
         onCancelPermissionRequest={vi.fn()}
       />
     )
@@ -1123,6 +1131,7 @@ describe("MainContent model selector", () => {
         onAllowPermissionRequest={vi.fn()}
         onAllowAlwaysPermissionRequest={vi.fn()}
         onRejectPermissionRequest={vi.fn()}
+        onRejectAlwaysPermissionRequest={vi.fn()}
         onCancelPermissionRequest={vi.fn()}
       />
     )

@@ -11,7 +11,7 @@ import subprocess
 import sys
 from pathlib import Path
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 from urllib.parse import unquote, urlparse
 
 import anyio
@@ -21,6 +21,7 @@ from nsbot_sidecar.infrastructure.repositories import create_id
 from nsbot_sidecar.infrastructure.storage import transaction
 from nsbot_sidecar.providers.provider_catalog import list_providers
 from nsbot_sidecar.runtime.engine import create_runtime_engine
+from nsbot_sidecar.runtime.sandbox import MODE_POLICIES, SessionModeId
 from nsbot_sidecar.runtime.types import (
     RunMetadata,
     RuntimeCancelledError,
@@ -37,6 +38,22 @@ _SUPPORTED_IMAGE_MIME_TYPES = {
     "image/gif",
     "image/bmp",
     "image/tiff",
+}
+
+_DEFAULT_MODE: SessionModeId = "auto"
+_MODE_DESCRIPTIONS: dict[SessionModeId, tuple[str, str]] = {
+    "read-only": (
+        "Read Only",
+        "Only read operations are auto-allowed. Writes and execution require approval.",
+    ),
+    "auto": (
+        "Default",
+        "Workspace writes are allowed. Execution and expanded permissions may request approval.",
+    ),
+    "full-access": (
+        "Full Access",
+        "All operations are auto-allowed for the session.",
+    ),
 }
 
 
@@ -199,6 +216,9 @@ class AcpJsonRpcSession:
         self._session_mcp_connections: dict[str, _SessionMcpConnection] = {}
         self._turn_plan_entries: dict[tuple[str, str], list[dict[str, Any]]] = {}
         self._turn_tool_call_statuses: dict[tuple[str, str], dict[str, str]] = {}
+        self._session_permission_overrides: dict[
+            str, dict[str, Literal["allow", "deny"]]
+        ] = {}
         self._auth_state: _AuthState | None = None
 
         self._client_capabilities: dict[str, Any] = {
@@ -252,7 +272,7 @@ class AcpJsonRpcSession:
             if method == "authenticate":
                 await self._send_result(req_id, self._handle_authenticate(params))
                 return
-            if method == "disconnect":
+            if method == "_nsbot/disconnect":
                 await self._send_result(req_id, {})
                 self._close_all_mcp_connections()
                 self._cancel_all_sessions()
@@ -438,10 +458,23 @@ class AcpJsonRpcSession:
                     )
                 await self._send_result(req_id, result)
                 return
-            if method == "session/cancel":
+            if method == "session/set_mode":
+                result = self._handle_set_mode(params)
                 session_id = str(params.get("sessionId") or "")
-                await self._cancel_session(session_id)
-                await self._send_result(req_id, {"cancelled": True})
+                mode_id = self._session_mode(session_id) if session_id else ""
+                if session_id and mode_id:
+                    await self._emit_session_update(
+                        session_id,
+                        {
+                            "sessionUpdate": "current_mode_update",
+                            "currentModeId": mode_id,
+                        },
+                    )
+                    await self._emit_config_option_update(
+                        session_id,
+                        self._config_options_for_session(session_id),
+                    )
+                await self._send_result(req_id, result)
                 return
             if method == "session/prompt":
                 self._ensure_authenticated()
@@ -499,7 +532,6 @@ class AcpJsonRpcSession:
                 },
                 "sessionCapabilities": {
                     "list": {},
-                    "resume": {},
                 },
                 "_meta": {
                     "nsbot": {
@@ -819,6 +851,39 @@ class AcpJsonRpcSession:
 
         return {"providerId": provider_id, "modelId": model_id}
 
+    def _normalize_absolute_cwd(self, cwd: str) -> str:
+        path = Path(cwd).expanduser()
+        if not path.is_absolute():
+            raise RuntimeError("cwd must be an absolute path")
+        return str(path.resolve())
+
+    def _normalize_mode_id(self, value: str | None) -> SessionModeId:
+        normalized = str(value or "").strip().lower() or _DEFAULT_MODE
+        if normalized not in MODE_POLICIES:
+            return _DEFAULT_MODE
+        return normalized  # type: ignore[return-value]
+
+    def _session_mode(self, session_id: str) -> SessionModeId:
+        config = self._session_config(session_id)
+        return self._normalize_mode_id(config.get("mode"))
+
+    def _mode_state(self, session_id: str) -> dict[str, Any]:
+        current_mode = self._session_mode(session_id)
+        available_modes: list[dict[str, Any]] = []
+        for mode_id in ("read-only", "auto", "full-access"):
+            mode_name, description = _MODE_DESCRIPTIONS[mode_id]
+            available_modes.append(
+                {
+                    "id": mode_id,
+                    "name": mode_name,
+                    "description": description,
+                }
+            )
+        return {
+            "currentModeId": current_mode,
+            "availableModes": available_modes,
+        }
+
     def _config_options_for_session(self, session_id: str) -> list[dict[str, Any]]:
         session = self.state.repositories.sessions.get_by_id(session_id)
         model_payload = self.state.provider_service.model_options_payload()
@@ -859,19 +924,21 @@ class AcpJsonRpcSession:
                 else (reasoning_values[0] if reasoning_values else "medium")
             )
 
+        current_mode = self._session_mode(session_id)
         options: list[dict[str, Any]] = [
             {
                 "id": "mode",
                 "name": "Session Mode",
                 "category": "mode",
                 "type": "select",
-                "currentValue": "ask",
+                "currentValue": current_mode,
                 "options": [
                     {
-                        "value": "ask",
-                        "name": "Ask",
-                        "description": "Only ask permission for controlled actions",
+                        "value": mode_id,
+                        "name": _MODE_DESCRIPTIONS[mode_id][0],
+                        "description": _MODE_DESCRIPTIONS[mode_id][1],
                     }
+                    for mode_id in ("read-only", "auto", "full-access")
                 ],
             }
         ]
@@ -908,6 +975,7 @@ class AcpJsonRpcSession:
         cwd = str(params.get("cwd") or params.get("workspacePath") or "").strip()
         if not cwd:
             raise RuntimeError("cwd is required")
+        cwd = self._normalize_absolute_cwd(cwd)
         mcp_servers = params.get("mcpServers")
         if not isinstance(mcp_servers, list):
             raise RuntimeError("mcpServers must be an array")
@@ -929,6 +997,7 @@ class AcpJsonRpcSession:
 
         return {
             "sessionId": session.id,
+            "modes": self._mode_state(session.id),
             "configOptions": self._config_options_for_session(session.id),
         }
 
@@ -936,7 +1005,7 @@ class AcpJsonRpcSession:
         cwd = str(params.get("cwd") or "").strip()
         workspace_id: str | None = None
         if cwd:
-            normalized = str(Path(cwd).expanduser().resolve())
+            normalized = self._normalize_absolute_cwd(cwd)
             workspace = self.state.repositories.workspaces.get_by_real_path(normalized)
             if workspace is None:
                 return {"sessions": []}
@@ -1041,13 +1110,17 @@ class AcpJsonRpcSession:
             raise RuntimeError("sessionId is required")
         if not cwd:
             raise RuntimeError("cwd is required")
+        cwd = self._normalize_absolute_cwd(cwd)
         mcp_servers = params.get("mcpServers")
         if not isinstance(mcp_servers, list):
             raise RuntimeError("mcpServers must be an array")
         self._ensure_session_exists(session_id)
         self._configure_session_mcp_servers(session_id, params)
         await self._replay_session_history(session_id)
-        return {"configOptions": self._config_options_for_session(session_id)}
+        return {
+            "modes": self._mode_state(session_id),
+            "configOptions": self._config_options_for_session(session_id),
+        }
 
     def _handle_session_resume(self, params: dict[str, Any]) -> dict[str, Any]:
         session_id = str(params.get("sessionId") or "")
@@ -1056,12 +1129,16 @@ class AcpJsonRpcSession:
             raise RuntimeError("sessionId is required")
         if not cwd:
             raise RuntimeError("cwd is required")
+        cwd = self._normalize_absolute_cwd(cwd)
         mcp_servers = params.get("mcpServers")
         if not isinstance(mcp_servers, list):
             raise RuntimeError("mcpServers must be an array")
         self._ensure_session_exists(session_id)
         self._configure_session_mcp_servers(session_id, params)
-        return {"configOptions": self._config_options_for_session(session_id)}
+        return {
+            "modes": self._mode_state(session_id),
+            "configOptions": self._config_options_for_session(session_id),
+        }
 
     def _configure_session_mcp_servers(
         self, session_id: str, params: dict[str, Any]
@@ -1091,6 +1168,9 @@ class AcpJsonRpcSession:
     def _normalize_mcp_server_parameter(self, value: Any) -> Any:
         if not isinstance(value, dict):
             raise RuntimeError("Each mcpServers entry must be an object")
+        name = str(value.get("name") or "").strip()
+        if name == "":
+            raise RuntimeError("MCP server name is required")
 
         transport_type = str(value.get("type") or "").strip().lower()
         if transport_type == "":
@@ -1105,25 +1185,22 @@ class AcpJsonRpcSession:
                 raise RuntimeError("stdio MCP server requires command")
 
             raw_args = value.get("args")
-            if raw_args is None:
-                args: list[str] = []
-            elif isinstance(raw_args, list):
+            if isinstance(raw_args, list):
                 args = [str(item) for item in raw_args]
             else:
-                raise RuntimeError("stdio MCP server args must be an array")
+                raise RuntimeError("stdio MCP server requires args array")
 
             raw_env = value.get("env")
             env_map: dict[str, str] = {}
-            if raw_env is not None:
-                if not isinstance(raw_env, list):
-                    raise RuntimeError("stdio MCP server env must be an array")
-                for item in raw_env:
-                    if not isinstance(item, dict):
-                        raise RuntimeError("stdio MCP env entries must be objects")
-                    key = str(item.get("name") or "").strip()
-                    if not key:
-                        raise RuntimeError("stdio MCP env entry name is required")
-                    env_map[key] = str(item.get("value") or "")
+            if not isinstance(raw_env, list):
+                raise RuntimeError("stdio MCP server requires env array")
+            for item in raw_env:
+                if not isinstance(item, dict):
+                    raise RuntimeError("stdio MCP env entries must be objects")
+                key = str(item.get("name") or "").strip()
+                if not key:
+                    raise RuntimeError("stdio MCP env entry name is required")
+                env_map[key] = str(item.get("value") or "")
 
             from mcp import StdioServerParameters
 
@@ -1140,16 +1217,15 @@ class AcpJsonRpcSession:
 
             raw_headers = value.get("headers")
             headers: dict[str, str] = {}
-            if raw_headers is not None:
-                if not isinstance(raw_headers, list):
-                    raise RuntimeError("http MCP server headers must be an array")
-                for item in raw_headers:
-                    if not isinstance(item, dict):
-                        raise RuntimeError("http MCP header entries must be objects")
-                    name = str(item.get("name") or "").strip()
-                    if not name:
-                        raise RuntimeError("http MCP header name is required")
-                    headers[name] = str(item.get("value") or "")
+            if not isinstance(raw_headers, list):
+                raise RuntimeError("http MCP server requires headers array")
+            for item in raw_headers:
+                if not isinstance(item, dict):
+                    raise RuntimeError("http MCP header entries must be objects")
+                header_name = str(item.get("name") or "").strip()
+                if not header_name:
+                    raise RuntimeError("http MCP header name is required")
+                headers[header_name] = str(item.get("value") or "")
 
             return {
                 "url": url,
@@ -1189,8 +1265,12 @@ class AcpJsonRpcSession:
         session = self._ensure_session_exists(session_id)
 
         if config_id == "mode":
-            if value != "ask":
-                raise RuntimeError("mode only supports ask")
+            normalized_mode = self._normalize_mode_id(value)
+            if normalized_mode != value:
+                raise RuntimeError(
+                    "mode must be one of: read-only, auto, full-access"
+                )
+            self._update_session_config_value(session_id, "mode", normalized_mode)
         elif config_id == "model":
             self.state.repositories.sessions.touch(session.id, active_model_id=value)
         elif config_id == "thought_level":
@@ -1199,6 +1279,22 @@ class AcpJsonRpcSession:
             raise RuntimeError(f"Unsupported config option: {config_id}")
 
         return {"configOptions": self._config_options_for_session(session_id)}
+
+    def _handle_set_mode(self, params: dict[str, Any]) -> dict[str, Any]:
+        session_id = str(params.get("sessionId") or "")
+        mode_id = str(params.get("modeId") or "")
+        if not session_id or not mode_id:
+            raise RuntimeError("sessionId and modeId are required")
+        self._ensure_session_exists(session_id)
+        self._handle_set_config_option(
+            {
+                "sessionId": session_id,
+                "configId": "mode",
+                "value": mode_id,
+            }
+        )
+        self._session_permission_overrides.pop(session_id, None)
+        return {}
 
     def _handle_workspace_find_entries(self, params: dict[str, Any]) -> dict[str, Any]:
         workspace_id = str(params.get("workspaceId") or params.get("workspace_id") or "").strip()
@@ -1922,9 +2018,16 @@ class AcpJsonRpcSession:
         latest_user_event_id = self._latest_editable_user_event_id(session_id)
         if latest_user_event_id != event.id:
             raise RuntimeError("Only the latest user input event can be edited")
+        content_meta = content.get("_meta")
+        nsbot_meta = (
+            content_meta.get("nsbot")
+            if isinstance(content_meta, dict)
+            and isinstance(content_meta.get("nsbot"), dict)
+            else {}
+        )
         message_text = str(
-            content.get("editableText")
-            or content.get("displayText")
+            (nsbot_meta.get("editableText") if isinstance(nsbot_meta, dict) else None)
+            or (nsbot_meta.get("displayText") if isinstance(nsbot_meta, dict) else None)
             or content.get("text")
             or ""
         )
@@ -1989,10 +2092,8 @@ class AcpJsonRpcSession:
                 if not user_text:
                     raise RuntimeError("prompt text is empty")
 
-            auto_allow = True
             meta = params.get("_meta")
-            if isinstance(meta, dict) and isinstance(meta.get("autoAllow"), bool):
-                auto_allow = bool(meta.get("autoAllow"))
+            session_mode = self._session_mode(session_id)
 
             self._session_cancelled[session_id] = False
 
@@ -2022,15 +2123,19 @@ class AcpJsonRpcSession:
                     "content": {
                         "type": "text",
                         "text": user_text,
-                        "displayText": self._display_text_from_prompt_blocks(
-                            normalized_blocks
-                        )
-                        or user_text,
-                        "editableText": self._editable_text_from_prompt_blocks(
-                            normalized_blocks
-                        )
-                        or user_text,
-                        "promptBlocks": normalized_blocks,
+                        "_meta": {
+                            "nsbot": {
+                                "displayText": self._display_text_from_prompt_blocks(
+                                    normalized_blocks
+                                )
+                                or user_text,
+                                "editableText": self._editable_text_from_prompt_blocks(
+                                    normalized_blocks
+                                )
+                                or user_text,
+                                "promptBlocks": normalized_blocks,
+                            }
+                        },
                     },
                 },
                 turn_id=turn_id,
@@ -2065,6 +2170,7 @@ class AcpJsonRpcSession:
                 workspace_path_default=workspace.real_path,
                 fd_executable=self.state.acp_app_config.fd_executable,
                 rg_executable=self.state.acp_app_config.rg_executable,
+                session_mode=session_mode,
             )
             metadata = RunMetadata(
                 workspace_path=workspace.real_path, session_key=session_id
@@ -2081,10 +2187,15 @@ class AcpJsonRpcSession:
                     "turn_id": turn_id,
                     "turnId": turn_id,
                 }
-                if auto_allow:
-                    return "allow"
                 if self._session_cancelled.get(session_id, False):
                     return "cancelled"
+                decision = self._permission_decision_for_request(
+                    session_id=session_id,
+                    mode_id=session_mode,
+                    request=enriched_request,
+                )
+                if decision != "ask":
+                    return decision
                 return anyio.from_thread.run(
                     self._request_permission,
                     session_id,
@@ -2407,6 +2518,10 @@ class AcpJsonRpcSession:
             )
 
     async def _request_permission(self, session_id: str, request: dict[str, Any]) -> str:
+        scenario = self._permission_scenario_for_request(request)
+        available_decisions = self._normalize_available_decisions(
+            request.get("availableDecisions"), scenario
+        )
         rpc_id = self._next_client_rpc_id()
         waiter = _ClientRequestWaiter(
             event=anyio.Event(),
@@ -2433,18 +2548,10 @@ class AcpJsonRpcSession:
                     "kind": kind,
                     "status": "pending",
                 },
-                "options": [
-                    {
-                        "optionId": "allow-once",
-                        "name": "Allow once",
-                        "kind": "allow_once",
-                    },
-                    {
-                        "optionId": "reject-once",
-                        "name": "Reject",
-                        "kind": "reject_once",
-                    },
-                ],
+                "options": self._permission_options_for_decisions(
+                    scenario=scenario,
+                    available_decisions=available_decisions,
+                ),
             },
         }
 
@@ -2464,12 +2571,27 @@ class AcpJsonRpcSession:
             await self._send_permission_terminal_update(
                 session_id,
                 tool_call_id,
-                "cancelled",
+                "failed",
                 turn_id,
+                reason_text="Permission request cancelled.",
             )
             return "cancelled"
 
-        if option_id.startswith("allow"):
+        if option_id in {
+            "approved",
+            "approved-for-session",
+            "approved-execpolicy-amendment",
+            "network-policy-amendment-allow",
+            "approved-always",
+            "allow-once",
+            "allow-always",
+        }:
+            if option_id in {"approved-for-session", "approved-always"}:
+                self._record_session_permission_override(
+                    session_id=session_id,
+                    request=request,
+                    decision="allow",
+                )
             await self._send_permission_terminal_update(
                 session_id,
                 tool_call_id,
@@ -2477,6 +2599,13 @@ class AcpJsonRpcSession:
                 turn_id,
             )
             return "allow"
+
+        if option_id in {"denied", "network-policy-amendment-deny"}:
+            self._record_session_permission_override(
+                session_id=session_id,
+                request=request,
+                decision="deny",
+            )
 
         await self._send_permission_terminal_update(
             session_id,
@@ -2486,20 +2615,165 @@ class AcpJsonRpcSession:
         )
         return "reject"
 
+    def _permission_scenario_for_request(self, request: dict[str, Any]) -> str:
+        scenario = str(request.get("scenario") or "").strip()
+        if scenario in {"Exec", "Patch", "RequestPermissions", "McpElicitation"}:
+            return scenario
+
+        lowered = str(request.get("kind") or "").strip().lower()
+        if lowered in {"write", "edit"}:
+            return "Patch"
+        if lowered in {"python_exec_agent", "execute", "python", "code"}:
+            return "Exec"
+        if lowered in {"mcp_tool_call", "mcp", "elicitation"}:
+            return "McpElicitation"
+        return "RequestPermissions"
+
+    def _normalize_available_decisions(self, value: Any, scenario: str) -> list[str]:
+        if isinstance(value, list):
+            normalized = [str(item).strip() for item in value if str(item).strip()]
+            if normalized:
+                return normalized
+        if scenario == "Patch":
+            return ["approved", "abort"]
+        if scenario == "Exec":
+            return ["approved", "approved-for-session", "denied", "abort"]
+        if scenario == "McpElicitation":
+            return ["approved", "approved-for-session", "approved-always", "cancel"]
+        return ["approved-for-session", "approved", "abort"]
+
+    def _permission_options_for_decisions(
+        self, *, scenario: str, available_decisions: list[str]
+    ) -> list[dict[str, str]]:
+        options: list[dict[str, str]] = []
+        for decision in available_decisions:
+            option = self._permission_option_for_decision(scenario, decision)
+            if option is not None:
+                options.append(option)
+        if not options:
+            options.append(
+                {
+                    "optionId": "abort",
+                    "name": "No",
+                    "kind": "reject_once",
+                }
+            )
+        return options
+
+    def _permission_option_for_decision(
+        self, scenario: str, decision: str
+    ) -> dict[str, str] | None:
+        mapping: dict[str, dict[str, str]] = {
+            "approved": {
+                "optionId": "approved",
+                "name": "Allow",
+                "kind": "allow_once",
+            },
+            "approved-for-session": {
+                "optionId": "approved-for-session",
+                "name": "Allow for session",
+                "kind": "allow_always",
+            },
+            "approved-execpolicy-amendment": {
+                "optionId": "approved-execpolicy-amendment",
+                "name": "Allow and remember command policy",
+                "kind": "allow_always",
+            },
+            "network-policy-amendment-allow": {
+                "optionId": "network-policy-amendment-allow",
+                "name": "Allow and remember host",
+                "kind": "allow_always",
+            },
+            "network-policy-amendment-deny": {
+                "optionId": "network-policy-amendment-deny",
+                "name": "Deny and block host",
+                "kind": "reject_always",
+            },
+            "approved-always": {
+                "optionId": "approved-always",
+                "name": "Always allow",
+                "kind": "allow_always",
+            },
+            "denied": {
+                "optionId": "denied",
+                "name": "Reject always",
+                "kind": "reject_always",
+            },
+            "abort": {
+                "optionId": "abort",
+                "name": "No",
+                "kind": "reject_once",
+            },
+            "cancel": {
+                "optionId": "cancel",
+                "name": "Cancel",
+                "kind": "reject_once",
+            },
+        }
+        option = mapping.get(decision)
+        if option is None:
+            return None
+        if scenario == "Patch" and decision == "approved":
+            return {"optionId": "approved", "name": "Yes", "kind": "allow_once"}
+        return option
+
+    def _permission_scope_key_for_request(self, request: dict[str, Any]) -> str:
+        scenario = self._permission_scenario_for_request(request)
+        if scenario == "Patch":
+            return "patch"
+        if scenario == "Exec":
+            return "exec"
+        if scenario == "McpElicitation":
+            return "mcp_tool_call"
+        return "permissions"
+
+    def _record_session_permission_override(
+        self,
+        *,
+        session_id: str,
+        request: dict[str, Any],
+        decision: Literal["allow", "deny"],
+    ) -> None:
+        scope = self._permission_scope_key_for_request(request)
+        overrides = self._session_permission_overrides.setdefault(session_id, {})
+        overrides[scope] = decision
+
+    def _permission_decision_for_request(
+        self, *, session_id: str, mode_id: SessionModeId, request: dict[str, Any]
+    ) -> Literal["allow", "reject", "ask"]:
+        if MODE_POLICIES[mode_id].approval_policy == "never":
+            return "allow"
+        scope = self._permission_scope_key_for_request(request)
+        override = self._session_permission_overrides.get(session_id, {}).get(scope)
+        if override == "allow":
+            return "allow"
+        if override == "deny":
+            return "reject"
+        return "ask"
+
     async def _send_permission_terminal_update(
         self,
         session_id: str,
         tool_call_id: str,
         status: str,
         turn_id: str | None = None,
+        reason_text: str | None = None,
     ) -> None:
+        update: dict[str, Any] = {
+            "sessionUpdate": "tool_call_update",
+            "toolCallId": tool_call_id,
+            "status": status,
+        }
+        if reason_text:
+            update["content"] = [
+                {
+                    "type": "content",
+                    "content": {"type": "text", "text": reason_text},
+                }
+            ]
         await self._emit_session_update(
             session_id,
-            {
-                "sessionUpdate": "tool_call_update",
-                "toolCallId": tool_call_id,
-                "status": status,
-            },
+            update,
             turn_id=turn_id,
             record_event=True,
         )
@@ -2520,7 +2794,16 @@ class AcpJsonRpcSession:
                 {
                     "sessionUpdate": "tool_call_update",
                     "toolCallId": call_id,
-                    "status": "cancelled",
+                    "status": "failed",
+                    "content": [
+                        {
+                            "type": "content",
+                            "content": {
+                                "type": "text",
+                                "text": "Tool call cancelled by user.",
+                            },
+                        }
+                    ],
                 },
                 turn_id=turn_id,
                 record_event=True,
@@ -2628,6 +2911,7 @@ class AcpJsonRpcSession:
             return
 
         self._session_cancelled[session_id] = True
+        self._session_permission_overrides.pop(session_id, None)
 
         to_cancel = [
             key

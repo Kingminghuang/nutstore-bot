@@ -7,12 +7,14 @@ export function MessageAcpPermission({
   onAllowOnce,
   onAllowAlways,
   onReject,
+  onRejectAlways,
   onCancelRequest,
 }: {
   request: PendingPermissionRequest
   onAllowOnce: () => void
   onAllowAlways: () => void
   onReject: () => void
+  onRejectAlways: () => void
   onCancelRequest: () => void
 }) {
   const [selectedOptionId, setSelectedOptionId] = useState<string | null>(null)
@@ -23,10 +25,13 @@ export function MessageAcpPermission({
       allow_once: request.options.find((option) => option.kind === "allow_once")?.optionId ?? null,
       allow_always: request.options.find((option) => option.kind === "allow_always")?.optionId ?? null,
       reject_once: request.options.find((option) => option.kind === "reject_once")?.optionId ?? null,
+      reject_always: request.options.find((option) => option.kind === "reject_always")?.optionId ?? null,
     }
   }, [request.options])
 
-  const selectAndSubmit = (action: "allow_once" | "allow_always" | "reject_once") => {
+  const selectAndSubmit = (
+    action: "allow_once" | "allow_always" | "reject_once" | "reject_always"
+  ) => {
     const optionId = optionMap[action]
     if (optionId) {
       setSelectedOptionId(optionId)
@@ -35,6 +40,7 @@ export function MessageAcpPermission({
     if (action === "allow_once") onAllowOnce()
     if (action === "allow_always") onAllowAlways()
     if (action === "reject_once") onReject()
+    if (action === "reject_always") onRejectAlways()
     setHasResponded(true)
   }
 
@@ -87,6 +93,15 @@ export function MessageAcpPermission({
           >
             Deny
           </button>
+          {optionMap.reject_always ? (
+            <button
+              type="button"
+              onClick={() => selectAndSubmit("reject_always")}
+              className="rounded-xl px-3 py-1.5 text-sm text-foreground/72 hover:bg-[#ede4da] transition-colors"
+            >
+              Deny always
+            </button>
+          ) : null}
           <button
             type="button"
             onClick={() => selectAndSubmit("allow_always")}

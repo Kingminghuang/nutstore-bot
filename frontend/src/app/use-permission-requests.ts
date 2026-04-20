@@ -81,7 +81,10 @@ export function usePermissionRequests({
   }, [])
 
   const getPendingPermissionOptionId = useCallback(
-    (kind: "allow_once" | "allow_always" | "reject_once", fallback: string) => {
+    (
+      kind: "allow_once" | "allow_always" | "reject_once" | "reject_always",
+      fallback: string
+    ) => {
       return pendingPermissionRequest?.options.find((option) => option.kind === kind)?.optionId ?? fallback
     },
     [pendingPermissionRequest]

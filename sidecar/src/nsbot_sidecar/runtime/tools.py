@@ -22,6 +22,8 @@ from typing import Any, Literal
 
 from smolagents import Tool
 
+from nsbot_sidecar.runtime.sandbox import EmptySandbox
+
 
 DEFAULT_TEXT_MAX_LINES = 2000
 DEFAULT_MAX_BYTES = 50 * 1024
@@ -437,6 +439,7 @@ class ToolLayer:
         timeout_ms: int = DEFAULT_TOOL_TIMEOUT_MS,
         permission_requester: Any | None = None,
         auto_allow: bool = True,
+        sandbox: EmptySandbox | None = None,
     ):
         self.os_type = _normalize_os_type(os_type)
         if self.os_type == "windows":
@@ -449,16 +452,33 @@ class ToolLayer:
         self.timeout_ms = max(1000, timeout_ms)
         self.permission_requester = permission_requester
         self.auto_allow = auto_allow
+        self.sandbox = sandbox or EmptySandbox(
+            workspace_path=self.workdir,
+            mode_id="full-access" if auto_allow else "read-only",
+        )
 
     def _request_permission(self, *, kind: str, title: str, tool_call_id: str) -> None:
+        if kind in {"write", "edit"}:
+            policy = self.sandbox.evaluate_patch()
+        else:
+            policy = self.sandbox.evaluate_dynamic_permission_request()
+
+        if policy.decision == "reject":
+            raise ToolLayerError("permission_denied", "Permission denied")
+        if policy.decision == "allow":
+            return
         if self.auto_allow or self.permission_requester is None:
             return
         decision = str(
             self.permission_requester(
                 {
                     "kind": kind,
+                    "scenario": policy.scenario,
                     "title": title,
                     "toolCallId": tool_call_id,
+                    "availableDecisions": self._available_decisions_for_scenario(
+                        policy.scenario
+                    ),
                 }
             )
         ).strip()
@@ -466,6 +486,15 @@ class ToolLayer:
             raise ToolLayerError("cancelled", "Permission request cancelled")
         if decision != "allow":
             raise ToolLayerError("permission_denied", "Permission denied")
+
+    def _available_decisions_for_scenario(self, scenario: str) -> list[str]:
+        if scenario == "Patch":
+            return ["approved", "abort"]
+        if scenario == "Exec":
+            return ["approved", "approved-for-session", "denied", "abort"]
+        if scenario == "McpElicitation":
+            return ["approved", "approved-for-session", "approved-always", "cancel"]
+        return ["approved", "approved-for-session", "abort"]
 
     def execute_tool(self, call: ToolCall, signal: Any | None = None) -> ToolResult:
         del signal
@@ -1204,6 +1233,7 @@ def build_workspace_tools(
     os_type: str | None = None,
     permission_requester: Any | None = None,
     auto_allow: bool = True,
+    sandbox: EmptySandbox | None = None,
 ):
     layer = ToolLayer(
         workspace_path=workspace_path,
@@ -1212,6 +1242,7 @@ def build_workspace_tools(
         os_type=os_type,
         permission_requester=permission_requester,
         auto_allow=auto_allow,
+        sandbox=sandbox,
     )
 
     class WorkspaceTool(Tool):

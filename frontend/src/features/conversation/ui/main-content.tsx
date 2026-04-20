@@ -93,6 +93,7 @@ interface MainContentProps {
   onAllowPermissionRequest: () => void
   onAllowAlwaysPermissionRequest: () => void
   onRejectPermissionRequest: () => void
+  onRejectAlwaysPermissionRequest: () => void
   onCancelPermissionRequest: () => void
   onOpenSettings?: () => void
   isTurnPending?: boolean
@@ -127,6 +128,7 @@ export function MainContent({
   onAllowPermissionRequest,
   onAllowAlwaysPermissionRequest,
   onRejectPermissionRequest,
+  onRejectAlwaysPermissionRequest,
   onCancelPermissionRequest,
   onOpenSettings,
   isTurnPending = false,
@@ -860,6 +862,7 @@ export function MainContent({
           onAllowAlwaysPermissionRequest()
         }}
         onRejectPermissionRequest={onRejectPermissionRequest}
+        onRejectAlwaysPermissionRequest={onRejectAlwaysPermissionRequest}
         onCancelPermissionRequest={onCancelPermissionRequest}
         renderConversationEvent={(entry) => (
           <ConversationEventView

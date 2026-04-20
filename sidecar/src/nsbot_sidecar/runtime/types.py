@@ -32,6 +32,7 @@ class RuntimeWorkerConfig:
     rg_executable: str | None = None
     tool_os_type: str | None = None
     max_steps: int = 20
+    session_mode: str = "auto"
 
 
 @dataclass(frozen=True)

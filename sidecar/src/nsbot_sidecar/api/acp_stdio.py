@@ -245,11 +245,10 @@ class _AcpSdkAgent:
         **kwargs: Any,
     ) -> dict[str, Any]:
         del kwargs
-        await self._transport.dispatch_request(
-            "session/set_config_option",
-            {"sessionId": session_id, "configId": "mode", "value": mode_id},
+        return await self._transport.dispatch_request(
+            "session/set_mode",
+            {"sessionId": session_id, "modeId": mode_id},
         )
-        return {}
 
     async def set_session_model(
         self,

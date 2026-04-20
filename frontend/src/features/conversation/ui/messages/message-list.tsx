@@ -12,6 +12,7 @@ export function MessageList({
   onAllowPermissionRequest,
   onAllowAlwaysPermissionRequest,
   onRejectPermissionRequest,
+  onRejectAlwaysPermissionRequest,
   onCancelPermissionRequest,
 }: {
   messages: ConversationMessage[]
@@ -20,6 +21,7 @@ export function MessageList({
   onAllowPermissionRequest: () => void
   onAllowAlwaysPermissionRequest: () => void
   onRejectPermissionRequest: () => void
+  onRejectAlwaysPermissionRequest: () => void
   onCancelPermissionRequest: () => void
 }) {
   return (
@@ -58,6 +60,7 @@ export function MessageList({
                 onAllowOnce={onAllowPermissionRequest}
                 onAllowAlways={onAllowAlwaysPermissionRequest}
                 onReject={onRejectPermissionRequest}
+                onRejectAlways={onRejectAlwaysPermissionRequest}
                 onCancelRequest={onCancelPermissionRequest}
               />
             )

@@ -6,6 +6,8 @@ from typing import Any
 
 from smolagents.local_python_executor import CodeOutput, LocalPythonExecutor
 
+from nsbot_sidecar.runtime.sandbox import EmptySandbox
+
 
 @dataclass
 class LocalCodeExecutor:
@@ -14,11 +16,16 @@ class LocalCodeExecutor:
     timeout_seconds: int = 30
     permission_requester: Any | None = None
     auto_allow: bool = True
+    sandbox: EmptySandbox | None = None
     _state: dict[str, Any] = field(default_factory=lambda: {"__name__": "__main__"})
     _tool_names: list[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         self._executor = LocalPythonExecutor(["*"], timeout_seconds=self.timeout_seconds)
+        self._sandbox = self.sandbox or EmptySandbox(
+            workspace_path=self.workspace_path,
+            mode_id="full-access" if self.auto_allow else "read-only",
+        )
 
     @property
     def state(self) -> dict[str, Any]:
@@ -33,11 +40,21 @@ class LocalCodeExecutor:
         self._executor.send_tools(tools)
 
     def __call__(self, code_action: str) -> CodeOutput:
-        if not self.auto_allow and self.permission_requester is not None:
+        policy = self._sandbox.evaluate_exec()
+        if policy.decision == "reject":
+            raise RuntimeError("permission_denied")
+        if policy.decision == "ask" and not self.auto_allow and self.permission_requester is not None:
             decision = str(
                 self.permission_requester(
                     {
                         "kind": "python_exec_agent",
+                        "scenario": policy.scenario,
+                        "availableDecisions": [
+                            "approved",
+                            "approved-for-session",
+                            "denied",
+                            "abort",
+                        ],
                         "toolCallId": f"{self.turn_id}:python_exec_agent",
                         "title": "Execute python code",
                     }

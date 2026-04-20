@@ -49,6 +49,7 @@ describe("MessageList ACP mapping", () => {
         onAllowPermissionRequest={vi.fn()}
         onAllowAlwaysPermissionRequest={vi.fn()}
         onRejectPermissionRequest={vi.fn()}
+        onRejectAlwaysPermissionRequest={vi.fn()}
         onCancelPermissionRequest={vi.fn()}
       />
     )
@@ -84,6 +85,7 @@ describe("MessageList ACP mapping", () => {
         onAllowPermissionRequest={vi.fn()}
         onAllowAlwaysPermissionRequest={onAllowAlwaysPermissionRequest}
         onRejectPermissionRequest={vi.fn()}
+        onRejectAlwaysPermissionRequest={vi.fn()}
         onCancelPermissionRequest={vi.fn()}
       />
     )

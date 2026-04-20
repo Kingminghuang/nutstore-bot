@@ -264,6 +264,28 @@ class AcpSessionTests(unittest.TestCase):
         self.assertEqual(response["error"]["code"], -32000)
         self.assertIn("Authentication required", response["error"]["message"])
 
+    def test_session_new_rejects_non_absolute_cwd(self) -> None:
+        transport = _InMemoryTransport(
+            [
+                {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "authenticate",
+                    "params": {"methodId": "USE_OPENAI"},
+                },
+                {
+                    "jsonrpc": "2.0",
+                    "id": 2,
+                    "method": "session/new",
+                    "params": {"cwd": "relative/path", "mcpServers": []},
+                },
+            ]
+        )
+        asyncio.run(AcpJsonRpcSession(transport, self.app_state).run())
+        response = _response_for(transport.outgoing, 2)
+        self.assertEqual(response["error"]["code"], -32000)
+        self.assertIn("absolute path", response["error"]["message"])
+
     def test_normalize_mcp_http_server_parameter(self) -> None:
         session_runner = AcpJsonRpcSession(_InMemoryTransport([]), self.app_state)
         normalized = session_runner._normalize_mcp_server_parameter(
@@ -287,6 +309,17 @@ class AcpSessionTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "not supported"):
             session_runner._normalize_mcp_server_parameter(
                 {"type": "sse", "name": "legacy-sse", "url": "https://example.com/sse"}
+            )
+
+    def test_normalize_mcp_stdio_requires_args_and_env(self) -> None:
+        session_runner = AcpJsonRpcSession(_InMemoryTransport([]), self.app_state)
+        with self.assertRaisesRegex(RuntimeError, "requires args array"):
+            session_runner._normalize_mcp_server_parameter(
+                {"name": "stdio-mcp", "command": "/bin/echo", "env": []}
+            )
+        with self.assertRaisesRegex(RuntimeError, "requires env array"):
+            session_runner._normalize_mcp_server_parameter(
+                {"name": "stdio-mcp", "command": "/bin/echo", "args": []}
             )
 
     def test_tool_kind_mapping_matches_acp_enum(self) -> None:
@@ -529,6 +562,74 @@ class AcpSessionTests(unittest.TestCase):
             if item.get("id") == "thought_level"
         )
         self.assertEqual(thought_option["currentValue"], "high")
+
+    def test_set_mode_emits_current_mode_and_config_updates(self) -> None:
+        session = self.app_state.repositories.sessions.create(
+            workspace_id=self.workspace.id,
+            active_provider_id=self.provider.provider.id,
+            active_model_id="gpt-5.4",
+        )
+        transport = _InMemoryTransport(
+            [
+                {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "session/set_mode",
+                    "params": {
+                        "sessionId": session.id,
+                        "modeId": "auto",
+                    },
+                }
+            ]
+        )
+        asyncio.run(AcpJsonRpcSession(transport, self.app_state).run())
+        response = _response_for(transport.outgoing, 1)
+        self.assertEqual(response["result"], {})
+
+        updates = [
+            payload.get("params", {}).get("update", {})
+            for payload in transport.outgoing
+            if payload.get("method") == "session/update"
+        ]
+        self.assertTrue(
+            any(update.get("sessionUpdate") == "current_mode_update" for update in updates)
+        )
+        self.assertTrue(
+            any(update.get("sessionUpdate") == "config_option_update" for update in updates)
+        )
+
+    def test_session_mode_defaults_to_auto(self) -> None:
+        session = self.app_state.repositories.sessions.create(
+            workspace_id=self.workspace.id,
+            active_provider_id=self.provider.provider.id,
+            active_model_id="gpt-5.4",
+        )
+        session_runner = AcpJsonRpcSession(_InMemoryTransport([]), self.app_state)
+        self.assertEqual(session_runner._session_mode(session.id), "auto")
+
+        state = session_runner._mode_state(session.id)
+        self.assertEqual(state["currentModeId"], "auto")
+        available_ids = {item["id"] for item in state["availableModes"]}
+        self.assertEqual(available_ids, {"read-only", "auto", "full-access"})
+
+    def test_permission_option_mapping_includes_reject_always(self) -> None:
+        session_runner = AcpJsonRpcSession(_InMemoryTransport([]), self.app_state)
+        options = session_runner._permission_options_for_decisions(
+            scenario="Exec",
+            available_decisions=["approved", "denied", "network-policy-amendment-deny"],
+        )
+        self.assertIn(
+            {"optionId": "denied", "name": "Reject always", "kind": "reject_always"},
+            options,
+        )
+        self.assertIn(
+            {
+                "optionId": "network-policy-amendment-deny",
+                "name": "Deny and block host",
+                "kind": "reject_always",
+            },
+            options,
+        )
 
     def test_update_meta_emits_session_info_update(self) -> None:
         session = self.app_state.repositories.sessions.create(
@@ -1224,7 +1325,7 @@ class AcpSessionTests(unittest.TestCase):
         self.assertEqual(updates[0]["status"], "pending")
         self.assertEqual(updates[1]["sessionUpdate"], "tool_call_update")
         self.assertEqual(updates[1]["toolCallId"], "tool_1")
-        self.assertEqual(updates[1]["status"], "cancelled")
+        self.assertEqual(updates[1]["status"], "failed")
 
     def test_edit_and_prompt_rejects_non_latest_user_event(self) -> None:
         session = self.app_state.repositories.sessions.create(

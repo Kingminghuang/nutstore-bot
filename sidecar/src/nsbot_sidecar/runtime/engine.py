@@ -34,6 +34,7 @@ from nsbot_sidecar.runtime.native_code_agent import (
     NativeCodeAgent,
     NativeToolCallingAgent,
 )
+from nsbot_sidecar.runtime.sandbox import EmptySandbox
 from nsbot_sidecar.runtime.session_manager import SessionManager
 from nsbot_sidecar.runtime.tools import build_workspace_tools, path_identity, resolve_path_arg
 from nsbot_sidecar.runtime.types import (
@@ -207,6 +208,10 @@ class SmolagentsRuntimeEngine:
             raise RuntimeProcessError("runtime_error", str(exc)) from exc
         consolidation_provider = model
 
+        sandbox = EmptySandbox(
+            workspace_path=workspace_path,
+            mode_id=self.config.session_mode,
+        )
         tools = build_workspace_tools(
             workspace_path,
             fd_executable=self.config.fd_executable,
@@ -214,6 +219,7 @@ class SmolagentsRuntimeEngine:
             os_type=self.config.tool_os_type,
             permission_requester=permission_requester,
             auto_allow=permission_requester is None,
+            sandbox=sandbox,
         )
         if self.extra_tools:
             tools = [*tools, *self.extra_tools]
@@ -223,6 +229,7 @@ class SmolagentsRuntimeEngine:
             timeout_seconds=30,
             permission_requester=permission_requester,
             auto_allow=permission_requester is None,
+            sandbox=sandbox,
         )
         code_context_prefix = _build_code_context_prefix(
             context_prompt=context_prompt,

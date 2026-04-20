@@ -66,7 +66,7 @@ class _RecordingClient(Client):
         self, options, session_id, tool_call, **kwargs
     ):  # type: ignore[override]
         del options, session_id, tool_call, kwargs
-        return {"outcome": {"outcome": "selected", "optionId": "allow-once"}}
+        return {"outcome": {"outcome": "selected", "optionId": "approved"}}
 
 
 class AcpStdioIntegrationTests(unittest.TestCase):

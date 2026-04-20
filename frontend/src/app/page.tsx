@@ -1398,6 +1398,17 @@ export default function Home() {
             pendingPermissionRequest?.sessionId
           )
         }}
+        onRejectAlwaysPermissionRequest={() => {
+          resolvePermissionRequest(
+            {
+              outcome: {
+                outcome: "selected",
+                optionId: getPendingPermissionOptionId("reject_always", "reject-always"),
+              },
+            },
+            pendingPermissionRequest?.sessionId
+          )
+        }}
         onCancelPermissionRequest={() => {
           if (
             activeSessionId != null &&

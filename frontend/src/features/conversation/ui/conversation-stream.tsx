@@ -16,6 +16,7 @@ export function ConversationStream({
   onAllowPermissionRequest,
   onAllowAlwaysPermissionRequest,
   onRejectPermissionRequest,
+  onRejectAlwaysPermissionRequest,
   onCancelPermissionRequest,
   renderConversationEvent,
   renderLivePlanningEntry,
@@ -32,6 +33,7 @@ export function ConversationStream({
   onAllowPermissionRequest: () => void
   onAllowAlwaysPermissionRequest: () => void
   onRejectPermissionRequest: () => void
+  onRejectAlwaysPermissionRequest: () => void
   onCancelPermissionRequest: () => void
   renderConversationEvent: (entry: ConversationEvent) => React.ReactNode
   renderLivePlanningEntry: (entry: { id: string; content: string; priority: "high" | "medium" | "low" | null; status: "pending" | "completed" | "failed" }) => React.ReactNode
@@ -130,6 +132,7 @@ export function ConversationStream({
             onAllowPermissionRequest={onAllowPermissionRequest}
             onAllowAlwaysPermissionRequest={onAllowAlwaysPermissionRequest}
             onRejectPermissionRequest={onRejectPermissionRequest}
+            onRejectAlwaysPermissionRequest={onRejectAlwaysPermissionRequest}
             onCancelPermissionRequest={onCancelPermissionRequest}
           />
 
