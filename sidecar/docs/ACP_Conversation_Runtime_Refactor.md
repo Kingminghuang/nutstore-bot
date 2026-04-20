@@ -16,16 +16,16 @@
 11. Phase 4 - Test replacement and expansion: 更新 [frontend/src/app/page.test.tsx](frontend/src/app/page.test.tsx)、[frontend/src/features/conversation/ui/messages/normalize-messages.test.ts](frontend/src/features/conversation/ui/messages/normalize-messages.test.ts)、[frontend/src/features/conversation/ui/messages/message-list.test.tsx](frontend/src/features/conversation/ui/messages/message-list.test.tsx) 以及 ConversationStream 相关测试，覆盖新的 runtime/composer 行为。重点验证：点击发送瞬间用户消息出现、首次发送瞬间 session row 出现、temp->real session rebind 无闪烁、hydration lag 不丢 session、tool_call_update 合并、permission 阻塞恢复、edit-and-rerun 截断回放、load earlier 保持滚动位置。此步依赖前述实现完成。
 
 **Relevant files**
-- `/Users/huangqingming/Workspace/nutstore-bot/frontend/src/app/page.tsx` — 当前 ACP 初始化、session/new、session/prompt、notification 消费、hydration、sidebar/main-content 装配都集中在这里；这里是主要拆分入口。
-- `/Users/huangqingming/Workspace/nutstore-bot/frontend/src/app/live-turn-state.ts` — 当前 optimistic session/message、live turn 和 merge 逻辑过于薄弱；应被 runtime/composer 新模型替代或大幅改写。
-- `/Users/huangqingming/Workspace/nutstore-bot/frontend/src/app/use-permission-requests.ts` — 现有 permission 状态与 liveTurn 绑定过浅，需纳入新的 turn lifecycle。
-- `/Users/huangqingming/Workspace/nutstore-bot/frontend/src/features/conversation/ui/main-content.tsx` — 当前持有过多 conversation 交互与编辑状态，并负责把 timeline/liveTurn 变成 UI；需要改为消费统一 runtime 输出。
-- `/Users/huangqingming/Workspace/nutstore-bot/frontend/src/features/conversation/ui/conversation-stream.tsx` — 当前仅是滚动容器 + list；重构后应成为纯 conversation stream 渲染层。
-- `/Users/huangqingming/Workspace/nutstore-bot/frontend/src/features/conversation/ui/messages/normalize-messages.ts` — 当前 live message 只是顺序追加；这里是迁移到 AionUi 风格 adapter/composer 的直接替换点。
-- `/Users/huangqingming/Workspace/nutstore-bot/frontend/src/features/conversation/ui/messages/message-list.tsx` — 当前按简单 `type` 分发；重构后应消费更稳定的 composed message model。
-- `/Users/huangqingming/Workspace/nutstore-bot/frontend/src/shared/api/sidecar/sidecar-client.ts` — 复用 `session/load`、`_nsbot/timeline/list`、workspace session list 和 timeline projection；必要时补充 runtime 需要的更明确 helper，但不改 sidecar 合同。
-- `/Users/huangqingming/Workspace/nutstore-bot/frontend/src/features/session/types/index.ts` — session/liveTurn/pending permission 类型会成为 runtime 的基础协议，需要重定义以支持 temp session 和 richer turn state。
-- `/Users/huangqingming/Workspace/nutstore-bot/frontend/src/app/page.test.tsx` — 已有部分 optimistic/session lag 测试，可作为重构后行为回归的骨架，但要按新 runtime 模型重写断言。
+- `../../frontend/src/app/page.tsx` — 当前 ACP 初始化、session/new、session/prompt、notification 消费、hydration、sidebar/main-content 装配都集中在这里；这里是主要拆分入口。
+- `../../frontend/src/app/live-turn-state.ts` — 当前 optimistic session/message、live turn 和 merge 逻辑过于薄弱；应被 runtime/composer 新模型替代或大幅改写。
+- `../../frontend/src/app/use-permission-requests.ts` — 现有 permission 状态与 liveTurn 绑定过浅，需纳入新的 turn lifecycle。
+- `../../frontend/src/features/conversation/ui/main-content.tsx` — 当前持有过多 conversation 交互与编辑状态，并负责把 timeline/liveTurn 变成 UI；需要改为消费统一 runtime 输出。
+- `../../frontend/src/features/conversation/ui/conversation-stream.tsx` — 当前仅是滚动容器 + list；重构后应成为纯 conversation stream 渲染层。
+- `../../frontend/src/features/conversation/ui/messages/normalize-messages.ts` — 当前 live message 只是顺序追加；这里是迁移到 AionUi 风格 adapter/composer 的直接替换点。
+- `../../frontend/src/features/conversation/ui/messages/message-list.tsx` — 当前按简单 `type` 分发；重构后应消费更稳定的 composed message model。
+- `../../frontend/src/shared/api/sidecar/sidecar-client.ts` — 复用 `session/load`、`_nsbot/timeline/list`、workspace session list 和 timeline projection；必要时补充 runtime 需要的更明确 helper，但不改 sidecar 合同。
+- `../../frontend/src/features/session/types/index.ts` — session/liveTurn/pending permission 类型会成为 runtime 的基础协议，需要重定义以支持 temp session 和 richer turn state。
+- `../../frontend/src/app/page.test.tsx` — 已有部分 optimistic/session lag 测试，可作为重构后行为回归的骨架，但要按新 runtime 模型重写断言。
 
 **Verification**
 1. 前端单测覆盖以下关键路径：首次发送时不等待 `session/new` 就看到 user bubble；首次发送时 sidebar 立即出现新 session；`session/new` 返回后 temp session 被替换为真实 session 且 active session、attachments、permission、stream 不丢失。

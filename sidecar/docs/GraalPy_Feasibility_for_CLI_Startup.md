@@ -13,24 +13,24 @@
 8. Phase 4 - 若进入正式迁移，再单独设计构建与验证矩阵。需要覆盖 Linux/macOS/Windows 目标平台、现有 dist 目录契约、launcher 对 payload 查找的兼容、runtime 资源准备、以及现有 packaged CLI smoke/E2E 测试。这个阶段不应与 feasibility spike 混在一起，以免在兼容性未证实前提前改动主构建链路。
 
 **Relevant files**
-- /home/hqm/nutstore-bot/sidecar/scripts/build_packaged_cli.sh — 当前 packaged CLI 主构建入口；确认 PyInstaller 使用 onedir、产物复制到 dist/binaries、以及 runtime/templates 与 runtime/search-tools 的 staging 逻辑。
-- /home/hqm/nutstore-bot/sidecar/scripts/build_pyinstaller_sidecar.sh — 当前 onefile 参考脚本；可用于对比 PyInstaller 形态差异，但不是 packaged CLI 主路径。
-- /home/hqm/nutstore-bot/src-tauri/src/bin/nsbot.rs — Rust launcher 入口；关键在 resolve_payload_path 和对 onedir payload 布局的假设。
-- /home/hqm/nutstore-bot/src-tauri/src/runtime/launcher.rs — runtime 初始化逻辑；确认 templates/search tools 拷贝和环境变量注入是否进入启动关键路径。
-- /home/hqm/nutstore-bot/src-tauri/src/main.rs — 桌面端 ACP stdio 连接点；适合放置 handshake 前后的阶段计时。
-- /home/hqm/nutstore-bot/sidecar/src/nsbot_sidecar/cli/__main__.py — Python CLI 模块入口；适合区分命令解析、模板准备、ACP 模式入口和普通 CLI 命令入口的启动成本。
-- /home/hqm/nutstore-bot/sidecar/src/nsbot_sidecar/cli/__init__.py — CLI package 主实现；适合分析主命令注册与运行时装配的启动成本。
-- /home/hqm/nutstore-bot/sidecar/src/nsbot_sidecar/api/acp_stdio.py — ACP stdio 主入口；确认 create_acp_app 与 initialize 前后的时间边界。
-- /home/hqm/nutstore-bot/sidecar/src/nsbot_sidecar/api/acp_app.py — ACP app 创建点；这里串起数据库、repositories、ProviderService、SessionService 和 WorkspaceSidecarIndexer。
-- /home/hqm/nutstore-bot/sidecar/src/nsbot_sidecar/application/provider_service.py — catalog_payload 触发 list_providers 的入口，适合排查 provider catalog 是否在启动或首个请求时产生显著成本。
-- /home/hqm/nutstore-bot/sidecar/src/nsbot_sidecar/providers/provider_catalog.py — provider catalog 与 litellm 相关导入点；若要优化冷启动，这是优先怀疑对象之一。
-- /home/hqm/nutstore-bot/sidecar/pyproject.toml — GraalPy feasibility 所需的关键依赖清单，用于兼容性分级与 spike 验证范围。
-- /home/hqm/nutstore-bot/sidecar/tests/e2e_packaged_cli.sh — 现有 packaged CLI 端到端验证入口；若做 GraalPy spike，至少要有同等级 smoke 验证。
-- /home/hqm/nutstore-bot/sidecar/tests/e2e_agent_cli.sh — CLI agent 路径验证入口；可用于判断迁移是否影响真实运行路径。
+- ../scripts/build_packaged_cli.sh — 当前 packaged CLI 主构建入口；确认 PyInstaller 使用 onedir、产物复制到 dist/binaries、以及 runtime/templates 与 runtime/search-tools 的 staging 逻辑。
+- ../scripts/build_pyinstaller_sidecar.sh — 当前 onefile 参考脚本；可用于对比 PyInstaller 形态差异，但不是 packaged CLI 主路径。
+- ../../src-tauri/src/bin/nsbot.rs — Rust launcher 入口；关键在 resolve_payload_path 和对 onedir payload 布局的假设。
+- ../../src-tauri/src/runtime/launcher.rs — runtime 初始化逻辑；确认 templates/search tools 拷贝和环境变量注入是否进入启动关键路径。
+- ../../src-tauri/src/main.rs — 桌面端 ACP stdio 连接点；适合放置 handshake 前后的阶段计时。
+- ../src/nsbot_sidecar/cli/__main__.py — Python CLI 模块入口；适合区分命令解析、模板准备、ACP 模式入口和普通 CLI 命令入口的启动成本。
+- ../src/nsbot_sidecar/cli/__init__.py — CLI package 主实现；适合分析主命令注册与运行时装配的启动成本。
+- ../src/nsbot_sidecar/api/acp_stdio.py — ACP stdio 主入口；确认 create_acp_app 与 initialize 前后的时间边界。
+- ../src/nsbot_sidecar/api/acp_app.py — ACP app 创建点；这里串起数据库、repositories、ProviderService、SessionService 和 WorkspaceSidecarIndexer。
+- ../src/nsbot_sidecar/application/provider_service.py — catalog_payload 触发 list_providers 的入口，适合排查 provider catalog 是否在启动或首个请求时产生显著成本。
+- ../src/nsbot_sidecar/providers/provider_catalog.py — provider catalog 与 litellm 相关导入点；若要优化冷启动，这是优先怀疑对象之一。
+- ../pyproject.toml — GraalPy feasibility 所需的关键依赖清单，用于兼容性分级与 spike 验证范围。
+- ../tests/e2e_packaged_cli.sh — 现有 packaged CLI 端到端验证入口；若做 GraalPy spike，至少要有同等级 smoke 验证。
+- ../tests/e2e_agent_cli.sh — CLI agent 路径验证入口；可用于判断迁移是否影响真实运行路径。
 
 **Verification**
 1. 在现有 PyInstaller 方案下，对 dist/nsbot 的最小命令做冷/热启动基线，例如 --help、providers list，以及桌面端 ACP initialize 完成时间，并保留分层计时日志。
-2. 运行现有 sidecar 测试中的最小相关集合，至少覆盖 /home/hqm/nutstore-bot/sidecar/tests/test_acp_stdio.py、/home/hqm/nutstore-bot/sidecar/tests/test_runtime_engine.py、/home/hqm/nutstore-bot/sidecar/tests/test_worker.py、/home/hqm/nutstore-bot/sidecar/tests/test_tools.py，确保任何启动优化没有破坏 runtime/ACP 契约。
+2. 运行现有 sidecar 测试中的最小相关集合，至少覆盖 ../tests/test_acp_stdio.py、../tests/test_runtime_engine.py、../tests/test_worker.py、../tests/test_tools.py，确保任何启动优化没有破坏 runtime/ACP 契约。
 3. 若进入 GraalPy spike，先验证在 GraalPy 解释器下直接运行 `python -m nsbot_sidecar.cli` 的最小命令，再验证打包分发形态，最后才验证与 Rust launcher 的集成。
 4. 对 GraalPy spike 记录三类结果：启动时间变化、产物布局差异、依赖兼容异常。没有这三类结果，不做迁移决策。
 5. 最终输出必须是一个明确结论：保留 PyInstaller 并优化初始化，或继续 GraalPy 迁移；不能停留在“可能更快”的模糊状态。

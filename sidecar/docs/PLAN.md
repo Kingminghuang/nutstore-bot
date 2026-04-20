@@ -9,7 +9,7 @@
 - 1) `NativeCodeAgent(CodeAgent)` → `ToolCallingAgent` + Python Code 子代理：可行。
   - 依据：当前 `smolagents 1.24.0` 已支持 `ToolCallingAgent` 与 `managed_agents`（本地已安装源码可见）。
   - 关键设计：主代理用 `ToolCallingAgent`；新增 `CodeAgent` 子代理（命名如 `python_exec_agent`）仅承接“需要执行 Python 代码”的任务，避免主循环直接跑代码。
-- 2) 强化 [`cli/__init__.py`](/Users/huangqingming/Workspace/nutstore-bot/sidecar/src/nsbot_sidecar/cli/__init__.py) 并去除 [`runtime_service.py`](/Users/huangqingming/Workspace/nutstore-bot/sidecar/src/nsbot_sidecar/runtime/runtime_service.py)：可行。
+- 2) 强化 [`cli/__init__.py`](../src/nsbot_sidecar/cli/__init__.py) 并去除 [`runtime_service.py`](../src/nsbot_sidecar/runtime/runtime_service.py)：可行。
   - 现状：CLI、API RunService、worker 都直接依赖 `AgentRuntimeService`，要先抽象 runtime 接口再迁移调用方。
   - 建议：保留一个薄兼容层（deprecated facade）过渡 1-2 个迭代，最后删文件。
 - 3) agent loop 使用 agent-os 沙箱：可行但有前置约束。
@@ -24,7 +24,7 @@
 
 ### 实施顺序（强约束依赖顺序）
 1. **Phase 0: Runtime 抽象先行（不改行为）**
-- 新建 Runtime 接口（如 `RuntimeEngine`）与统一输入输出 DTO，先把 [`cli/__init__.py`](/Users/huangqingming/Workspace/nutstore-bot/sidecar/src/nsbot_sidecar/cli/__init__.py)、[`turn_service.py`](/Users/huangqingming/Workspace/nutstore-bot/sidecar/src/nsbot_sidecar/application/turn_service.py)、[`worker.py`](/Users/huangqingming/Workspace/nutstore-bot/sidecar/src/nsbot_sidecar/runtime/worker.py) 改为依赖接口，不直接依赖 `AgentRuntimeService`。
+- 新建 Runtime 接口（如 `RuntimeEngine`）与统一输入输出 DTO，先把 [`cli/__init__.py`](../src/nsbot_sidecar/cli/__init__.py)、[`turn_service.py`](../src/nsbot_sidecar/application/turn_service.py)、[`worker.py`](../src/nsbot_sidecar/runtime/worker.py) 改为依赖接口，不直接依赖 `AgentRuntimeService`。
 - 验收：现有 run.* 行为与测试不变。
 
 2. **Phase 1: Agent 内核替换（CodeAgent → ToolCallingAgent + Code 子代理）**
@@ -48,7 +48,7 @@
 - 验收：可被 ACP 客户端（如 Zed/CLI）完成 initialize→new→prompt→cancel 基本流程。
 
 6. **Phase 5: 删除 runtime_service 与收口**
-- 删除 [`runtime_service.py`](/Users/huangqingming/Workspace/nutstore-bot/sidecar/src/nsbot_sidecar/runtime/runtime_service.py) 与旧导出，清理引用与文档。
+- 删除 [`runtime_service.py`](../src/nsbot_sidecar/runtime/runtime_service.py) 与旧导出，清理引用与文档。
 - 验收：仓库无 runtime_service 依赖；CLI 成为 sidecar 统一入口与编排基准。
 
 ### 接口/类型的关键变更
