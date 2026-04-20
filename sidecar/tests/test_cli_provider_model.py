@@ -358,6 +358,432 @@ class CliProviderModelTests(unittest.TestCase):
         self.assertEqual(payload["workspace_id"], "workspace_x")
         self.assertEqual(payload["thread_id"], "thread_x")
 
+    def test_codex_adapter_maps_plan_to_todo_and_action_thought_to_reasoning(self) -> None:
+        runtime_events = [
+            {
+                "type": "timeline_entry",
+                "payload": {
+                    "entry_kind": "planning",
+                    "step_id": "step-1",
+                    "content_text": "1. Search repo\n2. Implement adapter",
+                },
+            },
+            {
+                "type": "timeline_entry",
+                "payload": {
+                    "entry_kind": "action",
+                    "step_id": "step-2",
+                    "content_json": json.dumps(
+                        {
+                            "thought": "I should inspect the CLI flow first.",
+                            "toolCalls": [],
+                            "usage": {"inputTokens": 2, "outputTokens": 3},
+                        }
+                    ),
+                },
+            },
+        ]
+
+        events = cli_module._build_codex_thread_events(
+            thread_id="thread_x",
+            turn_id="run_x",
+            runtime_events=runtime_events,
+            runtime_result={"final_answer": None},
+        )
+
+        self.assertEqual(events[0]["type"], "thread.started")
+        self.assertEqual(events[1]["type"], "turn.started")
+        todo_started = next(
+            event
+            for event in events
+            if event["type"] == "item.started"
+            and event["item"]["type"] == "todo_list"
+        )
+        self.assertEqual(
+            [item["text"] for item in todo_started["item"]["items"]],
+            ["Search repo", "Implement adapter"],
+        )
+        reasoning_completed = next(
+            event
+            for event in events
+            if event["type"] == "item.completed"
+            and event["item"]["type"] == "reasoning"
+        )
+        self.assertEqual(
+            reasoning_completed["item"]["text"],
+            "I should inspect the CLI flow first.",
+        )
+        self.assertEqual(events[-1]["type"], "turn.completed")
+        self.assertEqual(events[-1]["usage"]["input_tokens"], 2)
+        self.assertEqual(events[-1]["usage"]["output_tokens"], 3)
+
+    def test_codex_adapter_maps_tool_families_and_final_answer_fallback(self) -> None:
+        runtime_events = [
+            {
+                "type": "timeline_entry",
+                "payload": {
+                    "entry_kind": "action",
+                    "step_id": "step-tools",
+                    "content_json": json.dumps(
+                        {
+                            "toolCalls": [
+                                {
+                                    "id": "call_grep",
+                                    "name": "grep",
+                                    "argumentsText": json.dumps(
+                                        {"pattern": "todo", "path": "docs"}
+                                    ),
+                                },
+                                {
+                                    "id": "call_find",
+                                    "name": "find",
+                                    "argumentsText": json.dumps(
+                                        {"pattern": "*.md", "path": "."}
+                                    ),
+                                },
+                                {
+                                    "id": "call_read",
+                                    "name": "read",
+                                    "argumentsText": json.dumps({"path": "README.md"}),
+                                },
+                                {
+                                    "id": "call_write",
+                                    "name": "write",
+                                    "argumentsText": json.dumps(
+                                        {"path": "notes.txt", "content": "hello"}
+                                    ),
+                                },
+                                {
+                                    "id": "call_py",
+                                    "name": "python_exec_agent",
+                                    "argumentsText": json.dumps({"code": "print(1)"}),
+                                },
+                            ],
+                            "toolResults": [
+                                {
+                                    "callId": "call_grep",
+                                    "content": [
+                                        {"type": "text", "text": "docs/a.txt:1: todo"}
+                                    ],
+                                },
+                                {
+                                    "callId": "call_find",
+                                    "content": [{"type": "text", "text": "README.md"}],
+                                },
+                                {
+                                    "callId": "call_read",
+                                    "content": [{"type": "text", "text": "file content"}],
+                                },
+                                {
+                                    "callId": "call_write",
+                                    "content": [{"type": "text", "text": "write ok"}],
+                                    "details": {"mutationKind": "add"},
+                                },
+                                {
+                                    "callId": "call_py",
+                                    "content": [{"type": "text", "text": "1"}],
+                                },
+                            ],
+                            "usage": {"inputTokens": 4, "outputTokens": 6},
+                        }
+                    ),
+                },
+            }
+        ]
+
+        events = cli_module._build_codex_thread_events(
+            thread_id="thread_x",
+            turn_id="run_tools",
+            runtime_events=runtime_events,
+            runtime_result={"final_answer": "done"},
+        )
+
+        grep_started = next(
+            event
+            for event in events
+            if event["type"] == "item.started" and event["item"]["id"] == "call_grep"
+        )
+        self.assertEqual(grep_started["item"]["type"], "command_execution")
+        self.assertEqual(grep_started["item"]["command"], "rg todo docs")
+
+        find_completed = next(
+            event
+            for event in events
+            if event["type"] == "item.completed" and event["item"]["id"] == "call_find"
+        )
+        self.assertEqual(find_completed["item"]["type"], "command_execution")
+        self.assertEqual(find_completed["item"]["exit_code"], 0)
+
+        read_completed = next(
+            event
+            for event in events
+            if event["type"] == "item.completed" and event["item"]["id"] == "call_read"
+        )
+        self.assertEqual(read_completed["item"]["type"], "mcp_tool_call")
+        self.assertEqual(read_completed["item"]["tool"], "read")
+
+        write_completed = next(
+            event
+            for event in events
+            if event["type"] == "item.completed" and event["item"]["id"] == "call_write"
+        )
+        self.assertEqual(write_completed["item"]["type"], "file_change")
+        self.assertEqual(write_completed["item"]["changes"][0]["path"], "notes.txt")
+        self.assertEqual(write_completed["item"]["changes"][0]["kind"], "add")
+
+        py_completed = next(
+            event
+            for event in events
+            if event["type"] == "item.completed" and event["item"]["id"] == "call_py"
+        )
+        self.assertEqual(py_completed["item"]["type"], "command_execution")
+        self.assertEqual(py_completed["item"]["command"], "python_exec_agent print(1)")
+
+        final_message = next(
+            event
+            for event in events
+            if event["type"] == "item.completed"
+            and event["item"]["type"] == "agent_message"
+        )
+        self.assertEqual(final_message["item"]["text"], "done")
+
+    def test_agent_run_json_returns_codex_thread_events(self) -> None:
+        class _FakeDb:
+            def close(self) -> None:
+                return None
+
+        class _FakeSessionService:
+            def list_timeline_payload(self, _session_id: str) -> dict[str, object]:
+                return {"events": []}
+
+        runtime_events = [
+            {
+                "type": "delta",
+                "payload": {"step_id": "step-1", "text": "Hello"},
+            }
+        ]
+        with mock.patch.object(
+            cli_module,
+            "_resolve_run_target",
+            return_value=(
+                object(),
+                {"mode": "default-provider"},
+                "provider_x",
+                "model_x",
+            ),
+        ), mock.patch.object(
+            cli_module,
+            "_resolve_thread_context",
+            return_value=(
+                "thread_x",
+                cli_module.RunMetadata(workspace_path="/tmp/workspace", session_key=None),
+                {"workspaceId": "workspace_x"},
+            ),
+        ), mock.patch.object(
+            cli_module,
+            "_execute_agent_turn",
+            return_value={
+                "runtimeEvents": runtime_events,
+                "result": {"final_answer": "Hello", "deltas": [], "session_messages": []},
+                "finalAnswer": "Hello",
+            },
+        ), mock.patch.object(
+            cli_module,
+            "_build_session_service",
+            return_value=(_FakeDb(), object(), _FakeSessionService()),
+        ):
+            code, stdout, stderr = _run_cli(
+                [
+                    "--ns-bot-home",
+                    self.temp_dir,
+                    "agent",
+                    "run",
+                    "--prompt",
+                    "hello",
+                    "--json",
+                ]
+            )
+
+        self.assertEqual(code, 0)
+        self.assertEqual(stderr, "")
+        payload = json.loads(stdout)
+        self.assertEqual(payload["thread_id"], "thread_x")
+        self.assertEqual(payload["events"][0]["type"], "thread.started")
+        self.assertEqual(payload["events"][1]["type"], "turn.started")
+        completed_message = next(
+            event
+            for event in payload["events"]
+            if event["type"] == "item.completed"
+            and event["item"]["type"] == "agent_message"
+        )
+        self.assertEqual(completed_message["item"]["text"], "Hello")
+        self.assertEqual(payload["final_answer"], "Hello")
+        self.assertNotIn("timeline", payload)
+        self.assertNotIn("deprecated", payload)
+
+    def test_agent_run_json_can_include_deprecated_timeline_rows(self) -> None:
+        run_id = "run_1234567890abcdef"
+
+        class _FakeDb:
+            def close(self) -> None:
+                return None
+
+        class _FakeSessionService:
+            def list_timeline_payload(self, _session_id: str) -> dict[str, object]:
+                return {
+                    "events": [
+                        {
+                            "sequenceNo": 1,
+                            "turnId": run_id,
+                            "eventType": "acp.event",
+                            "payload": {"type": "turn.started"},
+                            "createdAt": "2026-01-01T00:00:00Z",
+                        }
+                    ]
+                }
+
+        runtime_events = [
+            {
+                "type": "delta",
+                "payload": {"step_id": "step-1", "text": "Hello"},
+            }
+        ]
+        with mock.patch.object(
+            cli_module,
+            "_resolve_run_target",
+            return_value=(
+                object(),
+                {"mode": "default-provider"},
+                "provider_x",
+                "model_x",
+            ),
+        ), mock.patch.object(
+            cli_module,
+            "_resolve_thread_context",
+            return_value=(
+                "thread_x",
+                cli_module.RunMetadata(workspace_path="/tmp/workspace", session_key=None),
+                {"workspaceId": "workspace_x"},
+            ),
+        ), mock.patch.object(
+            cli_module,
+            "_execute_agent_turn",
+            return_value={
+                "runtimeEvents": runtime_events,
+                "result": {"final_answer": "Hello", "deltas": [], "session_messages": []},
+                "finalAnswer": "Hello",
+            },
+        ), mock.patch.object(
+            cli_module,
+            "_build_session_service",
+            return_value=(_FakeDb(), object(), _FakeSessionService()),
+        ), mock.patch.object(
+            cli_module.uuid,
+            "uuid4",
+            return_value=mock.Mock(hex="1234567890abcdef"),
+        ):
+            code, stdout, stderr = _run_cli(
+                [
+                    "--ns-bot-home",
+                    self.temp_dir,
+                    "agent",
+                    "run",
+                    "--prompt",
+                    "hello",
+                    "--json",
+                    "--include-timeline",
+                ]
+            )
+
+        self.assertEqual(code, 0)
+        self.assertEqual(stderr, "")
+        payload = json.loads(stdout)
+        self.assertEqual(payload["timeline"], [
+            {
+                "offset": 1,
+                "run_id": run_id,
+                "thread_id": "thread_x",
+                "event_type": "turn.started",
+                "payload": {"type": "turn.started"},
+                "created_at": "2026-01-01T00:00:00Z",
+            }
+        ])
+        self.assertIn("deprecated", payload)
+        self.assertIn("timeline", payload["deprecated"])
+        self.assertIn("Use events", payload["deprecated"]["timeline"])
+
+    def test_agent_run_json_failure_returns_turn_failed_event(self) -> None:
+        class _FakeDb:
+            def close(self) -> None:
+                return None
+
+        class _FakeSessionService:
+            def list_timeline_payload(self, _session_id: str) -> dict[str, object]:
+                return {"events": []}
+
+        with mock.patch.object(
+            cli_module,
+            "_resolve_run_target",
+            return_value=(
+                object(),
+                {"mode": "default-provider"},
+                "provider_x",
+                "model_x",
+            ),
+        ), mock.patch.object(
+            cli_module,
+            "_resolve_thread_context",
+            return_value=(
+                "thread_x",
+                cli_module.RunMetadata(workspace_path="/tmp/workspace", session_key=None),
+                {"workspaceId": "workspace_x"},
+            ),
+        ), mock.patch.object(
+            cli_module,
+            "_execute_agent_turn",
+            side_effect=cli_module._CliTurnExecutionError(
+                "runtime exploded",
+                runtime_events=[
+                    {
+                        "type": "timeline_entry",
+                        "payload": {
+                            "entry_kind": "planning",
+                            "step_id": "step-1",
+                            "content_text": "1. Try task",
+                        },
+                    }
+                ],
+            ),
+        ), mock.patch.object(
+            cli_module,
+            "_build_session_service",
+            return_value=(_FakeDb(), object(), _FakeSessionService()),
+        ):
+            code, stdout, stderr = _run_cli(
+                [
+                    "--ns-bot-home",
+                    self.temp_dir,
+                    "agent",
+                    "run",
+                    "--prompt",
+                    "hello",
+                    "--json",
+                ]
+            )
+
+        self.assertEqual(code, 0)
+        self.assertEqual(stderr, "")
+        payload = json.loads(stdout)
+        self.assertEqual(payload["error"], "runtime exploded")
+        self.assertEqual(payload["events"][-1]["type"], "turn.failed")
+        self.assertEqual(payload["events"][-1]["error"]["message"], "runtime exploded")
+        todo_started = next(
+            event
+            for event in payload["events"]
+            if event["type"] == "item.started" and event["item"]["type"] == "todo_list"
+        )
+        self.assertEqual(todo_started["item"]["items"][0]["text"], "Try task")
+
     def test_models_enable_is_removed(self) -> None:
         code, stdout, stderr = _run_cli(
             [
@@ -408,6 +834,7 @@ class CliProviderModelTests(unittest.TestCase):
         self.assertIn("--model", stdout)
         self.assertIn("--background", stdout)
         self.assertIn("--json", stdout)
+        self.assertIn("--include-timeline", stdout)
         self.assertIn("--db-path", stdout)
         self.assertNotIn("--turn-id", stdout)
         self.assertNotIn("--workspace-path", stdout)

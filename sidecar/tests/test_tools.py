@@ -316,6 +316,27 @@ class ToolLayerTests(unittest.TestCase):
         self.assertFalse(edit_result["is_error"])
         self.assertEqual([item["kind"] for item in captured], ["write", "edit"])
 
+    def test_write_details_report_add_for_new_file(self) -> None:
+        layer = ToolLayer(str(self.workspace))
+        result = layer.execute_tool_dict(
+            "write",
+            {"path": "new-file.txt", "content": "hello"},
+        )
+
+        self.assertFalse(result["is_error"])
+        self.assertEqual(result["details"]["mutationKind"], "add")
+
+    def test_write_details_report_update_for_existing_file(self) -> None:
+        (self.workspace / "existing.txt").write_text("before", encoding="utf-8")
+        layer = ToolLayer(str(self.workspace))
+        result = layer.execute_tool_dict(
+            "write",
+            {"path": "existing.txt", "content": "after"},
+        )
+
+        self.assertFalse(result["is_error"])
+        self.assertEqual(result["details"]["mutationKind"], "update")
+
     def test_read_tool_does_not_request_permission(self) -> None:
         requested = False
 

@@ -99,6 +99,7 @@ class ToolDetails:
     linesTruncated: bool | None = None
     diff: str | None = None
     firstChangedLine: int | None = None
+    mutationKind: Literal["add", "update"] | None = None
 
 
 @dataclass(frozen=True)
@@ -1091,6 +1092,7 @@ if __name__ == "__main__":
         path = self._require_string(args, "path")
         content = self._require_string(args, "content", allow_empty=True)
         target = self._checked_path(path)
+        existed_before = target.exists()
         self._request_permission(
             kind="write",
             title=f"Write file {target}",
@@ -1100,7 +1102,8 @@ if __name__ == "__main__":
         target.write_text(content, encoding="utf-8")
         byte_count = len(content.encode("utf-8"))
         text = f"Successfully wrote {byte_count} bytes to {target}"
-        return [TextContent(type="text", text=text)], None
+        details = ToolDetails(mutationKind="update" if existed_before else "add")
+        return [TextContent(type="text", text=text)], details
 
     def _tool_edit(self, args: dict[str, Any]) -> tuple[list[ToolContentItem], ToolDetails | None]:
         path = self._require_string(args, "path")
