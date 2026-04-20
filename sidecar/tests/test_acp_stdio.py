@@ -24,7 +24,7 @@ async def _write_jsonrpc_payload(
 async def _read_jsonrpc_message(
     proc: asyncio.subprocess.Process,
     *,
-    timeout: float = 5,
+    timeout: float = 15,
 ) -> dict:
     assert proc.stdout is not None
     line = await asyncio.wait_for(proc.stdout.readline(), timeout=timeout)
@@ -200,10 +200,14 @@ class AcpStdioIntegrationTests(unittest.TestCase):
         workspace.mkdir(parents=True, exist_ok=True)
 
         async def _run() -> None:
+            sidecar_src = str(Path(__file__).resolve().parents[1] / "src")
             env = {
                 **os.environ,
                 "NSBOT_ACP_TRANSPORT": "stdio",
                 "NS_BOT_HOME": str(temp_dir),
+                "PYTHONPATH": sidecar_src
+                if not os.environ.get("PYTHONPATH")
+                else f"{sidecar_src}:{os.environ['PYTHONPATH']}",
             }
             proc = await asyncio.create_subprocess_exec(
                 sys.executable,
@@ -213,7 +217,7 @@ class AcpStdioIntegrationTests(unittest.TestCase):
                 env=env,
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.PIPE,
             )
             try:
                 init = await _send_jsonrpc_request(

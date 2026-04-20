@@ -585,6 +585,7 @@ class RuntimeEngineTests(unittest.TestCase):
             metadata=metadata,
             event_callback=callback,
             is_cancelled=is_cancelled,
+            images=None,
         )
 
     def test_collect_tool_results_by_call_id_from_nested_action_output(self) -> None:

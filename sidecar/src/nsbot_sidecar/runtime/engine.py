@@ -94,6 +94,7 @@ class SmolagentsRuntimeEngine:
         event_callback: Callable[[dict[str, Any]], None] | None = None,
         is_cancelled: Callable[[], bool] | None = None,
         permission_requester: Callable[[dict[str, Any]], str] | None = None,
+        images: list[str] | None = None,
     ) -> RuntimeResult:
         return await anyio.to_thread.run_sync(
             self._process_sync,
@@ -104,6 +105,7 @@ class SmolagentsRuntimeEngine:
             event_callback,
             is_cancelled,
             permission_requester,
+            images,
         )
 
     def _process_sync(
@@ -115,6 +117,7 @@ class SmolagentsRuntimeEngine:
         event_callback: Callable[[dict[str, Any]], None] | None = None,
         is_cancelled: Callable[[], bool] | None = None,
         permission_requester: Callable[[dict[str, Any]], str] | None = None,
+        images: list[str] | None = None,
     ) -> RuntimeResult:
         del auth_context
 
@@ -274,7 +277,7 @@ class SmolagentsRuntimeEngine:
         task = self._compose_task_with_history(user_input, session)
 
         try:
-            stream: Any = agent.run(task, stream=True, reset=True)
+            stream: Any = agent.run(task, images=images or [], stream=True, reset=True)
             for event in stream:
                 if is_cancelled is not None and is_cancelled():
                     raise RuntimeCancelledError()

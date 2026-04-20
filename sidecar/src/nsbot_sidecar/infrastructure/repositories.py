@@ -125,32 +125,6 @@ class AcpEventLogRecord:
     created_at: str
 
 
-@dataclass(frozen=True)
-class AttachmentRecord:
-    id: str
-    session_id: str
-    workspace_id: str
-    file_name: str
-    mime_type: str
-    size_bytes: int
-    storage_path: str
-    status: str
-    created_at: str
-    updated_at: str
-
-
-@dataclass(frozen=True)
-class DraftAttachmentRecord:
-    id: str
-    workspace_id: str
-    file_name: str
-    mime_type: str
-    size_bytes: int
-    storage_path: str
-    created_at: str
-    updated_at: str
-
-
 class WorkspacesRepository:
     def __init__(self, connection: sqlite3.Connection):
         self.connection = connection
@@ -741,206 +715,6 @@ class AcpEventLogRepository:
         return int(row[0]) + 1 if row is not None else 1
 
 
-class AttachmentsRepository:
-    def __init__(self, connection: sqlite3.Connection):
-        self.connection = connection
-
-    def create(
-        self,
-        *,
-        session_id: str,
-        workspace_id: str,
-        file_name: str,
-        mime_type: str,
-        size_bytes: int,
-        storage_path: str,
-        status: str = "uploaded",
-        attachment_id: str | None = None,
-    ) -> AttachmentRecord:
-        record_id = attachment_id or create_id("att")
-        now = now_iso_timestamp()
-        self.connection.execute(
-            """
-            INSERT INTO attachments (
-                id, session_id, workspace_id, file_name, mime_type,
-                size_bytes, storage_path, status, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                record_id,
-                session_id,
-                workspace_id,
-                file_name,
-                mime_type,
-                size_bytes,
-                storage_path,
-                status,
-                now,
-                now,
-            ),
-        )
-        self.connection.commit()
-        return self.get_by_id(record_id)
-
-    def get_by_id(self, attachment_id: str) -> AttachmentRecord:
-        row = self.connection.execute(
-            "SELECT * FROM attachments WHERE id = ?", (attachment_id,)
-        ).fetchone()
-        if row is None:
-            raise ValueError(f"Attachment not found: {attachment_id}")
-        return _map_attachment(row)
-
-    def list_by_session_id(
-        self, session_id: str, *, statuses: list[str] | None = None
-    ) -> list[AttachmentRecord]:
-        if statuses is None:
-            rows = self.connection.execute(
-                """
-                SELECT * FROM attachments
-                WHERE session_id = ?
-                ORDER BY created_at ASC, id ASC
-                """,
-                (session_id,),
-            ).fetchall()
-            return [_map_attachment(row) for row in rows]
-
-        placeholders = ",".join("?" for _ in statuses)
-        rows = self.connection.execute(
-            f"""
-            SELECT * FROM attachments
-            WHERE session_id = ? AND status IN ({placeholders})
-            ORDER BY created_at ASC, id ASC
-            """,
-            (session_id, *statuses),
-        ).fetchall()
-        return [_map_attachment(row) for row in rows]
-
-    def list_by_ids(self, attachment_ids: list[str]) -> list[AttachmentRecord]:
-        if not attachment_ids:
-            return []
-        placeholders = ",".join("?" for _ in attachment_ids)
-        rows = self.connection.execute(
-            f"SELECT * FROM attachments WHERE id IN ({placeholders})",
-            tuple(attachment_ids),
-        ).fetchall()
-        return [_map_attachment(row) for row in rows]
-
-    def list_by_workspace_id(self, workspace_id: str) -> list[AttachmentRecord]:
-        rows = self.connection.execute(
-            """
-            SELECT * FROM attachments
-            WHERE workspace_id = ?
-            ORDER BY created_at ASC, id ASC
-            """,
-            (workspace_id,),
-        ).fetchall()
-        return [_map_attachment(row) for row in rows]
-
-    def update_status(self, attachment_id: str, status: str) -> AttachmentRecord:
-        self.connection.execute(
-            "UPDATE attachments SET status = ?, updated_at = ? WHERE id = ?",
-            (status, now_iso_timestamp(), attachment_id),
-        )
-        self.connection.commit()
-        return self.get_by_id(attachment_id)
-
-    def delete_by_id(self, attachment_id: str) -> None:
-        self.connection.execute(
-            "DELETE FROM attachments WHERE id = ?", (attachment_id,)
-        )
-        self.connection.commit()
-
-    def delete_by_session_id(self, session_id: str) -> None:
-        self.connection.execute(
-            "DELETE FROM attachments WHERE session_id = ?",
-            (session_id,),
-        )
-        self.connection.commit()
-
-
-class DraftAttachmentsRepository:
-    def __init__(self, connection: sqlite3.Connection):
-        self.connection = connection
-
-    def create(
-        self,
-        *,
-        workspace_id: str,
-        file_name: str,
-        mime_type: str,
-        size_bytes: int,
-        storage_path: str,
-        draft_attachment_id: str | None = None,
-    ) -> DraftAttachmentRecord:
-        record_id = draft_attachment_id or create_id("draftatt")
-        now = now_iso_timestamp()
-        self.connection.execute(
-            """
-            INSERT INTO draft_attachments (
-                id, workspace_id, file_name, mime_type, size_bytes, storage_path, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                record_id,
-                workspace_id,
-                file_name,
-                mime_type,
-                size_bytes,
-                storage_path,
-                now,
-                now,
-            ),
-        )
-        self.connection.commit()
-        return self.get_by_id(record_id)
-
-    def get_by_id(self, draft_attachment_id: str) -> DraftAttachmentRecord:
-        row = self.connection.execute(
-            "SELECT * FROM draft_attachments WHERE id = ?",
-            (draft_attachment_id,),
-        ).fetchone()
-        if row is None:
-            raise ValueError(f"Draft attachment not found: {draft_attachment_id}")
-        return _map_draft_attachment(row)
-
-    def list_by_workspace_id(self, workspace_id: str) -> list[DraftAttachmentRecord]:
-        rows = self.connection.execute(
-            """
-            SELECT * FROM draft_attachments
-            WHERE workspace_id = ?
-            ORDER BY created_at ASC, id ASC
-            """,
-            (workspace_id,),
-        ).fetchall()
-        return [_map_draft_attachment(row) for row in rows]
-
-    def list_by_ids(
-        self, draft_attachment_ids: list[str]
-    ) -> list[DraftAttachmentRecord]:
-        if not draft_attachment_ids:
-            return []
-        placeholders = ",".join("?" for _ in draft_attachment_ids)
-        rows = self.connection.execute(
-            f"SELECT * FROM draft_attachments WHERE id IN ({placeholders})",
-            tuple(draft_attachment_ids),
-        ).fetchall()
-        return [_map_draft_attachment(row) for row in rows]
-
-    def delete_by_id(self, draft_attachment_id: str) -> None:
-        self.connection.execute(
-            "DELETE FROM draft_attachments WHERE id = ?",
-            (draft_attachment_id,),
-        )
-        self.connection.commit()
-
-    def delete_by_workspace_id(self, workspace_id: str) -> None:
-        self.connection.execute(
-            "DELETE FROM draft_attachments WHERE workspace_id = ?",
-            (workspace_id,),
-        )
-        self.connection.commit()
-
-
 @dataclass(frozen=True)
 class Repositories:
     workspaces: WorkspacesRepository
@@ -948,8 +722,6 @@ class Repositories:
     default_model_selection: DefaultModelSelectionRepository
     sessions: SessionsRepository
     acp_event_log: AcpEventLogRepository
-    attachments: AttachmentsRepository
-    draft_attachments: DraftAttachmentsRepository
 
 
 def create_repositories(connection: sqlite3.Connection) -> Repositories:
@@ -959,8 +731,6 @@ def create_repositories(connection: sqlite3.Connection) -> Repositories:
         default_model_selection=DefaultModelSelectionRepository(connection),
         sessions=SessionsRepository(connection),
         acp_event_log=AcpEventLogRepository(connection),
-        attachments=AttachmentsRepository(connection),
-        draft_attachments=DraftAttachmentsRepository(connection),
     )
 
 
@@ -1054,34 +824,6 @@ def _map_acp_event(row: sqlite3.Row) -> AcpEventLogRecord:
         event_type=str(row["event_type"]),
         event_json=str(row["event_json"]),
         created_at=str(row["created_at"]),
-    )
-
-
-def _map_attachment(row: sqlite3.Row) -> AttachmentRecord:
-    return AttachmentRecord(
-        id=str(row["id"]),
-        session_id=str(row["session_id"]),
-        workspace_id=str(row["workspace_id"]),
-        file_name=str(row["file_name"]),
-        mime_type=str(row["mime_type"]),
-        size_bytes=int(row["size_bytes"]),
-        storage_path=str(row["storage_path"]),
-        status=str(row["status"]),
-        created_at=str(row["created_at"]),
-        updated_at=str(row["updated_at"]),
-    )
-
-
-def _map_draft_attachment(row: sqlite3.Row) -> DraftAttachmentRecord:
-    return DraftAttachmentRecord(
-        id=str(row["id"]),
-        workspace_id=str(row["workspace_id"]),
-        file_name=str(row["file_name"]),
-        mime_type=str(row["mime_type"]),
-        size_bytes=int(row["size_bytes"]),
-        storage_path=str(row["storage_path"]),
-        created_at=str(row["created_at"]),
-        updated_at=str(row["updated_at"]),
     )
 
 

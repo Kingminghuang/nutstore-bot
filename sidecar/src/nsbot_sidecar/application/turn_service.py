@@ -14,6 +14,7 @@ async def execute_runtime_turn(
     metadata: RunMetadata,
     event_callback: Callable[[dict[str, Any]], None] | None = None,
     is_cancelled: Callable[[], bool] | None = None,
+    images: list[str] | None = None,
 ) -> dict[str, Any]:
     """Forward runtime execution through RuntimeEngine."""
     engine = create_runtime_engine(config)
@@ -24,4 +25,5 @@ async def execute_runtime_turn(
         metadata=metadata,
         event_callback=event_callback,
         is_cancelled=is_cancelled,
+        images=images,
     )

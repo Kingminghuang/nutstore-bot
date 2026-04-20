@@ -157,35 +157,6 @@ ON acp_event_log(session_id, sequence_no);
 CREATE INDEX IF NOT EXISTS idx_acp_event_log_session_created
 ON acp_event_log(session_id, created_at, sequence_no);
 
-CREATE TABLE IF NOT EXISTS attachments (
-  id TEXT PRIMARY KEY,
-  session_id TEXT NOT NULL,
-  workspace_id TEXT NOT NULL,
-  file_name TEXT NOT NULL,
-  mime_type TEXT NOT NULL,
-  size_bytes INTEGER NOT NULL,
-  storage_path TEXT NOT NULL UNIQUE,
-  status TEXT NOT NULL CHECK (status IN ('uploaded', 'consumed', 'deleted', 'missing')),
-  created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
-);
-
-CREATE INDEX IF NOT EXISTS idx_attachments_session_status
-ON attachments(session_id, status, created_at);
-
-CREATE TABLE IF NOT EXISTS draft_attachments (
-  id TEXT PRIMARY KEY,
-  workspace_id TEXT NOT NULL,
-  file_name TEXT NOT NULL,
-  mime_type TEXT NOT NULL,
-  size_bytes INTEGER NOT NULL,
-  storage_path TEXT NOT NULL UNIQUE,
-  created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
-);
-
-CREATE INDEX IF NOT EXISTS idx_draft_attachments_workspace_created
-ON draft_attachments(workspace_id, created_at, id);
 """
 
 

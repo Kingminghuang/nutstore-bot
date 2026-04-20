@@ -21,6 +21,7 @@ from nsbot_sidecar.runtime.types import (
 class RuntimeRequest:
     turn_id: str
     user_input: str
+    images: list[str]
     auth_context: dict[str, Any]
     metadata: RunMetadata
     config: RuntimeWorkerConfig
@@ -60,9 +61,14 @@ def parse_request(raw: str) -> RuntimeRequest:
     auth_context_data = data.get("auth_context") or data.get("authContext") or {}
     config_data = data.get("config") or {}
 
+    raw_images = data.get("images")
+    if not isinstance(raw_images, list):
+        raw_images = []
+
     return RuntimeRequest(
         turn_id=str(data.get("turn_id") or data.get("turnId") or ""),
         user_input=str(data.get("user_input") or data.get("userInput") or ""),
+        images=[str(item) for item in raw_images if str(item).strip()],
         auth_context={
             "uid": _pick(auth_context_data, "uid", "uid"),
             "tid": _pick(auth_context_data, "tid", "tid"),
@@ -142,11 +148,13 @@ def main() -> int:
         request = parse_request(raw)
         runtime_engine = create_runtime_engine(request.config)
         result = anyio.run(
-            runtime_engine.process_async,
-            request.turn_id,
-            request.user_input,
-            request.auth_context,
-            request.metadata,
+            lambda: runtime_engine.process_async(
+                request.turn_id,
+                request.user_input,
+                request.auth_context,
+                request.metadata,
+                images=request.images,
+            )
         )
         print(RuntimeResponse(success=True, result=result).to_json(), flush=True)
         return 0

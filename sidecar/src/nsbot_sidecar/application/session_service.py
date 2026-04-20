@@ -8,14 +8,11 @@ from typing import Any, Callable, Protocol
 
 from fastapi import BackgroundTasks, HTTPException, status
 
-from nsbot_sidecar.infrastructure.attachment_store import AttachmentStore
 from nsbot_sidecar.api.redaction import redact_text
+from nsbot_sidecar.infrastructure.local_paths import nsbot_home
 from nsbot_sidecar.infrastructure.repositories import (
-    AttachmentsRepository,
-    DraftAttachmentsRepository,
     SessionsRepository,
     WorkspacesRepository,
-    create_id,
 )
 from nsbot_sidecar.runtime.session_manager import SessionManager
 from nsbot_sidecar.domain.session_titles import (
@@ -50,9 +47,7 @@ class WorkspaceSidecarIndexerProtocol(Protocol):
 class SessionService:
     workspaces: WorkspacesRepository
     sessions: SessionsRepository
-    attachments: AttachmentsRepository
-    draft_attachments: DraftAttachmentsRepository
-    attachment_store: AttachmentStore
+    ns_bot_home: str | None
     timeline_service: TimelineService
     model_title_generator: ModelTitleGenerator | None = None
     workspace_sidecar_indexer: WorkspaceSidecarIndexerProtocol | None = None
@@ -112,10 +107,6 @@ class SessionService:
 
     def delete_workspace(self, workspace_id: str) -> None:
         workspace = self._get_workspace_or_404(workspace_id)
-        for draft_attachment in self.draft_attachments.list_by_workspace_id(workspace.id):
-            self.attachment_store.delete_file(draft_attachment.storage_path)
-        self.draft_attachments.delete_by_workspace_id(workspace.id)
-
         sessions = self.sessions.list_by_workspace_id(workspace.id)
         for session in sessions:
             self.delete_session(session.id)
@@ -210,14 +201,9 @@ class SessionService:
 
     def delete_session(self, session_id: str) -> None:
         session = self._get_session_or_404(session_id)
-        for attachment in self.attachments.list_by_session_id(session.id):
-            self.attachment_store.delete_file(attachment.storage_path)
-        self.attachments.delete_by_session_id(session.id)
         self.timeline_service.acp_event_log.delete_by_session_id(session.id)
         try:
-            runtime_sessions = SessionManager(
-                str(self.attachment_store.attachments_dir.parent)
-            )
+            runtime_sessions = SessionManager(str(nsbot_home(self.ns_bot_home)))
             runtime_sessions.delete(session.session_key)
         except Exception:
             LOGGER.exception(
@@ -260,154 +246,6 @@ class SessionService:
             limit=limit,
             before_sequence=before_sequence,
         )
-
-    def list_attachments_payload(
-        self, session_id: str
-    ) -> dict[str, list[dict[str, Any]]]:
-        session = self._get_session_or_404(session_id)
-        records = self.attachments.list_by_session_id(session.id, statuses=["uploaded"])
-        next_records = []
-        for record in records:
-            file_path = self.attachment_store.absolute_path(record.storage_path)
-            if not file_path.exists():
-                self.attachments.update_status(record.id, "missing")
-                continue
-            next_records.append(record)
-        return {
-            "attachments": [serialize_attachment(record) for record in next_records]
-        }
-
-    def create_attachment(
-        self,
-        session_id: str,
-        *,
-        file_name: str,
-        mime_type: str,
-        payload: bytes,
-    ) -> dict[str, Any]:
-        session = self._get_session_or_404(session_id)
-        workspace = self._get_workspace_or_404(session.workspace_id)
-        if len(payload) == 0:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Attachment file is empty",
-            )
-
-        normalized_name = _normalize_required_string(
-            file_name, detail="Attachment file name is required"
-        )
-        attachment_id = create_id("att")
-        relative_path = self.attachment_store.relative_path(
-            attachment_id, normalized_name
-        )
-        self.attachment_store.write_bytes(relative_path, payload)
-
-        record = self.attachments.create(
-            attachment_id=attachment_id,
-            session_id=session.id,
-            workspace_id=workspace.id,
-            file_name=normalized_name,
-            mime_type=_normalize_optional_string(mime_type)
-            or "application/octet-stream",
-            size_bytes=len(payload),
-            storage_path=relative_path,
-            status="uploaded",
-        )
-        return serialize_attachment(record)
-
-    def list_draft_attachments_payload(
-        self, workspace_id: str
-    ) -> dict[str, list[dict[str, Any]]]:
-        workspace = self._get_workspace_or_404(workspace_id)
-        records = self.draft_attachments.list_by_workspace_id(workspace.id)
-        next_records = []
-        for record in records:
-            file_path = self.attachment_store.absolute_path(record.storage_path)
-            if not file_path.exists():
-                self.draft_attachments.delete_by_id(record.id)
-                continue
-            next_records.append(record)
-        return {
-            "draftAttachments": [
-                serialize_draft_attachment(record) for record in next_records
-            ]
-        }
-
-    def create_draft_attachment(
-        self,
-        workspace_id: str,
-        *,
-        file_name: str,
-        mime_type: str,
-        payload: bytes,
-    ) -> dict[str, Any]:
-        workspace = self._get_workspace_or_404(workspace_id)
-        if len(payload) == 0:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Attachment file is empty",
-            )
-
-        normalized_name = _normalize_required_string(
-            file_name, detail="Attachment file name is required"
-        )
-        draft_attachment_id = create_id("draftatt")
-        relative_path = self.attachment_store.draft_relative_path(
-            draft_attachment_id, normalized_name
-        )
-        self.attachment_store.write_bytes(relative_path, payload)
-
-        record = self.draft_attachments.create(
-            draft_attachment_id=draft_attachment_id,
-            workspace_id=workspace.id,
-            file_name=normalized_name,
-            mime_type=_normalize_optional_string(mime_type)
-            or "application/octet-stream",
-            size_bytes=len(payload),
-            storage_path=relative_path,
-        )
-        return serialize_draft_attachment(record)
-
-    def delete_draft_attachment(
-        self, workspace_id: str, draft_attachment_id: str
-    ) -> None:
-        workspace = self._get_workspace_or_404(workspace_id)
-        try:
-            record = self.draft_attachments.get_by_id(draft_attachment_id)
-        except ValueError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Draft attachment not found",
-            ) from exc
-
-        if record.workspace_id != workspace.id:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Draft attachment not found",
-            )
-
-        self.attachment_store.delete_file(record.storage_path)
-        self.draft_attachments.delete_by_id(draft_attachment_id)
-
-    def delete_attachment(self, session_id: str, attachment_id: str) -> None:
-        session = self._get_session_or_404(session_id)
-        try:
-            record = self.attachments.get_by_id(attachment_id)
-        except ValueError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Attachment not found",
-            ) from exc
-
-        if record.session_id != session.id:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Attachment not found",
-            )
-
-        self.attachments.update_status(attachment_id, "deleted")
-        self.attachment_store.delete_file(record.storage_path)
-        self.attachments.delete_by_id(attachment_id)
 
     def apply_first_user_message_title(
         self,
@@ -506,32 +344,6 @@ def serialize_session(session) -> dict[str, Any]:
         "lastMessagePreview": session.last_message_preview,
         "activeProviderId": session.active_provider_id,
         "activeModelId": session.active_model_id,
-    }
-
-
-def serialize_attachment(attachment) -> dict[str, Any]:
-    return {
-        "id": attachment.id,
-        "sessionId": attachment.session_id,
-        "workspaceId": attachment.workspace_id,
-        "fileName": attachment.file_name,
-        "mimeType": attachment.mime_type,
-        "sizeBytes": attachment.size_bytes,
-        "status": attachment.status,
-        "createdAt": attachment.created_at,
-        "updatedAt": attachment.updated_at,
-    }
-
-
-def serialize_draft_attachment(draft_attachment) -> dict[str, Any]:
-    return {
-        "id": draft_attachment.id,
-        "workspaceId": draft_attachment.workspace_id,
-        "fileName": draft_attachment.file_name,
-        "mimeType": draft_attachment.mime_type,
-        "sizeBytes": draft_attachment.size_bytes,
-        "createdAt": draft_attachment.created_at,
-        "updatedAt": draft_attachment.updated_at,
     }
 
 

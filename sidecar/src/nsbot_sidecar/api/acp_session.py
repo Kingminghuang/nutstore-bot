@@ -30,7 +30,14 @@ from nsbot_sidecar.runtime.types import (
 from nsbot_sidecar.application.timeline_service import serialize_session_summary
 
 
-_ATTACHMENT_TEXT_MAX_BYTES = 50 * 1024
+_SUPPORTED_IMAGE_MIME_TYPES = {
+    "image/png",
+    "image/jpeg",
+    "image/webp",
+    "image/gif",
+    "image/bmp",
+    "image/tiff",
+}
 
 
 def _acp_debug_enabled() -> bool:
@@ -421,128 +428,6 @@ class AcpJsonRpcSession:
             if method == "_nsbot/timeline/list":
                 await self._send_result(req_id, self._handle_timeline_list(params))
                 return
-            if method == "_nsbot/draft_attachment/list":
-                workspace_id = str(
-                    params.get("workspaceId") or params.get("workspace_id") or ""
-                )
-                if not workspace_id:
-                    await self._send_error(req_id, -32000, "workspaceId is required")
-                    return
-                await self._send_result(
-                    req_id,
-                    self.state.session_service.list_draft_attachments_payload(
-                        workspace_id
-                    ),
-                )
-                return
-            if method == "_nsbot/draft_attachment/delete":
-                workspace_id = str(
-                    params.get("workspaceId") or params.get("workspace_id") or ""
-                )
-                draft_attachment_id = str(
-                    params.get("draftAttachmentId")
-                    or params.get("draft_attachment_id")
-                    or ""
-                )
-                if not workspace_id or not draft_attachment_id:
-                    await self._send_error(
-                        req_id, -32000, "workspaceId and draftAttachmentId are required"
-                    )
-                    return
-                self.state.session_service.delete_draft_attachment(
-                    workspace_id, draft_attachment_id
-                )
-                await self._send_result(req_id, {})
-                return
-            if method == "_nsbot/draft_attachment/create":
-                workspace_id = str(
-                    params.get("workspaceId") or params.get("workspace_id") or ""
-                )
-                file_name = str(
-                    params.get("fileName") or params.get("file_name") or "attachment"
-                )
-                mime_type = str(
-                    params.get("mimeType")
-                    or params.get("mime_type")
-                    or "application/octet-stream"
-                )
-                payload_b64 = str(params.get("payloadBase64") or "")
-                if not workspace_id or not payload_b64:
-                    await self._send_error(
-                        req_id, -32000, "workspaceId and payloadBase64 are required"
-                    )
-                    return
-                try:
-                    payload_bytes = base64.b64decode(payload_b64)
-                except Exception:  # noqa: BLE001
-                    await self._send_error(req_id, -32000, "payloadBase64 is invalid")
-                    return
-                result = self.state.session_service.create_draft_attachment(
-                    workspace_id=workspace_id,
-                    file_name=file_name,
-                    mime_type=mime_type,
-                    payload=payload_bytes,
-                )
-                await self._send_result(req_id, result)
-                return
-            if method == "_nsbot/attachment/list":
-                session_id = str(
-                    params.get("sessionId") or params.get("session_id") or ""
-                )
-                if not session_id:
-                    await self._send_error(req_id, -32000, "sessionId is required")
-                    return
-                await self._send_result(
-                    req_id,
-                    self.state.session_service.list_attachments_payload(session_id),
-                )
-                return
-            if method == "_nsbot/attachment/delete":
-                session_id = str(
-                    params.get("sessionId") or params.get("session_id") or ""
-                )
-                attachment_id = str(
-                    params.get("attachmentId") or params.get("attachment_id") or ""
-                )
-                if not session_id or not attachment_id:
-                    await self._send_error(
-                        req_id, -32000, "sessionId and attachmentId are required"
-                    )
-                    return
-                self.state.session_service.delete_attachment(session_id, attachment_id)
-                await self._send_result(req_id, {})
-                return
-            if method == "_nsbot/attachment/create":
-                session_id = str(
-                    params.get("sessionId") or params.get("session_id") or ""
-                )
-                file_name = str(
-                    params.get("fileName") or params.get("file_name") or "attachment"
-                )
-                mime_type = str(
-                    params.get("mimeType")
-                    or params.get("mime_type")
-                    or "application/octet-stream"
-                )
-                payload_b64 = str(params.get("payloadBase64") or "")
-                if not session_id or not payload_b64:
-                    await self._send_error(
-                        req_id, -32000, "sessionId and payloadBase64 are required"
-                    )
-                    return
-                try:
-                    payload_bytes = base64.b64decode(payload_b64)
-                except Exception:  # noqa: BLE001
-                    await self._send_error(req_id, -32000, "payloadBase64 is invalid")
-                    return
-                result = self.state.session_service.create_attachment(
-                    session_id=session_id,
-                    file_name=file_name,
-                    mime_type=mime_type,
-                    payload=payload_bytes,
-                )
-                await self._send_result(req_id, result)
-                return
             if method == "session/set_config_option":
                 result = self._handle_set_config_option(params)
                 session_id = str(params.get("sessionId") or "")
@@ -605,7 +490,7 @@ class AcpJsonRpcSession:
                 "loadSession": True,
                 "promptCapabilities": {
                     "image": True,
-                    "audio": True,
+                    "audio": False,
                     "embeddedContext": True,
                 },
                 "mcpCapabilities": {
@@ -621,8 +506,6 @@ class AcpJsonRpcSession:
                         "extensions": {
                             "workspace": True,
                             "provider": True,
-                            "attachment": True,
-                            "draft_attachment": True,
                             "timeline": True,
                             "session_edit": True,
                         }
@@ -1025,6 +908,9 @@ class AcpJsonRpcSession:
         cwd = str(params.get("cwd") or params.get("workspacePath") or "").strip()
         if not cwd:
             raise RuntimeError("cwd is required")
+        mcp_servers = params.get("mcpServers")
+        if not isinstance(mcp_servers, list):
+            raise RuntimeError("mcpServers must be an array")
 
         workspace = self._find_or_create_workspace(cwd)
         selection = self._default_selection()
@@ -1150,8 +1036,14 @@ class AcpJsonRpcSession:
 
     async def _handle_session_load(self, params: dict[str, Any]) -> dict[str, Any]:
         session_id = str(params.get("sessionId") or "")
+        cwd = str(params.get("cwd") or "").strip()
         if not session_id:
             raise RuntimeError("sessionId is required")
+        if not cwd:
+            raise RuntimeError("cwd is required")
+        mcp_servers = params.get("mcpServers")
+        if not isinstance(mcp_servers, list):
+            raise RuntimeError("mcpServers must be an array")
         self._ensure_session_exists(session_id)
         self._configure_session_mcp_servers(session_id, params)
         await self._replay_session_history(session_id)
@@ -1159,8 +1051,14 @@ class AcpJsonRpcSession:
 
     def _handle_session_resume(self, params: dict[str, Any]) -> dict[str, Any]:
         session_id = str(params.get("sessionId") or "")
+        cwd = str(params.get("cwd") or "").strip()
         if not session_id:
             raise RuntimeError("sessionId is required")
+        if not cwd:
+            raise RuntimeError("cwd is required")
+        mcp_servers = params.get("mcpServers")
+        if not isinstance(mcp_servers, list):
+            raise RuntimeError("mcpServers must be an array")
         self._ensure_session_exists(session_id)
         self._configure_session_mcp_servers(session_id, params)
         return {"configOptions": self._config_options_for_session(session_id)}
@@ -1611,9 +1509,10 @@ class AcpJsonRpcSession:
 
     async def _extract_prompt_text(
         self, session_id: str, blocks: list[dict[str, Any]]
-    ) -> tuple[str, list[dict[str, Any]]]:
+    ) -> tuple[str, list[dict[str, Any]], list[str]]:
         parts: list[str] = []
         normalized_blocks: list[dict[str, Any]] = []
+        runtime_images: list[str] = []
 
         for block in blocks:
             if not isinstance(block, dict):
@@ -1628,44 +1527,39 @@ class AcpJsonRpcSession:
                 continue
 
             if block_type == "image":
-                mime = str(block.get("mimeType") or block.get("mime_type") or "image/*")
-                parts.append(f"[Image content: {mime}]")
-                normalized_blocks.append(block)
-                continue
-
-            if block_type == "audio":
-                mime = str(block.get("mimeType") or block.get("mime_type") or "audio/*")
-                parts.append(f"[Audio content: {mime}]")
-                normalized_blocks.append(block)
+                image_block, data_url = self._normalize_image_block(block)
+                if image_block is None or data_url is None:
+                    continue
+                parts.append(f"[Image content: {image_block['mimeType']}]")
+                normalized_blocks.append(image_block)
+                runtime_images.append(data_url)
                 continue
 
             if block_type == "resource":
                 resource = block.get("resource")
-                resource_text, normalized_resource = self._normalize_embedded_resource(
+                resource_text, normalized_resource = self._normalize_embedded_text_resource(
                     session_id, resource
                 )
+                if normalized_resource is None:
+                    continue
                 if resource_text:
                     parts.append(resource_text)
-                normalized_blocks.append(
-                    {"type": "resource", "resource": normalized_resource}
-                    if normalized_resource is not None
-                    else block
-                )
+                normalized_blocks.append({"type": "resource", "resource": normalized_resource})
                 continue
 
             if block_type == "resource_link":
                 uri = str(block.get("uri") or "").strip()
                 name = str(block.get("name") or "").strip()
                 if not name:
-                    name = self._resource_name_from_uri(uri)
+                    continue
                 normalized_link = {
                     "type": "resource_link",
                     "uri": uri,
-                    "name": name or "resource",
+                    "name": name,
                 }
                 mime_type = block.get("mimeType") or block.get("mime_type")
                 if isinstance(mime_type, str) and mime_type.strip():
-                    normalized_link["mimeType"] = mime_type
+                    normalized_link["mimeType"] = mime_type.strip()
                 for key in ("title", "description", "annotations"):
                     value = block.get(key)
                     if value is not None:
@@ -1678,122 +1572,80 @@ class AcpJsonRpcSession:
                 resource_link_text = self._resource_link_prompt_text(normalized_link)
                 if resource_link_text:
                     parts.append(resource_link_text)
+                image_data_url = self._resource_link_image_data_url(session_id, normalized_link)
+                if image_data_url:
+                    runtime_images.append(image_data_url)
                 normalized_blocks.append(normalized_link)
                 continue
 
-            normalized_blocks.append(block)
+            # Ignore unsupported block kinds (including audio and binary resource variants).
 
         return "\n".join(
             [part for part in parts if part.strip()]
-        ).strip(), normalized_blocks
+        ).strip(), normalized_blocks, runtime_images
 
-    def _normalize_embedded_resource(
+    def _normalize_embedded_text_resource(
         self, session_id: str, resource: Any
     ) -> tuple[str, dict[str, Any] | None]:
+        del session_id
         if not isinstance(resource, dict):
             return "", None
 
         uri = str(resource.get("uri") or "").strip()
-        if self._looks_like_attachment_uri(uri):
-            return self._attachment_resource_text(session_id, uri, resource)
-
-        return self._resource_text_from_embedded(resource), resource
-
-    def _resource_text_from_embedded(self, resource: Any) -> str:
-        if not isinstance(resource, dict):
-            return ""
-
         text = resource.get("text")
-        if isinstance(text, str) and text.strip():
-            return text
+        if not isinstance(text, str) or not text.strip():
+            return "", None
 
-        data = resource.get("data")
-        if isinstance(data, str) and data.strip():
-            return data
+        normalized_resource: dict[str, Any] = {"uri": uri, "text": text}
+        mime_type = str(resource.get("mimeType") or resource.get("mime_type") or "").strip()
+        if mime_type:
+            normalized_resource["mimeType"] = mime_type
+        title = str(resource.get("title") or "").strip()
+        if title:
+            normalized_resource["title"] = title
+        return text, normalized_resource
 
-        uri = resource.get("uri")
-        if isinstance(uri, str) and uri.strip():
-            return uri
+    def _normalize_image_block(self, block: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None]:
+        mime = str(block.get("mimeType") or block.get("mime_type") or "").strip().lower()
+        data = block.get("data")
+        if mime not in _SUPPORTED_IMAGE_MIME_TYPES:
+            return None, None
+        if not isinstance(data, str) or not data.strip():
+            return None, None
+        normalized = {"type": "image", "mimeType": mime, "data": data.strip()}
+        return normalized, f"data:{mime};base64,{data.strip()}"
 
-        return ""
-
-    def _looks_like_attachment_uri(self, uri: str) -> bool:
-        return urlparse(uri).scheme == "attachment"
-
-    def _attachment_resource_text(
-        self, session_id: str, uri: str, resource: dict[str, Any]
-    ) -> tuple[str, dict[str, Any]]:
-        session = self._ensure_session_exists(session_id)
-        parsed = urlparse(uri)
-        attachment_kind = parsed.netloc.strip().lower()
-        attachment_id = parsed.path.lstrip("/").strip()
-        if not attachment_id:
-            raise RuntimeError("Attachment resource URI is invalid")
-
-        file_name = "attachment"
-        mime_type = str(resource.get("mimeType") or "").strip() or None
-        absolute_path: Path | None = None
-
-        if attachment_kind == "session":
-            try:
-                record = self.state.repositories.attachments.get_by_id(attachment_id)
-            except ValueError as exc:
-                raise RuntimeError("Attachment not found") from exc
-            if record.session_id != session_id:
-                raise RuntimeError("Attachment not found")
-            file_name = record.file_name
-            mime_type = mime_type or record.mime_type or None
-            absolute_path = self.state.session_service.attachment_store.absolute_path(
-                record.storage_path
-            )
-        elif attachment_kind == "draft":
-            try:
-                record = self.state.repositories.draft_attachments.get_by_id(
-                    attachment_id
-                )
-            except ValueError as exc:
-                raise RuntimeError("Draft attachment not found") from exc
-            if record.workspace_id != session.workspace_id:
-                raise RuntimeError("Draft attachment not found")
-            file_name = record.file_name
-            mime_type = mime_type or record.mime_type or None
-            absolute_path = self.state.session_service.attachment_store.absolute_path(
-                record.storage_path
-            )
-        else:
-            raise RuntimeError("Attachment resource URI is invalid")
-
-        if absolute_path is None or not absolute_path.exists():
-            raise RuntimeError("Attachment file is missing")
-
-        normalized_resource: dict[str, Any] = {
-            "uri": uri,
-            "mimeType": mime_type
-            or mimetypes.guess_type(str(absolute_path))[0]
-            or "application/octet-stream",
-            "title": str(resource.get("title") or "").strip() or file_name,
-        }
-
-        text_content, truncated = self._read_attachment_text(absolute_path)
-        if text_content is not None:
-            normalized_resource["text"] = text_content
-            suffix = "\n[Attachment text truncated to 50KB.]" if truncated else ""
-            return f"Attached file {file_name}:\n{text_content}{suffix}", normalized_resource
-
-        return (
-            f"Attached file {file_name} ({normalized_resource['mimeType']}) is available as an embedded resource.",
-            normalized_resource,
-        )
-
-    def _read_attachment_text(self, path: Path) -> tuple[str | None, bool]:
-        raw = path.read_bytes()
-        truncated = len(raw) > _ATTACHMENT_TEXT_MAX_BYTES
-        sample = raw[:_ATTACHMENT_TEXT_MAX_BYTES]
+    def _resource_link_image_data_url(
+        self, session_id: str, block: dict[str, Any]
+    ) -> str | None:
+        uri = str(block.get("uri") or "").strip()
+        if not self._looks_like_file_uri(uri):
+            return None
+        absolute_path = Path(self._uri_to_fs_path(uri)).expanduser()
         try:
-            text = sample.decode("utf-8")
-        except UnicodeDecodeError:
-            return None, False
-        return text, truncated
+            resolved = absolute_path.resolve()
+        except Exception:
+            return None
+        workspace_root = self._workspace_root_for_session(session_id)
+        if workspace_root is None:
+            return None
+        try:
+            resolved.relative_to(workspace_root.resolve())
+        except Exception:
+            return None
+        if not resolved.is_file():
+            return None
+        mime_type = (
+            str(block.get("mimeType") or "").strip().lower()
+            or str(mimetypes.guess_type(str(resolved))[0] or "").strip().lower()
+        )
+        if mime_type not in _SUPPORTED_IMAGE_MIME_TYPES:
+            return None
+        try:
+            payload = resolved.read_bytes()
+        except Exception:
+            return None
+        return f"data:{mime_type};base64,{base64.b64encode(payload).decode('ascii')}"
 
     def _looks_like_file_uri(self, uri: str) -> bool:
         if uri.startswith("file://"):
@@ -2007,7 +1859,7 @@ class AcpJsonRpcSession:
             prompt_blocks = params.get("prompt")
             if not isinstance(prompt_blocks, list):
                 raise RuntimeError("prompt must be content block array")
-            user_text, normalized_blocks = await self._extract_prompt_text(
+            user_text, normalized_blocks, runtime_images = await self._extract_prompt_text(
                 session_id, prompt_blocks
             )
             if not user_text:
@@ -2031,6 +1883,7 @@ class AcpJsonRpcSession:
                     "prompt": prompt_blocks,
                     "_preparsedPromptText": user_text,
                     "_preparsedPromptBlocks": normalized_blocks,
+                    "_preparsedPromptImages": runtime_images,
                 },
             )
         except Exception as exc:  # noqa: BLE001
@@ -2121,14 +1974,16 @@ class AcpJsonRpcSession:
             prompt_blocks = params.get("prompt")
             user_text = params.get("_preparsedPromptText")
             normalized_blocks = params.get("_preparsedPromptBlocks")
+            runtime_images = params.get("_preparsedPromptImages")
             if (
                 not isinstance(user_text, str)
                 or not user_text.strip()
                 or not isinstance(normalized_blocks, list)
+                or not isinstance(runtime_images, list)
             ):
                 if not isinstance(prompt_blocks, list):
                     raise RuntimeError("prompt must be content block array")
-                user_text, normalized_blocks = await self._extract_prompt_text(
+                user_text, normalized_blocks, runtime_images = await self._extract_prompt_text(
                     session_id, prompt_blocks
                 )
                 if not user_text:
@@ -2257,6 +2112,7 @@ class AcpJsonRpcSession:
                 event_callback,
                 lambda: self._session_cancelled.get(session_id, False),
                 permission_requester,
+                images=[str(item) for item in runtime_images if str(item).strip()],
             )
 
             final_answer = str(result.get("final_answer") or "").strip()

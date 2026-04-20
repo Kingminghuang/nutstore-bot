@@ -56,8 +56,9 @@ class _FakeEngine:
         event_callback=None,
         is_cancelled=None,
         permission_requester=None,
+        images=None,
     ):
-        del turn_id, auth_context, metadata, is_cancelled, permission_requester
+        del turn_id, auth_context, metadata, is_cancelled, permission_requester, images
         final_text = f"ok: {user_input}"
         if event_callback is not None:
             await anyio.to_thread.run_sync(
@@ -79,8 +80,9 @@ class _BlockingCancellableEngine:
         event_callback=None,
         is_cancelled=None,
         permission_requester=None,
+        images=None,
     ):
-        del turn_id, user_input, auth_context, metadata, permission_requester
+        del turn_id, user_input, auth_context, metadata, permission_requester, images
         self.started.set()
         if event_callback is not None:
             await anyio.to_thread.run_sync(
@@ -101,8 +103,9 @@ class _FinalOnlyEngine:
         event_callback=None,
         is_cancelled=None,
         permission_requester=None,
+        images=None,
     ):
-        del turn_id, auth_context, metadata, event_callback, is_cancelled, permission_requester
+        del turn_id, auth_context, metadata, event_callback, is_cancelled, permission_requester, images
         return {"final_answer": f"ok: {user_input}"}
 
 
@@ -120,8 +123,9 @@ class _ErrorEngine:
         event_callback=None,
         is_cancelled=None,
         permission_requester=None,
+        images=None,
     ):
-        del turn_id, user_input, auth_context, metadata, event_callback, is_cancelled, permission_requester
+        del turn_id, user_input, auth_context, metadata, event_callback, is_cancelled, permission_requester, images
         raise RuntimeProcessError(self.code, self.message)
 
 
@@ -373,7 +377,11 @@ class AcpSessionTests(unittest.TestCase):
                     "jsonrpc": "2.0",
                     "id": 2,
                     "method": "session/load",
-                    "params": {"sessionId": session.id, "mcpServers": []},
+                    "params": {
+                        "sessionId": session.id,
+                        "cwd": self.workspace.real_path,
+                        "mcpServers": [],
+                    },
                 },
             ]
         )
@@ -470,7 +478,11 @@ class AcpSessionTests(unittest.TestCase):
                     "jsonrpc": "2.0",
                     "id": 3,
                     "method": "session/load",
-                    "params": {"sessionId": session.id, "mcpServers": []},
+                    "params": {
+                        "sessionId": session.id,
+                        "cwd": self.workspace.real_path,
+                        "mcpServers": [],
+                    },
                 },
             ]
         )
@@ -849,11 +861,11 @@ class AcpSessionTests(unittest.TestCase):
         response = _response_for(transport.outgoing, 99)
         self.assertEqual(response["error"]["code"], -32601)
 
-    def test_resource_link_without_name_is_auto_filled(self) -> None:
+    def test_resource_link_without_name_is_dropped(self) -> None:
         transport = _InMemoryTransport([])
         session_runner = AcpJsonRpcSession(transport, self.app_state)
 
-        async def _invoke() -> tuple[str, list[dict[str, Any]]]:
+        async def _invoke() -> tuple[str, list[dict[str, Any]], list[str]]:
             return await session_runner._extract_prompt_text(
                 "sess_1",
                 [
@@ -864,18 +876,16 @@ class AcpSessionTests(unittest.TestCase):
                 ],
             )
 
-        prompt_text, normalized = asyncio.run(_invoke())
-        self.assertEqual(
-            prompt_text,
-            "Referenced workspace entry [/tmp/notes.md](/tmp/notes.md). The agent can inspect this path directly if needed.",
-        )
-        self.assertEqual(normalized[0]["name"], "notes.md")
+        prompt_text, normalized, runtime_images = asyncio.run(_invoke())
+        self.assertEqual(prompt_text, "")
+        self.assertEqual(normalized, [])
+        self.assertEqual(runtime_images, [])
 
     def test_resource_link_preserves_metadata_fields(self) -> None:
         transport = _InMemoryTransport([])
         session_runner = AcpJsonRpcSession(transport, self.app_state)
 
-        async def _invoke() -> tuple[str, list[dict[str, Any]]]:
+        async def _invoke() -> tuple[str, list[dict[str, Any]], list[str]]:
             return await session_runner._extract_prompt_text(
                 "sess_1",
                 [
@@ -891,12 +901,13 @@ class AcpSessionTests(unittest.TestCase):
                 ],
             )
 
-        prompt_text, normalized = asyncio.run(_invoke())
+        prompt_text, normalized, runtime_images = asyncio.run(_invoke())
         self.assertIn("[/tmp/report.pdf](/tmp/report.pdf)", prompt_text)
         self.assertIn("Display label: Quarterly Report.", prompt_text)
         self.assertIn("Q1 results.", prompt_text)
         self.assertIn("MIME type: application/pdf.", prompt_text)
         self.assertIn("Size: 12345 bytes.", prompt_text)
+        self.assertEqual(runtime_images, [])
         self.assertEqual(normalized[0]["mimeType"], "application/pdf")
         self.assertEqual(normalized[0]["title"], "Quarterly Report")
         self.assertEqual(normalized[0]["description"], "Q1 results")
@@ -906,7 +917,7 @@ class AcpSessionTests(unittest.TestCase):
         transport = _InMemoryTransport([])
         session_runner = AcpJsonRpcSession(transport, self.app_state)
 
-        async def _invoke() -> tuple[str, list[dict[str, Any]]]:
+        async def _invoke() -> tuple[str, list[dict[str, Any]], list[str]]:
             return await session_runner._extract_prompt_text(
                 "sess_1",
                 [
@@ -919,12 +930,13 @@ class AcpSessionTests(unittest.TestCase):
                 ],
             )
 
-        prompt_text, normalized = asyncio.run(_invoke())
+        prompt_text, normalized, runtime_images = asyncio.run(_invoke())
         self.assertEqual(
             prompt_text,
             "Referenced resource spec at https://example.com/spec. External reference.",
         )
         self.assertEqual(normalized[0]["name"], "spec")
+        self.assertEqual(runtime_images, [])
 
     def test_workspace_find_entries_returns_fd_matches(self) -> None:
         workspace_root = Path(self.workspace.real_path)
@@ -978,93 +990,36 @@ class AcpSessionTests(unittest.TestCase):
         self.assertEqual(result["entries"][3]["entryType"], "directory")
         self.assertEqual(result["entries"][4]["entryType"], "directory")
 
-    def test_attachment_resource_is_expanded_into_prompt_text(self) -> None:
+    def test_resource_text_block_is_expanded_into_prompt_text(self) -> None:
         session = self.app_state.repositories.sessions.create(
             workspace_id=self.workspace.id,
             active_provider_id=self.provider.provider.id,
             active_model_id="gpt-5.4",
         )
-        attachment = self.app_state.session_service.create_attachment(
-            session.id,
-            file_name="notes.txt",
-            mime_type="text/plain",
-            payload=b"hello from attachment",
-        )
         transport = _InMemoryTransport([])
         session_runner = AcpJsonRpcSession(transport, self.app_state)
 
-        async def _invoke() -> tuple[str, list[dict[str, Any]]]:
+        async def _invoke() -> tuple[str, list[dict[str, Any]], list[str]]:
             return await session_runner._extract_prompt_text(
                 session.id,
                 [
                     {
                         "type": "resource",
                         "resource": {
-                            "uri": f"attachment://session/{attachment['id']}",
+                            "uri": "file:///tmp/notes.txt",
                             "mimeType": "text/plain",
+                            "title": "notes.txt",
+                            "text": "hello from resource",
                         },
                     }
                 ],
             )
 
-        prompt_text, normalized = asyncio.run(_invoke())
-        self.assertIn("Attached file notes.txt", prompt_text)
-        self.assertIn("hello from attachment", prompt_text)
-        self.assertEqual(normalized[0]["resource"]["text"], "hello from attachment")
+        prompt_text, normalized, runtime_images = asyncio.run(_invoke())
+        self.assertEqual(prompt_text, "hello from resource")
+        self.assertEqual(runtime_images, [])
+        self.assertEqual(normalized[0]["resource"]["text"], "hello from resource")
         self.assertEqual(normalized[0]["resource"]["title"], "notes.txt")
-
-    def test_user_message_chunk_uses_display_text_for_attachment_resources(self) -> None:
-        session = self.app_state.repositories.sessions.create(
-            workspace_id=self.workspace.id,
-            active_provider_id=self.provider.provider.id,
-            active_model_id="gpt-5.4",
-        )
-        attachment = self.app_state.session_service.create_attachment(
-            session.id,
-            file_name="notes.txt",
-            mime_type="text/plain",
-            payload=b"hello from attachment",
-        )
-        transport = _InMemoryTransport([])
-        session_runner = AcpJsonRpcSession(transport, self.app_state)
-
-        async def _invoke() -> None:
-            session_runner.loop = asyncio.get_running_loop()
-            await session_runner._handle_prompt_request(
-                7,
-                {
-                    "sessionId": session.id,
-                    "prompt": [
-                        {"type": "text", "text": "Summarize this"},
-                        {
-                            "type": "resource",
-                            "resource": {
-                                "uri": f"attachment://session/{attachment['id']}",
-                                "mimeType": "text/plain",
-                                "title": "notes.txt",
-                            },
-                        },
-                    ],
-                },
-            )
-
-        with patch("nsbot_sidecar.api.acp_session.create_runtime_engine", return_value=_FakeEngine()):
-            asyncio.run(_invoke())
-
-        update_payloads = [
-            payload
-            for payload in transport.outgoing
-            if payload.get("method") == "session/update"
-        ]
-        user_update = next(
-            payload
-            for payload in update_payloads
-            if payload["params"]["update"].get("sessionUpdate") == "user_message_chunk"
-        )
-        content = user_update["params"]["update"]["content"]
-        self.assertEqual(content["displayText"], "Summarize this\nnotes.txt")
-        self.assertEqual(content["editableText"], "Summarize this")
-        self.assertEqual(content["promptBlocks"][1]["resource"]["title"], "notes.txt")
 
     def test_prompt(self) -> None:
         session = self.app_state.repositories.sessions.create(

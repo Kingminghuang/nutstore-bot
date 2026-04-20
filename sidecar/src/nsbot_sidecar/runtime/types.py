@@ -50,6 +50,7 @@ class RuntimeResult(TypedDict):
 class RuntimeRequestContext:
     turn_id: str
     user_input: str
+    images: list[str] | None
     auth_context: dict[str, Any]
     metadata: RunMetadata
 
@@ -64,4 +65,5 @@ class RuntimeEngine(Protocol):
         event_callback: Callable[[dict[str, Any]], None] | None = None,
         is_cancelled: Callable[[], bool] | None = None,
         permission_requester: Callable[[dict[str, Any]], str] | None = None,
+        images: list[str] | None = None,
     ) -> RuntimeResult: ...

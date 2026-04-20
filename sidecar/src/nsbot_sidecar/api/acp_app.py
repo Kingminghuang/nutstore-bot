@@ -11,7 +11,6 @@ from nsbot_sidecar.api.redaction import install_log_redaction_filter, redact_sen
 from nsbot_sidecar.application.provider_service import ProviderService
 from nsbot_sidecar.application.session_service import SessionService
 from nsbot_sidecar.application.timeline_service import TimelineService
-from nsbot_sidecar.infrastructure.attachment_store import AttachmentStore
 from nsbot_sidecar.infrastructure.repositories import create_repositories
 from nsbot_sidecar.infrastructure.secret_store import LocalSecretStore
 from nsbot_sidecar.infrastructure.storage import connect_database
@@ -39,9 +38,7 @@ def create_acp_app(config: AcpAppConfig | None = None) -> FastAPI:
     session_service = SessionService(
         workspaces=repositories.workspaces,
         sessions=repositories.sessions,
-        attachments=repositories.attachments,
-        draft_attachments=repositories.draft_attachments,
-        attachment_store=AttachmentStore(cfg.ns_bot_home),
+        ns_bot_home=cfg.ns_bot_home,
         timeline_service=TimelineService(
             sessions=repositories.sessions,
             acp_event_log=repositories.acp_event_log,

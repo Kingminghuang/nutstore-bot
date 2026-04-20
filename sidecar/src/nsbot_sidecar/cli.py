@@ -18,7 +18,6 @@ from fastapi import HTTPException
 import typer
 
 from nsbot_sidecar.api.acp_app import AcpAppConfig
-from nsbot_sidecar.infrastructure.attachment_store import AttachmentStore
 from nsbot_sidecar.infrastructure.local_paths import nsbot_home
 from nsbot_sidecar.application.provider_service import ProviderService
 from nsbot_sidecar.infrastructure.repositories import create_repositories
@@ -139,9 +138,7 @@ def _build_session_service(ns_bot_home_value: str, db_path: str | None = None):
     session_service = SessionService(
         workspaces=repositories.workspaces,
         sessions=repositories.sessions,
-        attachments=repositories.attachments,
-        draft_attachments=repositories.draft_attachments,
-        attachment_store=AttachmentStore(ns_bot_home_value),
+        ns_bot_home=ns_bot_home_value,
         timeline_service=TimelineService(
             sessions=repositories.sessions,
             acp_event_log=repositories.acp_event_log,

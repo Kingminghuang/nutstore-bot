@@ -34,8 +34,6 @@ class StorageTests(unittest.TestCase):
             self.assertIn("models", tables)
             self.assertIn("sessions", tables)
             self.assertIn("acp_event_log", tables)
-            self.assertIn("attachments", tables)
-            self.assertIn("draft_attachments", tables)
             self.assertNotIn("runs", tables)
 
             model_columns = {
@@ -61,14 +59,6 @@ class StorageTests(unittest.TestCase):
             )
             self.assertEqual(
                 connection.execute("PRAGMA foreign_key_list(acp_event_log)").fetchall(),
-                [],
-            )
-            self.assertEqual(
-                connection.execute("PRAGMA foreign_key_list(attachments)").fetchall(),
-                [],
-            )
-            self.assertEqual(
-                connection.execute("PRAGMA foreign_key_list(draft_attachments)").fetchall(),
                 [],
             )
         finally:
