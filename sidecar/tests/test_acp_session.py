@@ -16,7 +16,11 @@ import anyio
 from nsbot_sidecar.api.acp_app import AcpAppConfig, create_acp_app
 from nsbot_sidecar.api.acp_session import AcpJsonRpcSession
 from nsbot_sidecar.infrastructure.secret_store import ProviderSecretPayload
-from nsbot_sidecar.runtime.types import RuntimeCancelledError, RuntimeProcessError
+from nsbot_sidecar.runtime.types import (
+    RuntimeCancelledError,
+    RuntimeEventStream,
+    RuntimeProcessError,
+)
 
 
 class _InMemoryTransport:
@@ -65,6 +69,29 @@ class _FakeEngine:
                 event_callback, {"type": "delta", "payload": {"text": final_text}}
             )
         return {"final_answer": final_text}
+
+
+class _FakeStreamEngine:
+    async def process_stream_async(
+        self,
+        turn_id,
+        user_input,
+        auth_context,
+        metadata,
+        is_cancelled=None,
+        permission_requester=None,
+        images=None,
+    ):
+        del turn_id, auth_context, metadata, is_cancelled, permission_requester, images
+        final_text = f"ok: {user_input}"
+        send_stream, receive_stream = anyio.create_memory_object_stream[dict[str, Any]](8)
+
+        async def _produce() -> dict[str, Any]:
+            async with send_stream:
+                await send_stream.send({"type": "delta", "payload": {"text": final_text}})
+            return {"final_answer": final_text}
+
+        return RuntimeEventStream(events=receive_stream, result=asyncio.create_task(_produce()))
 
 
 class _BlockingCancellableEngine:
@@ -1142,6 +1169,43 @@ class AcpSessionTests(unittest.TestCase):
 
             asyncio.run(_invoke_prompt())
         response = _response_for(transport.outgoing, 3)
+        self.assertEqual(response["result"]["stopReason"], "end_turn")
+        agent_updates = [
+            payload
+            for payload in transport.outgoing
+            if payload.get("method") == "session/update"
+            and payload.get("params", {}).get("update", {}).get("sessionUpdate")
+            == "agent_message_chunk"
+        ]
+        self.assertEqual(len(agent_updates), 1)
+        self.assertEqual(
+            agent_updates[0]["params"]["update"]["content"]["text"],
+            "ok: ping",
+        )
+
+    def test_prompt_prefers_runtime_stream_when_available(self) -> None:
+        session = self.app_state.repositories.sessions.create(
+            workspace_id=self.workspace.id,
+            active_provider_id=self.provider.provider.id,
+            active_model_id="gpt-5.4",
+        )
+        transport = _InMemoryTransport([])
+        with patch(
+            "nsbot_sidecar.api.acp_session.create_runtime_engine",
+            return_value=_FakeStreamEngine(),
+        ):
+            async def _invoke_prompt() -> None:
+                session_runner = AcpJsonRpcSession(transport, self.app_state)
+                await session_runner._handle_prompt_request(
+                    32,
+                    {
+                        "sessionId": session.id,
+                        "prompt": [{"type": "text", "text": "ping"}],
+                    },
+                )
+
+            asyncio.run(_invoke_prompt())
+        response = _response_for(transport.outgoing, 32)
         self.assertEqual(response["result"]["stopReason"], "end_turn")
         agent_updates = [
             payload

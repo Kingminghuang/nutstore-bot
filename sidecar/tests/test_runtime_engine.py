@@ -27,6 +27,7 @@ from nsbot_sidecar.runtime.engine import (
 )
 from nsbot_sidecar.runtime.types import (
     RunMetadata,
+    RuntimeEventStream,
     RuntimeProcessError,
     RuntimeWorkerConfig,
 )
@@ -543,6 +544,36 @@ class RuntimeEngineTests(unittest.TestCase):
 
         self.assertEqual(result["final_answer"], "silent-ok")
         self.assertGreaterEqual(len(result["deltas"]), 1)
+
+    def test_process_stream_async_yields_runtime_events_and_result(self) -> None:
+        service = SmolagentsRuntimeEngine(
+            self._config(),
+            model_factory=lambda: FakeStreamingModel("stream-ok"),
+        )
+
+        async def _run_stream() -> tuple[list[dict[str, object]], dict[str, object]]:
+            runtime_stream = await service.process_stream_async(
+                turn_id="turn-stream-1",
+                user_input="say ok",
+                auth_context={},
+                metadata=RunMetadata(
+                    workspace_path=str(self.workspace_a),
+                    session_key=None,
+                ),
+            )
+            events: list[dict[str, object]] = []
+            async with runtime_stream.events:
+                async for event in runtime_stream.events:
+                    events.append(event)
+            result = await runtime_stream.result
+            return events, result
+
+        events, result = asyncio.run(_run_stream())
+
+        event_types = [str(event.get("type") or "") for event in events]
+        self.assertIn("delta", event_types)
+        self.assertIn("timeline_entry", event_types)
+        self.assertEqual(result["final_answer"], "stream-ok")
 
     def test_execute_runtime_turn_forwards_event_callback_and_is_cancelled(self) -> None:
         cfg = self._config()

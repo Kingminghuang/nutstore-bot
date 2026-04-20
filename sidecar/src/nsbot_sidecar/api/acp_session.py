@@ -2202,29 +2202,49 @@ class AcpJsonRpcSession:
                     enriched_request,
                 )
 
-            def event_callback(event: dict[str, Any]) -> None:
-                nonlocal saw_agent_message_delta
-                if str(event.get("type") or "") == "delta":
-                    payload = event.get("payload") or {}
-                    if str(payload.get("text") or ""):
-                        saw_agent_message_delta = True
-                anyio.from_thread.run(
-                    self._handle_runtime_event,
-                    session_id,
+            process_stream_async = getattr(engine, "process_stream_async", None)
+            if callable(process_stream_async):
+                runtime_stream = await process_stream_async(
                     turn_id,
-                    event,
+                    user_text,
+                    {"uid": "acp-user", "tid": "acp-team", "exp_epoch": 0},
+                    metadata,
+                    lambda: self._session_cancelled.get(session_id, False),
+                    permission_requester,
+                    images=[str(item) for item in runtime_images if str(item).strip()],
                 )
+                async with runtime_stream.events:
+                    async for event in runtime_stream.events:
+                        if str(event.get("type") or "") == "delta":
+                            payload = event.get("payload") or {}
+                            if str(payload.get("text") or ""):
+                                saw_agent_message_delta = True
+                        await self._handle_runtime_event(session_id, turn_id, event)
+                result = await runtime_stream.result
+            else:
+                def event_callback(event: dict[str, Any]) -> None:
+                    nonlocal saw_agent_message_delta
+                    if str(event.get("type") or "") == "delta":
+                        payload = event.get("payload") or {}
+                        if str(payload.get("text") or ""):
+                            saw_agent_message_delta = True
+                    anyio.from_thread.run(
+                        self._handle_runtime_event,
+                        session_id,
+                        turn_id,
+                        event,
+                    )
 
-            result = await engine.process_async(
-                turn_id,
-                user_text,
-                {"uid": "acp-user", "tid": "acp-team", "exp_epoch": 0},
-                metadata,
-                event_callback,
-                lambda: self._session_cancelled.get(session_id, False),
-                permission_requester,
-                images=[str(item) for item in runtime_images if str(item).strip()],
-            )
+                result = await engine.process_async(
+                    turn_id,
+                    user_text,
+                    {"uid": "acp-user", "tid": "acp-team", "exp_epoch": 0},
+                    metadata,
+                    event_callback,
+                    lambda: self._session_cancelled.get(session_id, False),
+                    permission_requester,
+                    images=[str(item) for item in runtime_images if str(item).strip()],
+                )
 
             final_answer = str(result.get("final_answer") or "").strip()
             if final_answer:

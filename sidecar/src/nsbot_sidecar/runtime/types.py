@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Callable, Protocol, TypedDict
+from typing import Any, Awaitable, Callable, Protocol, TypedDict
+
+from anyio.abc import ObjectReceiveStream
 
 
 class RuntimeProcessError(RuntimeError):
@@ -47,6 +49,17 @@ class RuntimeResult(TypedDict):
     session_messages: list[dict[str, Any]]
 
 
+class RuntimeEvent(TypedDict):
+    type: str
+    payload: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class RuntimeEventStream:
+    events: ObjectReceiveStream[RuntimeEvent]
+    result: Awaitable[RuntimeResult]
+
+
 @dataclass(frozen=True)
 class RuntimeRequestContext:
     turn_id: str
@@ -68,3 +81,14 @@ class RuntimeEngine(Protocol):
         permission_requester: Callable[[dict[str, Any]], str] | None = None,
         images: list[str] | None = None,
     ) -> RuntimeResult: ...
+
+    async def process_stream_async(
+        self,
+        turn_id: str,
+        user_input: str,
+        auth_context: dict[str, Any],
+        metadata: RunMetadata,
+        is_cancelled: Callable[[], bool] | None = None,
+        permission_requester: Callable[[dict[str, Any]], str] | None = None,
+        images: list[str] | None = None,
+    ) -> RuntimeEventStream: ...

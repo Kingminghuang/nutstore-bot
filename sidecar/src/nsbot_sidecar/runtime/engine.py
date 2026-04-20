@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import io
 import inspect
 import json
@@ -41,6 +42,8 @@ from nsbot_sidecar.runtime.types import (
     RunMetadata,
     RuntimeCancelledError,
     RuntimeEngine,
+    RuntimeEvent,
+    RuntimeEventStream,
     RuntimeProcessError,
     RuntimeResult,
     RuntimeWorkerConfig,
@@ -108,6 +111,39 @@ class SmolagentsRuntimeEngine:
             permission_requester,
             images,
         )
+
+    async def process_stream_async(
+        self,
+        turn_id: str,
+        user_input: str,
+        auth_context: dict[str, Any],
+        metadata: RunMetadata,
+        is_cancelled: Callable[[], bool] | None = None,
+        permission_requester: Callable[[dict[str, Any]], str] | None = None,
+        images: list[str] | None = None,
+    ) -> RuntimeEventStream:
+        send_stream, receive_stream = anyio.create_memory_object_stream[RuntimeEvent](
+            16
+        )
+
+        async def run_and_close() -> RuntimeResult:
+            async with send_stream:
+                def event_sink(event: dict[str, Any]) -> None:
+                    anyio.from_thread.run(send_stream.send, cast(RuntimeEvent, event))
+
+                return await self.process_async(
+                    turn_id,
+                    user_input,
+                    auth_context,
+                    metadata,
+                    event_callback=event_sink,
+                    is_cancelled=is_cancelled,
+                    permission_requester=permission_requester,
+                    images=images,
+                )
+
+        result_task = asyncio.create_task(run_and_close())
+        return RuntimeEventStream(events=receive_stream, result=result_task)
 
     def _process_sync(
         self,
@@ -289,144 +325,43 @@ class SmolagentsRuntimeEngine:
                 if is_cancelled is not None and is_cancelled():
                     raise RuntimeCancelledError()
                 if isinstance(event, ChatMessageStreamDelta):
-                    if event.content is None or event.content == "":
-                        continue
-                    current_step_id = allocate_step_id(current_step_id)
-                    stream_buffer_by_step.setdefault(current_step_id, "")
-                    stream_buffer_by_step[current_step_id] += event.content
-                    deltas.append(
-                        {
-                            "step_id": current_step_id,
-                            "text": event.content,
-                        }
+                    runtime_event, current_step_id = self._runtime_event_from_delta(
+                        event=event,
+                        current_step_id=current_step_id,
+                        allocate_step_id=allocate_step_id,
+                        stream_buffer_by_step=stream_buffer_by_step,
+                        deltas=deltas,
                     )
-                    if event_callback is not None:
-                        event_callback(
-                            {
-                                "type": "delta",
-                                "payload": {
-                                    "step_id": current_step_id,
-                                    "text": event.content,
-                                },
-                            }
-                        )
+                    if runtime_event is None:
+                        continue
+                    self._emit_runtime_event(event_callback, runtime_event)
                     continue
 
                 if isinstance(event, PlanningStep):
                     step_id = allocate_step_id(current_step_id)
-                    timeline_entry_payload = {
-                        "session_id": session_key,
-                        "turn_id": turn_id,
-                        "entry_kind": "planning",
-                        "display_role": "assistant",
-                        "step_id": step_id,
-                        "step_number": None,
-                        "content_text": event.plan or "",
-                        "content_json": None,
-                    }
-                    if event_callback is not None:
-                        event_callback(
-                            {
-                                "type": "timeline_entry",
-                                "payload": timeline_entry_payload,
-                            }
-                        )
+                    self._emit_runtime_event(
+                        event_callback,
+                        self._runtime_event_from_planning_step(
+                            session_key=session_key,
+                            turn_id=turn_id,
+                            step_id=step_id,
+                            event=event,
+                        ),
+                    )
                     continue
 
                 if isinstance(event, ActionStep):
                     step_id = allocate_step_id(current_step_id)
-                    usage = self._usage_dict(event.token_usage)
-                    stream_step_text = stream_buffer_by_step.get(step_id)
-                    extracted_thought = extract_action_thought(event.model_output)
-                    thought_source = "model_output"
-                    if extracted_thought is None and stream_step_text:
-                        extracted_thought = extract_action_thought(stream_step_text)
-                        thought_source = (
-                            "run.delta" if extracted_thought is not None else "none"
-                        )
-                    elif extracted_thought is None:
-                        thought_source = "none"
-
-                    LOGGER.info(
-                        "ActionStep thought extraction: turn_id=%s step_id=%s source=%s has_thought=%s preview=%s",
-                        turn_id,
-                        step_id,
-                        thought_source,
-                        extracted_thought is not None,
-                        (
-                            (extracted_thought or "")[:120]
-                            if extracted_thought is not None
-                            else ""
+                    self._emit_runtime_event(
+                        event_callback,
+                        self._runtime_event_from_action_step(
+                            session_key=session_key,
+                            turn_id=turn_id,
+                            step_id=step_id,
+                            event=event,
+                            stream_buffer_by_step=stream_buffer_by_step,
                         ),
                     )
-                    tool_calls: list[dict[str, Any]] = []
-                    for tool_call in event.tool_calls or []:
-                        tool_calls.append(
-                            {
-                                "id": tool_call.id,
-                                "name": tool_call.name,
-                                "argumentsText": json.dumps(
-                                    tool_call.arguments, ensure_ascii=False
-                                )
-                                if not isinstance(tool_call.arguments, str)
-                                else tool_call.arguments,
-                            }
-                        )
-                    tool_results_by_call_id = _collect_tool_results_by_call_id(
-                        event.action_output
-                    )
-                    tool_details_by_call_id = {
-                        call_id: {"details": result_payload["details"]}
-                        for call_id, result_payload in tool_results_by_call_id.items()
-                        if isinstance(result_payload.get("details"), dict)
-                        and result_payload.get("details")
-                    }
-                    timeline_entry_payload = {
-                        "session_id": session_key,
-                        "turn_id": turn_id,
-                        "entry_kind": "action",
-                        "display_role": "assistant",
-                        "step_id": step_id,
-                        "step_number": int(event.step_number),
-                        "content_text": None,
-                        "content_json": json.dumps(
-                            {
-                                "thought": extracted_thought,
-                                "toolCalls": tool_calls,
-                                "observations": self._observation_list(
-                                    event.observations
-                                ),
-                                "codeAction": None
-                                if event.code_action is None
-                                else str(event.code_action),
-                                "actionOutput": _serialize_action_output(
-                                    event.action_output
-                                ),
-                                "toolDetailsByCallId": tool_details_by_call_id,
-                                "toolResults": [
-                                    {"callId": call_id, **result_payload}
-                                    for call_id, result_payload in tool_results_by_call_id.items()
-                                ],
-                                "error": None
-                                if event.error is None
-                                else str(event.error),
-                                "usage": {
-                                    "inputTokens": usage.get("input_tokens", 0),
-                                    "outputTokens": usage.get("output_tokens", 0),
-                                    "reasoningTokens": usage.get("reasoning_tokens", 0),
-                                },
-                                "durationMs": self._duration_ms(event),
-                            },
-                            ensure_ascii=False,
-                        ),
-                    }
-                    if event_callback is not None:
-                        event_callback(
-                            {
-                                "type": "timeline_entry",
-                                "payload": timeline_entry_payload,
-                            }
-                        )
                     if event.is_final_answer and event.action_output is not None:
                         final_answer = str(event.action_output)
                     current_step_id = None
@@ -469,6 +404,170 @@ class SmolagentsRuntimeEngine:
                 "session_messages": projected_messages,
             },
         )
+
+    def _emit_runtime_event(
+        self,
+        event_callback: Callable[[dict[str, Any]], None] | None,
+        event: RuntimeEvent | None,
+    ) -> None:
+        if event_callback is None or event is None:
+            return
+        event_callback(event)
+
+    def _runtime_event_from_delta(
+        self,
+        *,
+        event: ChatMessageStreamDelta,
+        current_step_id: str | None,
+        allocate_step_id: Callable[[str | None], str],
+        stream_buffer_by_step: dict[str, str],
+        deltas: list[dict[str, Any]],
+    ) -> tuple[RuntimeEvent | None, str | None]:
+        if event.content is None or event.content == "":
+            return None, current_step_id
+
+        step_id = allocate_step_id(current_step_id)
+        stream_buffer_by_step.setdefault(step_id, "")
+        stream_buffer_by_step[step_id] += event.content
+        deltas.append(
+            {
+                "step_id": step_id,
+                "text": event.content,
+            }
+        )
+        return {
+            "type": "delta",
+            "payload": {
+                "step_id": step_id,
+                "text": event.content,
+            },
+        }, step_id
+
+    def _runtime_event_from_planning_step(
+        self,
+        *,
+        session_key: str,
+        turn_id: str,
+        step_id: str,
+        event: PlanningStep,
+    ) -> RuntimeEvent:
+        return {
+            "type": "timeline_entry",
+            "payload": {
+                "session_id": session_key,
+                "turn_id": turn_id,
+                "entry_kind": "planning",
+                "display_role": "assistant",
+                "step_id": step_id,
+                "step_number": None,
+                "content_text": event.plan or "",
+                "content_json": None,
+            },
+        }
+
+    def _runtime_event_from_action_step(
+        self,
+        *,
+        session_key: str,
+        turn_id: str,
+        step_id: str,
+        event: ActionStep,
+        stream_buffer_by_step: dict[str, str],
+    ) -> RuntimeEvent:
+        usage = self._usage_dict(event.token_usage)
+        extracted_thought = self._extract_action_thought(
+            event=event,
+            turn_id=turn_id,
+            step_id=step_id,
+            stream_buffer_by_step=stream_buffer_by_step,
+        )
+        tool_results_by_call_id = _collect_tool_results_by_call_id(event.action_output)
+        tool_details_by_call_id = {
+            call_id: {"details": result_payload["details"]}
+            for call_id, result_payload in tool_results_by_call_id.items()
+            if isinstance(result_payload.get("details"), dict)
+            and result_payload.get("details")
+        }
+
+        return {
+            "type": "timeline_entry",
+            "payload": {
+                "session_id": session_key,
+                "turn_id": turn_id,
+                "entry_kind": "action",
+                "display_role": "assistant",
+                "step_id": step_id,
+                "step_number": int(event.step_number),
+                "content_text": None,
+                "content_json": json.dumps(
+                    {
+                        "thought": extracted_thought,
+                        "toolCalls": self._tool_calls_payload(event),
+                        "observations": self._observation_list(event.observations),
+                        "codeAction": None
+                        if event.code_action is None
+                        else str(event.code_action),
+                        "actionOutput": _serialize_action_output(event.action_output),
+                        "toolDetailsByCallId": tool_details_by_call_id,
+                        "toolResults": [
+                            {"callId": call_id, **result_payload}
+                            for call_id, result_payload in tool_results_by_call_id.items()
+                        ],
+                        "error": None if event.error is None else str(event.error),
+                        "usage": {
+                            "inputTokens": usage.get("input_tokens", 0),
+                            "outputTokens": usage.get("output_tokens", 0),
+                            "reasoningTokens": usage.get("reasoning_tokens", 0),
+                        },
+                        "durationMs": self._duration_ms(event),
+                    },
+                    ensure_ascii=False,
+                ),
+            },
+        }
+
+    def _extract_action_thought(
+        self,
+        *,
+        event: ActionStep,
+        turn_id: str,
+        step_id: str,
+        stream_buffer_by_step: dict[str, str],
+    ) -> str | None:
+        stream_step_text = stream_buffer_by_step.get(step_id)
+        extracted_thought = extract_action_thought(event.model_output)
+        thought_source = "model_output"
+        if extracted_thought is None and stream_step_text:
+            extracted_thought = extract_action_thought(stream_step_text)
+            thought_source = "run.delta" if extracted_thought is not None else "none"
+        elif extracted_thought is None:
+            thought_source = "none"
+
+        LOGGER.info(
+            "ActionStep thought extraction: turn_id=%s step_id=%s source=%s has_thought=%s preview=%s",
+            turn_id,
+            step_id,
+            thought_source,
+            extracted_thought is not None,
+            ((extracted_thought or "")[:120] if extracted_thought is not None else ""),
+        )
+        return extracted_thought
+
+    def _tool_calls_payload(self, event: ActionStep) -> list[dict[str, Any]]:
+        tool_calls: list[dict[str, Any]] = []
+        for tool_call in event.tool_calls or []:
+            tool_calls.append(
+                {
+                    "id": tool_call.id,
+                    "name": tool_call.name,
+                    "argumentsText": json.dumps(
+                        tool_call.arguments, ensure_ascii=False
+                    )
+                    if not isinstance(tool_call.arguments, str)
+                    else tool_call.arguments,
+                }
+            )
+        return tool_calls
 
     def _resolve_workspace_path(self, metadata: RunMetadata) -> str:
         raw = metadata.workspace_path or self.config.workspace_path_default
