@@ -545,8 +545,8 @@ class AcpJsonRpcSession:
                 },
             },
             "agentInfo": {
-                "name": "nutstore-sidecar",
-                "title": "Nutstore Sidecar",
+                "name": "nsbot",
+                "title": "Nutstore Bot",
                 "version": "0.1.0",
             },
             "authMethods": self._supported_auth_methods(),

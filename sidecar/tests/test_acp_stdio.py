@@ -288,5 +288,76 @@ class AcpStdioIntegrationTests(unittest.TestCase):
 
         asyncio.run(_run())
 
+    def test_raw_jsonrpc_gateway_auth_forwards_meta_payload(self) -> None:
+        temp_dir = Path(tempfile.mkdtemp(prefix="acp-stdio-gateway-"))
+        workspace = temp_dir / "workspace"
+        workspace.mkdir(parents=True, exist_ok=True)
+
+        async def _run() -> None:
+            sidecar_src = str(Path(__file__).resolve().parents[1] / "src")
+            env = {
+                **os.environ,
+                "NSBOT_ACP_TRANSPORT": "stdio",
+                "NS_BOT_HOME": str(temp_dir),
+                "PYTHONPATH": sidecar_src
+                if not os.environ.get("PYTHONPATH")
+                else f"{sidecar_src}:{os.environ['PYTHONPATH']}",
+            }
+            proc = await asyncio.create_subprocess_exec(
+                sys.executable,
+                "-m",
+                "nsbot.api.acp_stdio",
+                cwd=str(workspace),
+                env=env,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            try:
+                init = await _send_jsonrpc_request(
+                    proc,
+                    1,
+                    "initialize",
+                    {
+                        "protocolVersion": 1,
+                        "clientCapabilities": {
+                            "fs": {"readTextFile": False, "writeTextFile": False},
+                            "terminal": False,
+                        },
+                    },
+                )
+                self.assertEqual(init["result"]["protocolVersion"], 1)
+
+                authenticate = await _send_jsonrpc_request(
+                    proc,
+                    2,
+                    "authenticate",
+                    {
+                        "methodId": "GATEWAY",
+                        "_meta": {
+                            "gateway": {
+                                "protocol": "custom",
+                                "baseUrl": "https://example.invalid/v1",
+                            },
+                            "api-key": "sk-gateway-test",
+                        },
+                    },
+                )
+                auth_meta = authenticate["result"]["_meta"]["auth"]
+                self.assertEqual(auth_meta["methodId"], "GATEWAY")
+                self.assertEqual(auth_meta["gateway"]["protocol"], "custom")
+                self.assertEqual(auth_meta["gateway"]["baseUrl"], "https://example.invalid/v1")
+            finally:
+                if proc.stdin is not None:
+                    proc.stdin.close()
+                proc.terminate()
+                try:
+                    await asyncio.wait_for(proc.wait(), timeout=5)
+                except asyncio.TimeoutError:
+                    proc.kill()
+                    await proc.wait()
+
+        asyncio.run(_run())
+
 if __name__ == "__main__":
     unittest.main()

@@ -216,10 +216,9 @@ run_provider_model_smoke() {
   (
   set -euo pipefail
 
-  local smoke_root ns_bot_home seed_json
-  local openai_model_1 openai_model_2
-  local out_use out_status out_disable out_openai_list
-  local out_custom_list out_remove out_delete out_provider_list
+  local smoke_root ns_bot_home
+  local out_create out_get out_set_default
+  local openai_identity
 
   smoke_root="$(mktemp -d "${TMPDIR:-/tmp}/nsbot-cli-provider-smoke.XXXXXX")"
   ns_bot_home="${smoke_root}/ns-bot-home"
@@ -228,169 +227,45 @@ run_provider_model_smoke() {
 
   echo "[smoke] Running provider/model smoke checks with NS_BOT_HOME=${ns_bot_home}"
 
-  seed_json="$(
-    PYTHONPATH="${SIDECAR_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}" \
-    uv run --project "${SIDECAR_ROOT}" python - "${ns_bot_home}" <<'PY'
-from __future__ import annotations
+  out_create="${smoke_root}/models-create.json"
+  out_get="${smoke_root}/models-get.json"
+  out_set_default="${smoke_root}/models-set-default.json"
 
-import json
-import sys
+  echo "[smoke] models create openai/gpt-5.4"
+  run_capture \
+    "${out_create}" \
+    "${launcher_path}" \
+    --ns-bot-home "${ns_bot_home}" \
+    models create \
+    --name "OpenAI" \
+    --base-url "https://api.openai.example/v1" \
+    --model-id "openai/gpt-5.4" \
+    --api-key "sk-build-smoke"
+  assert_json_path_equals "${out_create}" "preferredModelId" "openai/gpt-5.4"
+  openai_identity="$(uv run --project "${SIDECAR_ROOT}" python -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["identity"])' "${out_create}")"
+  [[ -n "${openai_identity}" ]] || {
+    echo "missing model identity from models create smoke output" >&2
+    exit 1
+  }
 
-from nsbot.infrastructure.repositories import create_repositories
-from nsbot.infrastructure.secret_store import LocalSecretStore, ProviderSecretPayload
-from nsbot.infrastructure.storage import connect_database
-from nsbot.providers.provider_catalog import list_providers
+  echo "[smoke] models get ${openai_identity}"
+  run_capture \
+    "${out_get}" \
+    "${launcher_path}" \
+    --ns-bot-home "${ns_bot_home}" \
+    models get \
+    "${openai_identity}"
+  assert_json_path_equals "${out_get}" "modelId" "openai/gpt-5.4"
 
-ns_bot_home = sys.argv[1]
-database = connect_database(ns_bot_home)
-repositories = create_repositories(database)
-secret_store = LocalSecretStore(ns_bot_home)
-
-openai_models = []
-for provider in list_providers():
-  if str(provider.get("id") or "") == "openai":
-    openai_models = [str(item.get("id") or "") for item in provider.get("models", [])]
-    break
-
-if len(openai_models) < 2:
-  raise RuntimeError("expected at least 2 OpenAI catalog models")
-
-repositories.providers.save_bundle(
-  provider_data={
-    "id": "openai",
-    "kind": "builtin",
-    "runtime_provider": "openai",
-    "catalog_provider_id": "openai",
-    "display_name": "OpenAI Demo",
-    "base_url": None,
-    "secret_ref": "sec_prov_openai_demo",
-    "api_key_configured": True,
-    "model_policy": "restricted",
-    "preferred_model_id": openai_models[1],
-    "is_enabled": True,
-  },
-  models=[
-    {
-      "id": "pmod_openai_1",
-      "source": "catalog",
-      "model_id": openai_models[0],
-      "display_name": None,
-      "enabled": True,
-      "sort_order": 0,
-    },
-    {
-      "id": "pmod_openai_2",
-      "source": "catalog",
-      "model_id": openai_models[1],
-      "display_name": None,
-      "enabled": True,
-      "sort_order": 1,
-    },
-  ],
-)
-
-repositories.providers.save_bundle(
-  provider_data={
-    "id": "prov_custom_demo",
-    "kind": "custom",
-    "runtime_provider": "custom",
-    "catalog_provider_id": None,
-    "custom_slug": "demo-gateway",
-    "display_name": "Demo Gateway",
-    "base_url": "https://llm.example.com/v1",
-    "secret_ref": "sec_prov_custom_demo",
-    "api_key_configured": True,
-    "model_policy": "custom_only",
-    "preferred_model_id": "demo-model-alpha",
-    "is_enabled": True,
-  },
-  models=[
-    {
-      "id": "pmod_custom_1",
-      "source": "custom",
-      "model_id": "demo-model-alpha",
-      "display_name": "Demo Model Alpha",
-      "enabled": True,
-      "sort_order": 0,
-    },
-    {
-      "id": "pmod_custom_2",
-      "source": "custom",
-      "model_id": "demo-model-beta",
-      "display_name": "Demo Model Beta",
-      "enabled": True,
-      "sort_order": 1,
-    },
-  ],
-)
-
-secret_store.save_provider_secret(
-  "sec_prov_openai_demo",
-  ProviderSecretPayload(version=1, api_key="sk-openai-demo"),
-)
-secret_store.save_provider_secret(
-  "sec_prov_custom_demo",
-  ProviderSecretPayload(version=1, api_key="sk-custom-demo"),
-)
-
-database.close()
-
-print(
-  json.dumps(
-    {
-      "openai_model_1": openai_models[0],
-      "openai_model_2": openai_models[1],
-    },
-    ensure_ascii=False,
-  )
-)
-PY
-  )"
-
-  openai_model_1="$(uv run --project "${SIDECAR_ROOT}" python -c 'import json,sys; print(json.loads(sys.argv[1])["openai_model_1"])' "${seed_json}")"
-  openai_model_2="$(uv run --project "${SIDECAR_ROOT}" python -c 'import json,sys; print(json.loads(sys.argv[1])["openai_model_2"])' "${seed_json}")"
-
-  out_use="${smoke_root}/providers-use.json"
-  out_status="${smoke_root}/models-openai-status.json"
-  out_disable="${smoke_root}/models-disable.json"
-  out_openai_list="${smoke_root}/models-openai-list.json"
-  out_custom_list="${smoke_root}/models-custom-list.json"
-  out_remove="${smoke_root}/models-remove.json"
-  out_delete="${smoke_root}/providers-delete.json"
-  out_provider_list="${smoke_root}/providers-list.json"
-
-  echo "[smoke] providers use openai (auto-select first model)"
-  run_capture "${out_use}" "${launcher_path}" --ns-bot-home "${ns_bot_home}" providers use openai
-  assert_json_path_equals "${out_use}" "ok" "True"
-  assert_json_path_equals "${out_use}" "providerId" "openai"
-  assert_json_path_equals "${out_use}" "modelId" "${openai_model_1}"
-
-  run_capture "${out_status}" "${launcher_path}" --ns-bot-home "${ns_bot_home}" models list --provider-id openai
-  assert_model_enabled_state "${out_status}" "openai" "${openai_model_1}" true
-
-  echo "[smoke] models disable on OpenAI second model"
-  run_capture "${out_disable}" "${launcher_path}" --ns-bot-home "${ns_bot_home}" models disable --provider-id openai --model "${openai_model_2}"
-  assert_json_path_equals "${out_disable}" "ok" "True"
-  assert_json_path_equals "${out_disable}" "action" "disabled"
-
-  run_capture "${out_openai_list}" "${launcher_path}" --ns-bot-home "${ns_bot_home}" models list --provider-id openai
-  assert_model_disabled_or_absent "${out_openai_list}" "openai" "${openai_model_2}"
-
-  echo "[smoke] models remove custom model"
-  run_capture "${out_remove}" "${launcher_path}" --ns-bot-home "${ns_bot_home}" models remove --provider-id prov_custom_demo --model demo-model-alpha
-  assert_json_path_equals "${out_remove}" "ok" "True"
-  assert_json_path_equals "${out_remove}" "action" "removed"
-
-  run_capture "${out_custom_list}" "${launcher_path}" --ns-bot-home "${ns_bot_home}" models list --provider-id prov_custom_demo
-  assert_model_absent "${out_custom_list}" "prov_custom_demo" "demo-model-alpha"
-
-  echo "[smoke] providers delete custom provider"
-  run_capture "${out_delete}" "${launcher_path}" --ns-bot-home "${ns_bot_home}" providers delete --provider-id prov_custom_demo
-  assert_json_path_equals "${out_delete}" "ok" "True"
-  assert_json_path_equals "${out_delete}" "deletedProviderId" "prov_custom_demo"
-
-  run_capture "${out_provider_list}" "${launcher_path}" --ns-bot-home "${ns_bot_home}" providers list
-  assert_configured_provider_absent "${out_provider_list}" "prov_custom_demo"
+  echo "[smoke] models set-default ${openai_identity}"
+  run_capture \
+    "${out_set_default}" \
+    "${launcher_path}" \
+    --ns-bot-home "${ns_bot_home}" \
+    models set-default \
+    "${openai_identity}"
+  assert_json_path_equals "${out_set_default}" "action" "set-default"
+  assert_json_path_equals "${out_set_default}" "modelId" "openai/gpt-5.4"
 
   echo "[smoke] Provider/model smoke checks passed."
   )

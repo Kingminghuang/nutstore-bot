@@ -189,10 +189,14 @@ class _AcpSdkAgent:
         )
 
     async def authenticate(self, method_id: str, **kwargs: Any) -> dict[str, Any]:
-        del kwargs
         return await self._transport.dispatch_request(
             "authenticate",
-            {"methodId": method_id},
+            _compact(
+                {
+                    "methodId": method_id,
+                    "_meta": kwargs or None,
+                }
+            ),
         )
 
     async def new_session(

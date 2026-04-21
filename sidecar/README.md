@@ -107,6 +107,39 @@ bash sidecar/tests/e2e_packaged_cli.sh
 bash sidecar/tests/e2e_agent_cli.sh
 ```
 
+## Packaged ACP CLI E2E
+
+The packaged ACP CLI E2E uses the real packaged launcher, reads provider settings from the repository root `.env`, configures the model via packaged CLI commands, then validates ACP methods through the official TypeScript SDK.
+
+Required `.env` entries:
+
+```bash
+MODEL_ID=openai/gpt-5.4
+MODEL_BASE_URL=...
+MODEL_API_KEY=...
+```
+
+Run from repository root:
+
+```bash
+bash sidecar/tests/e2e_packaged_acp_cli.sh
+```
+
+The script will:
+
+1. build the packaged CLI if `sidecar/dist/nsbot` is missing;
+2. run `models create` with the packaged CLI;
+3. run `models set-default` with the packaged CLI;
+4. launch `nsbot --acp` from the packaged CLI;
+5. validate `initialize`, `authenticate`, `session/new`, `session/load`, `session/prompt`, `nsbot/provider/catalog`, `nsbot/provider/model_options`, and `nsbot/timeline/list` using `@agentclientprotocol/sdk`.
+
+Artifacts are written under `sidecar/build/e2e-packaged-acp-cli/`, including:
+
+- packaged CLI JSON outputs;
+- ACP protocol wire log as NDJSON;
+- ACP server stderr log;
+- validator summary JSON.
+
 ## Runtime docs
 
 - CLI workspace/thread usage: `sidecar/docs/cli_workspace_session.md`
