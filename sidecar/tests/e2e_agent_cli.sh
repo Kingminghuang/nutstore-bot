@@ -29,7 +29,8 @@ run_capture() {
   local out_file="$1"
   shift
   echo "+ $*"
-  "$@" 2>&1 | tee "${out_file}"
+  # Keep stderr visible in terminal, but persist only stdout for JSON parsing.
+  "$@" | tee "${out_file}"
 }
 
 require_file() {
@@ -161,7 +162,6 @@ run_cmd "${BIN_PATH}" --ns-bot-home "${NS_BOT_HOME}" threads list
 pass "workspace lifecycle baseline"
 
 seed_default_provider
-run_cmd "${BIN_PATH}" --ns-bot-home "${NS_BOT_HOME}" providers use openai
 
 DIAGNOSE_OUT="${TMP_DIR}/diagnose.json"
 run_capture \

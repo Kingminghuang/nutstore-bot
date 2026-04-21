@@ -9,7 +9,7 @@ import time
 import unittest
 from pathlib import Path
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 import subprocess
 
 import anyio
@@ -304,7 +304,10 @@ class AcpSessionTests(unittest.TestCase):
         self.assertEqual(response["error"]["code"], -32000)
         self.assertIn("unsupported authentication method", response["error"]["message"])
 
-    def test_session_new_requires_authenticate(self) -> None:
+    def test_session_new_bootstraps_auth_from_default_selection(self) -> None:
+        self.app_state.provider_service.set_default_model(
+            self.provider.provider.id, "gpt-5.4"
+        )
         workspace_path = self.workspace.real_path
         transport = _InMemoryTransport(
             [
@@ -316,12 +319,87 @@ class AcpSessionTests(unittest.TestCase):
                 }
             ]
         )
-        asyncio.run(AcpJsonRpcSession(transport, self.app_state).run())
+        with patch.dict(os.environ, {"OPENAI_API_KEY": ""}, clear=False):
+            asyncio.run(AcpJsonRpcSession(transport, self.app_state).run())
+        response = _response_for(transport.outgoing, 1)
+        self.assertIn("result", response)
+        self.assertIn("sessionId", response["result"])
+
+    def test_session_new_requires_auth_when_default_provider_has_no_key(self) -> None:
+        self.app_state.provider_service.set_default_model(
+            self.provider.provider.id, "gpt-5.4"
+        )
+        self.app_state.secret_store.delete_provider_secret(self.provider.provider.secret_ref)
+        workspace_path = self.workspace.real_path
+        transport = _InMemoryTransport(
+            [
+                {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "session/new",
+                    "params": {"cwd": workspace_path, "mcpServers": []},
+                }
+            ]
+        )
+        with patch.dict(os.environ, {"OPENAI_API_KEY": ""}, clear=False):
+            asyncio.run(AcpJsonRpcSession(transport, self.app_state).run())
         response = _response_for(transport.outgoing, 1)
         self.assertEqual(response["error"]["code"], -32000)
         self.assertIn("Authentication required", response["error"]["message"])
 
-    def test_session_new_rejects_non_absolute_cwd(self) -> None:
+    def test_session_prompt_bootstraps_auth_from_default_selection(self) -> None:
+        self.app_state.provider_service.set_default_model(
+            self.provider.provider.id, "gpt-5.4"
+        )
+        session = self.app_state.repositories.sessions.create(
+            workspace_id=self.workspace.id,
+            active_provider_id=self.provider.provider.id,
+            active_model_id="gpt-5.4",
+        )
+        transport = _InMemoryTransport([])
+        session_runner = AcpJsonRpcSession(transport, self.app_state)
+        fake_actor = AsyncMock()
+        fake_actor.running_prompt = False
+
+        async def _invoke_request() -> None:
+            with patch.object(
+                session_runner,
+                "_ensure_session_actor",
+                return_value=fake_actor,
+            ) as ensure_actor:
+                await session_runner._handle_request(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "method": "session/prompt",
+                        "params": {
+                            "sessionId": session.id,
+                            "prompt": [{"type": "text", "text": "ping"}],
+                        },
+                    }
+                )
+                ensure_actor.assert_awaited_once_with(session.id)
+
+        with patch.dict(os.environ, {"OPENAI_API_KEY": ""}, clear=False):
+            asyncio.run(_invoke_request())
+
+        self.assertIsNotNone(session_runner._auth_state)
+        auth_state = session_runner._auth_state
+        if auth_state is None:
+            self.fail("expected auth state to be initialized")
+        self.assertEqual(
+            auth_state.method_id,
+            session_runner._auth_method_id_for_provider(self.provider.provider.id),
+        )
+        fake_actor.enqueue_prompt.assert_awaited_once()
+        self.assertFalse(
+            any(
+                payload.get("id") == 1 and "error" in payload
+                for payload in transport.outgoing
+            )
+        )
+
+    def test_session_new_accepts_relative_cwd(self) -> None:
         transport = _InMemoryTransport(
             [
                 {
@@ -340,8 +418,8 @@ class AcpSessionTests(unittest.TestCase):
         )
         asyncio.run(AcpJsonRpcSession(transport, self.app_state).run())
         response = _response_for(transport.outgoing, 2)
-        self.assertEqual(response["error"]["code"], -32000)
-        self.assertIn("absolute path", response["error"]["message"])
+        self.assertIn("result", response)
+        self.assertIn("sessionId", response["result"])
 
     def test_normalize_mcp_http_server_parameter(self) -> None:
         session_runner = AcpJsonRpcSession(_InMemoryTransport([]), self.app_state)

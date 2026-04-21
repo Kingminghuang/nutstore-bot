@@ -221,9 +221,6 @@ def _resolve_run_target(
             },
             provider_id,
             model_id,
-                _build_acp_app_config,
-                _build_runtime_target_resolution,
-                _build_runtime_worker_config,
         )
     finally:
         database.close()

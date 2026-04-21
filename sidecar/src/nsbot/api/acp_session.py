@@ -598,8 +598,41 @@ class AcpJsonRpcSession:
         return f"gateway-{slug}"
 
     def _ensure_authenticated(self) -> None:
+        if self._auth_state is not None:
+            return
+
+        self._bootstrap_auth_state_from_default_selection()
         if self._auth_state is None:
             raise RuntimeError("Authentication required")
+
+    def _bootstrap_auth_state_from_default_selection(self) -> None:
+        if self._auth_state is not None:
+            return
+        try:
+            selection = self._default_selection()
+            target_provider_id = str(selection.get("providerId") or "").strip()
+            if not target_provider_id:
+                return
+
+            api_key, key_source, effective_provider_id = self._resolve_api_key_for_auth(
+                target_provider_id=target_provider_id,
+                explicit_api_key=None,
+            )
+            if key_source == "env":
+                self._upsert_provider_for_auth(
+                    provider_id=target_provider_id,
+                    api_key=api_key,
+                )
+            self._auth_state = _AuthState(
+                method_id=self._auth_method_id_for_provider(target_provider_id),
+                target_provider_id=target_provider_id,
+                effective_provider_id=effective_provider_id,
+                key_source=key_source,
+                gateway_protocol=None,
+                gateway_base_url=None,
+            )
+        except Exception:
+            return
 
     def _extract_meta_api_key(self, meta: Any) -> str | None:
         if not isinstance(meta, dict):
@@ -853,8 +886,6 @@ class AcpJsonRpcSession:
 
     def _normalize_absolute_cwd(self, cwd: str) -> str:
         path = Path(cwd).expanduser()
-        if not path.is_absolute():
-            raise RuntimeError("cwd must be an absolute path")
         return str(path.resolve())
 
     def _normalize_mode_id(self, value: str | None) -> SessionModeId:

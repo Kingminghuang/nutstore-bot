@@ -311,6 +311,17 @@ resolve_tool_binary_name() {
   esac
 }
 
+postprocess_launcher_signature() {
+  local launcher_path="$1"
+  if [[ "$(uname -s)" != "Darwin" ]]; then
+    return
+  fi
+
+  echo "[post] Re-sign launcher for macOS local distribution: ${launcher_path}"
+  codesign --force --sign - --timestamp=none "${launcher_path}"
+  codesign --verify --deep --strict --verbose=2 "${launcher_path}"
+}
+
 copy_runtime_tree() {
   local target_triple="$1"
   local fd_name rg_name
@@ -388,6 +399,7 @@ build_rust_launcher() {
 
   cp "${SRC_TAURI_ROOT}/target/release/${LAUNCHER_NAME}" "${DIST_ROOT}/${LAUNCHER_NAME}"
   chmod +x "${DIST_ROOT}/${LAUNCHER_NAME}"
+  postprocess_launcher_signature "${DIST_ROOT}/${LAUNCHER_NAME}"
 }
 
 main() {
