@@ -452,11 +452,11 @@ class SmolagentsRuntimeEngine:
         event: PlanningStep,
     ) -> RuntimeEvent:
         return {
-            "type": "timeline_entry",
+            "type": "runtime_step",
             "payload": {
                 "session_id": session_key,
                 "turn_id": turn_id,
-                "entry_kind": "planning",
+                "step_kind": "planning",
                 "display_role": "assistant",
                 "step_id": step_id,
                 "step_number": None,
@@ -490,11 +490,11 @@ class SmolagentsRuntimeEngine:
         }
 
         return {
-            "type": "timeline_entry",
+            "type": "runtime_step",
             "payload": {
                 "session_id": session_key,
                 "turn_id": turn_id,
-                "entry_kind": "action",
+                "step_kind": "action",
                 "display_role": "assistant",
                 "step_id": step_id,
                 "step_number": int(event.step_number),

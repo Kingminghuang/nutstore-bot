@@ -9,7 +9,7 @@
 - `[x]` Runtime 抽象已经落地：sidecar 已有 `RuntimeEngine` 协议、`RuntimeWorkerConfig`/`RuntimeResult` 等统一 DTO，`turn_service.py`、`worker.py`、CLI 入口均通过 `create_runtime_engine(...)` 调用 runtime，而不是继续依赖旧的 `AgentRuntimeService`。
 - `[x]` Agent 内核替换已经落地：当前 runtime 主代理已经是 `NativeToolCallingAgent`，并挂载 `NativeCodeAgent` 作为 managed subagent，名称为 `python_exec_agent`。
 - `[x]` ACP 最小可用已经落地，而且实现面已超过最小集：除 `initialize`、`session/new`、`session/prompt`、`session/update`、`session/cancel` 外，还支持 `session/load`、`session/list`、`session/resume`、`session/set_mode`、`session/set_config_option` 以及 `_nsbot/*` 扩展方法。
-- `[~]` 事件模型迁移只完成了一半：sidecar 已经能生成 `thread.started / turn.started / item.* / turn.completed / turn.failed` 风格事件，但它们目前主要是由 CLI 基于 runtime/timeline 数据投影得到；底层 runtime 仍输出 `delta` 与 `timeline_entry`，持久化层也仍以 ACP event log / timeline 为主，而不是“ThreadEventType 直接替换到底”。
+- `[~]` 事件模型迁移只完成了一半：sidecar 已经能生成 `thread.started / turn.started / item.* / turn.completed / turn.failed` 风格事件，但它们目前主要是由 CLI 基于 runtime/timeline 数据投影得到；底层 runtime 仍输出 `delta` 与 `runtime_step`，持久化主线也仍以 ACP event log / session/update 为主，而不是“ThreadEventType 直接替换到底”。
 - `[ ]` agent-os 外部沙箱尚未落地：仓库内没有 `SandboxAdapter`、`AgentOsSandboxAdapter`、独立 bridge service 或 agent-os backend 接入实现。
 - `[x]` `runtime_service.py` 已删除，仓库内也无对应文件残留。
 
@@ -26,7 +26,7 @@
   - 当前仍使用本地 sandbox / 本地工具链，没有 agent-os bridge、RPC/HTTP adapter、也没有 backend 选择层。
 - `4) MultiStepAgent 输出适配为 ThreadEventType`：`[~]` 部分完成。
   - CLI 已有 `_build_codex_thread_events(...)`，可把 runtime 事件投影成 `thread.started / turn.started / item.started / item.updated / item.completed / turn.completed / turn.failed`。
-  - 但 runtime 内核仍然产生 `delta` 和 `timeline_entry`；timeline service 仍基于 `acp_event_log` 提供 `_nsbot/timeline/list`；代码里还明确写了 timeline deprecation notice，说明仍处于兼容收口阶段。
+  - 但 runtime 内核仍然产生 `delta` 和 `runtime_step`；timeline service 仍基于 `acp_event_log` 提供 `_nsbot/timeline/list`；ACP 会话实时流仍通过 `session/update` 推送；代码里还明确写了 timeline deprecation notice，说明仍处于兼容收口阶段。
   - 这意味着“新事件可用”，但“旧表示被彻底替换”还没有完成。
 - `5) sidecar 支持 ACP`：`[x]` 已完成。
   - 已有 `api/acp_stdio.py` stdio 入口。
@@ -50,8 +50,8 @@
 
 4. **Phase 3: 事件模型切到 ThreadEventType** `[~]`
 - 已完成的部分：CLI/线程接口已经能消费 Codex SDK 风格事件；thread view 侧的投影逻辑已经存在。
-- 未完成的部分：runtime 原生事件、持久化事件、timeline/list 合同、session/update 存储格式还没有统一到单一 thread event 模型。
-- 当前真实状态更接近“ACP timeline 为主，thread events 为派生投影”。
+- 未完成的部分：runtime 原生事件、持久化事件、timeline/list 合同、session/update 格式还没有统一到单一 thread event 模型。
+- 当前真实状态更接近“ACP event log / session/update 为主，thread events 为 CLI 派生投影”。
 
 5. **Phase 4: ACP 最小可用实现** `[x]`
 - 已超过“最小可用”。
@@ -63,7 +63,7 @@
 - 但“整体收口”仍受 Phase 3 未完成影响：虽然 service 文件已删，事件模型仍未完全收敛。
 
 ### 当前实现与原方案的主要偏差
-- 原方案假设 `run.*` 仍是主事件模型，这个前提已不准确。当前 sidecar 内部更多是 `delta + timeline_entry + ACP session/update + thread event 投影` 的混合状态。
+- 原方案假设 `run.*` 仍是主事件模型，这个前提已不准确。当前 sidecar 内部更多是 `delta + runtime_step + ACP session/update + thread event 投影` 的混合状态。
 - 原方案假设 ACP 还只是首版最小面，这也已不准确；当前 ACP 已经是 sidecar 的核心外部协议面之一。
 - 原方案假设要新建 `ToolCallingRuntimeEngine`。实际实现没有单独拆新类，而是在现有 `SmolagentsRuntimeEngine` 中完成了主代理切换。
 - 原方案假设需要保留 runtime_service 的薄兼容层过渡；实际代码已经直接删除该文件。

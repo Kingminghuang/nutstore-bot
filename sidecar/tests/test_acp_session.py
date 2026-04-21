@@ -703,9 +703,9 @@ class AcpSessionTests(unittest.TestCase):
                 session.id,
                 "turn-1",
                 {
-                    "type": "timeline_entry",
+                    "type": "runtime_step",
                     "payload": {
-                        "entry_kind": "planning",
+                        "step_kind": "planning",
                         "content_text": "Step one",
                     },
                 },
@@ -714,9 +714,9 @@ class AcpSessionTests(unittest.TestCase):
                 session.id,
                 "turn-1",
                 {
-                    "type": "timeline_entry",
+                    "type": "runtime_step",
                     "payload": {
-                        "entry_kind": "planning",
+                        "step_kind": "planning",
                         "content_text": "Step two",
                     },
                 },
@@ -750,9 +750,9 @@ class AcpSessionTests(unittest.TestCase):
                 session.id,
                 "turn-1",
                 {
-                    "type": "timeline_entry",
+                    "type": "runtime_step",
                     "payload": {
-                        "entry_kind": "action",
+                        "step_kind": "action",
                         "content_json": json.dumps(
                             {
                                 "toolCalls": [
@@ -823,9 +823,9 @@ class AcpSessionTests(unittest.TestCase):
                 session.id,
                 "turn-1",
                 {
-                    "type": "timeline_entry",
+                    "type": "runtime_step",
                     "payload": {
-                        "entry_kind": "action",
+                        "step_kind": "action",
                         "content_json": json.dumps(
                             {
                                 "toolCalls": [
@@ -885,9 +885,9 @@ class AcpSessionTests(unittest.TestCase):
                 session.id,
                 "turn-1",
                 {
-                    "type": "timeline_entry",
+                    "type": "runtime_step",
                     "payload": {
-                        "entry_kind": "action",
+                        "step_kind": "action",
                         "content_json": json.dumps(
                             {
                                 "toolCalls": [

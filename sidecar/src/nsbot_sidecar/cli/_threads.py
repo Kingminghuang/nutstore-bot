@@ -11,7 +11,7 @@ from ._support import _http_detail
 from nsbot_sidecar.application.session_service import SessionService
 
 
-def timeline_event_to_thread_event_row(
+def history_event_to_thread_event_row(
     *,
     thread_id: str,
     event: dict[str, Any],
@@ -48,7 +48,7 @@ def list_thread_event_rows(
     for item in events if isinstance(events, list) else []:
         if not isinstance(item, dict):
             continue
-        row = timeline_event_to_thread_event_row(thread_id=thread_id, event=item)
+        row = history_event_to_thread_event_row(thread_id=thread_id, event=item)
         if int(row.get("offset") or 0) <= int(from_offset):
             continue
         if run_id and str(row.get("run_id") or "") != run_id:

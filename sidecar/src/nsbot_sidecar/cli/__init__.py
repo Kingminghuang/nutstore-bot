@@ -37,8 +37,8 @@ from ._threads import (
     handle_threads_command as _handle_threads_command_impl,
     handle_threads_list_command as _handle_threads_list_command_impl,
     handle_watch_command as _handle_watch_command_impl,
+    history_event_to_thread_event_row as _history_event_to_thread_event_row_impl,
     list_thread_event_rows as _list_thread_event_rows_impl,
-    timeline_event_to_thread_event_row as _timeline_event_to_thread_event_row_impl,
 )
 from ._workspaces import (
     handle_workspaces_command as _handle_workspaces_command_impl,
@@ -331,12 +331,12 @@ def _execute_agent_turn(
     return output
 
 
-def _timeline_event_to_thread_event_row(
+def _history_event_to_thread_event_row(
     *,
     thread_id: str,
     event: dict[str, Any],
 ) -> dict[str, Any]:
-    return _timeline_event_to_thread_event_row_impl(thread_id=thread_id, event=event)
+    return _history_event_to_thread_event_row_impl(thread_id=thread_id, event=event)
 
 
 def _list_thread_event_rows(
@@ -885,8 +885,9 @@ def agent_run_command(
     json_mode: bool = typer.Option(False, "--json"),
     include_timeline: bool = typer.Option(
         False,
+        "--include-deprecated-timeline",
         "--include-timeline",
-        help="Include deprecated ACP timeline compatibility rows in JSON output.",
+        help="Include deprecated ACP timeline compatibility rows in JSON output. `--include-timeline` is kept as a compatibility alias.",
     ),
     db_path: str = typer.Option("", "--db-path"),
 ) -> None:

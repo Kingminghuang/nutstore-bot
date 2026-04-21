@@ -2395,14 +2395,14 @@ class AcpJsonRpcSession:
             )
             return
 
-        if etype != "timeline_entry":
+        if etype != "runtime_step":
             return
 
-        entry_kind = str(payload.get("entry_kind") or "")
-        if not entry_kind:
+        step_kind = str(payload.get("step_kind") or "")
+        if not step_kind:
             return
 
-        if entry_kind == "planning":
+        if step_kind == "planning":
             plan_key = self._plan_entries_key(session_id, turn_id)
             entries = list(self._turn_plan_entries.get(plan_key) or [])
             entries.append(
@@ -2416,7 +2416,7 @@ class AcpJsonRpcSession:
             await self._emit_full_plan_update(session_id, turn_id, entries)
             return
 
-        if entry_kind != "action":
+        if step_kind != "action":
             return
 
         content_json = payload.get("content_json")

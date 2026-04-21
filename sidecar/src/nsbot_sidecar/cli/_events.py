@@ -270,14 +270,14 @@ def _build_codex_thread_events(
             _append_item_event(events, "item.updated", dict(item))
             continue
 
-        if event_type != "timeline_entry":
+        if event_type != "runtime_step":
             continue
 
-        entry_kind = str(payload_dict.get("entry_kind") or "").strip()
+        step_kind = str(payload_dict.get("step_kind") or "").strip()
         step_id = str(payload_dict.get("step_id") or "").strip() or None
         finalize_message(step_id)
 
-        if entry_kind == "planning":
+        if step_kind == "planning":
             todo_item = {
                 "id": f"todo-list:{turn_id}",
                 "type": "todo_list",
@@ -291,7 +291,7 @@ def _build_codex_thread_events(
                 _append_item_event(events, "item.updated", dict(todo_item))
             continue
 
-        if entry_kind != "action":
+        if step_kind != "action":
             continue
 
         content_json = payload_dict.get("content_json")

@@ -634,17 +634,17 @@ class CliProviderModelTests(unittest.TestCase):
     def test_codex_adapter_maps_plan_to_todo_and_action_thought_to_reasoning(self) -> None:
         runtime_events = [
             {
-                "type": "timeline_entry",
+                "type": "runtime_step",
                 "payload": {
-                    "entry_kind": "planning",
+                    "step_kind": "planning",
                     "step_id": "step-1",
                     "content_text": "1. Search repo\n2. Implement adapter",
                 },
             },
             {
-                "type": "timeline_entry",
+                "type": "runtime_step",
                 "payload": {
-                    "entry_kind": "action",
+                    "step_kind": "action",
                     "step_id": "step-2",
                     "content_json": json.dumps(
                         {
@@ -693,9 +693,9 @@ class CliProviderModelTests(unittest.TestCase):
     def test_codex_adapter_maps_tool_families_and_final_answer_fallback(self) -> None:
         runtime_events = [
             {
-                "type": "timeline_entry",
+                "type": "runtime_step",
                 "payload": {
-                    "entry_kind": "action",
+                    "step_kind": "action",
                     "step_id": "step-tools",
                     "content_json": json.dumps(
                         {
@@ -964,7 +964,7 @@ class CliProviderModelTests(unittest.TestCase):
                     "--prompt",
                     "hello",
                     "--json",
-                    "--include-timeline",
+                    "--include-deprecated-timeline",
                 ]
             )
 
@@ -1018,9 +1018,9 @@ class CliProviderModelTests(unittest.TestCase):
                 "runtime exploded",
                 runtime_events=[
                     {
-                        "type": "timeline_entry",
+                        "type": "runtime_step",
                         "payload": {
-                            "entry_kind": "planning",
+                            "step_kind": "planning",
                             "step_id": "step-1",
                             "content_text": "1. Try task",
                         },
@@ -1107,7 +1107,8 @@ class CliProviderModelTests(unittest.TestCase):
         self.assertIn("--model", stdout)
         self.assertIn("--background", stdout)
         self.assertIn("--json", stdout)
-        self.assertIn("--include-timeline", stdout)
+        self.assertIn("--include-deprecated-timeli", stdout)
+        self.assertIn("--include-timeline` is kept", stdout)
         self.assertIn("--db-path", stdout)
         self.assertNotIn("--turn-id", stdout)
         self.assertNotIn("--workspace-path", stdout)

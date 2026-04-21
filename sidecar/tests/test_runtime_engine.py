@@ -572,7 +572,7 @@ class RuntimeEngineTests(unittest.TestCase):
 
         event_types = [str(event.get("type") or "") for event in events]
         self.assertIn("delta", event_types)
-        self.assertIn("timeline_entry", event_types)
+        self.assertIn("runtime_step", event_types)
         self.assertEqual(result["final_answer"], "stream-ok")
 
     def test_execute_runtime_turn_forwards_event_callback_and_is_cancelled(self) -> None:
