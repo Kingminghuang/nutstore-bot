@@ -539,6 +539,43 @@ def providers_list(ctx: typer.Context) -> None:
         )
     )
 
+
+@providers_app.command("create")
+def providers_create(
+    ctx: typer.Context,
+    id: str = typer.Option(..., "--id", help="Builtin provider id"),
+    api_key: str = typer.Option(..., "--api-key", help="Provider API key"),
+) -> None:
+    _run_with_error_handling(
+        lambda: _handle_providers_command(
+            SimpleNamespace(
+                ns_bot_home=_ns_bot_home_from_ctx(ctx),
+                db_path=_db_path_from_ctx(ctx),
+                providers_command="create",
+                id=id,
+                api_key=api_key,
+            )
+        )
+    )
+
+
+@providers_app.command("get")
+def providers_get(
+    ctx: typer.Context,
+    id: str = typer.Option(..., "--id", help="Provider id"),
+) -> None:
+    _run_with_error_handling(
+        lambda: _handle_providers_command(
+            SimpleNamespace(
+                ns_bot_home=_ns_bot_home_from_ctx(ctx),
+                db_path=_db_path_from_ctx(ctx),
+                providers_command="get",
+                id=id,
+            )
+        )
+    )
+
+
 @providers_app.command("delete")
 def providers_delete(
     ctx: typer.Context,

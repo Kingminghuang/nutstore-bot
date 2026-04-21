@@ -8,7 +8,7 @@ from nsbot.application.provider_service import ProviderService
 from nsbot.infrastructure.repositories import create_repositories
 from nsbot.infrastructure.secret_store import LocalSecretStore
 from nsbot.infrastructure.storage import connect_database
-from nsbot.providers.provider_catalog import list_providers
+from nsbot.providers.provider_catalog import NUTSTORE_BASE_URL, list_providers
 
 
 class ProviderServiceModelOptionsTests(unittest.TestCase):
@@ -56,7 +56,24 @@ class ProviderServiceModelOptionsTests(unittest.TestCase):
         self.assertEqual(bundle["catalogProviderId"], "deepseek")
         self.assertEqual(bundle["preferredModelId"], "deepseek/deepseek-chat")
 
-    def test_add_model_falls_back_to_custom_for_openai_prefixed_model_id(self) -> None:
+    def test_add_model_creates_nutstore_builtin_provider_from_unique_catalog_model(self) -> None:
+        bundle = self.service.add_model(
+            base_url="https://ignored.example/v1",
+            api_key="sk-test",
+            model_id="qwen/qwen3.6-plus",
+            provider_display_name="Nutstore Override",
+            model_display_name="Ignored for builtin",
+        )
+
+        self.assertEqual(bundle["kind"], "builtin")
+        self.assertEqual(bundle["id"], "nutstore")
+        self.assertEqual(bundle["catalogProviderId"], "nutstore")
+        self.assertEqual(bundle["displayName"], "Nutstore Override")
+        self.assertEqual(bundle["preferredModelId"], "qwen/qwen3.6-plus")
+        self.assertEqual(bundle["baseUrl"], NUTSTORE_BASE_URL)
+        self.assertEqual(bundle["customModels"], [])
+
+    def test_add_model_uses_nutstore_for_openai_prefixed_catalog_model_id(self) -> None:
         bundle = self.service.add_model(
             base_url="https://api.openai.com/v1",
             api_key="sk-test",
@@ -65,11 +82,12 @@ class ProviderServiceModelOptionsTests(unittest.TestCase):
             model_display_name="OpenAI Compat",
         )
 
-        self.assertEqual(bundle["kind"], "custom")
-        self.assertEqual(bundle["id"], "openai/gpt-5.4")
-        self.assertEqual(bundle["customSlug"], "openai/gpt-5.4")
+        self.assertEqual(bundle["kind"], "builtin")
+        self.assertEqual(bundle["id"], "nutstore")
+        self.assertEqual(bundle["catalogProviderId"], "nutstore")
+        self.assertEqual(bundle["baseUrl"], NUTSTORE_BASE_URL)
         self.assertEqual(bundle["preferredModelId"], "openai/gpt-5.4")
-        self.assertEqual(bundle["customModels"][0]["modelId"], "openai/gpt-5.4")
+        self.assertEqual(bundle["customModels"], [])
 
     def test_add_model_falls_back_to_custom_provider_id_from_model(self) -> None:
         bundle = self.service.add_model(

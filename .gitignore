@@ -6,5 +6,4 @@ src-tauri/gen
 sidecar/dist
 sidecar/build
 sidecar/scripts/__pycache__
-.desktop-runtime
-desktop-runtime
+.env

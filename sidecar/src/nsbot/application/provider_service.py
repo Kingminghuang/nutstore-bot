@@ -451,7 +451,7 @@ def normalize_provider_payload(
             base_url_input = existing.provider.base_url
         base_url = _normalize_optional_string(base_url_input)
         if str(catalog_entry.get("baseUrlPolicy") or "") == "hidden":
-            base_url = None
+            base_url = _normalize_optional_string(catalog_entry.get("baseUrl"))
         preferred_model_id = _normalize_optional_string(
             payload.get("preferredModelId", payload.get("preferred_model_id"))
         )

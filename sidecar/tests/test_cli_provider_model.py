@@ -12,7 +12,8 @@ from unittest import mock
 
 from nsbot import cli as cli_module
 from nsbot.cli import main as cli_main
-from nsbot.providers.provider_catalog import list_providers
+from nsbot.infrastructure.secret_store import LocalSecretStore
+from nsbot.providers.provider_catalog import NUTSTORE_BASE_URL, list_providers
 from nsbot.infrastructure.repositories import create_repositories
 from nsbot.infrastructure.storage import connect_database
 
@@ -89,6 +90,156 @@ class CliProviderModelTests(unittest.TestCase):
         payload = json.loads(stdout)
         self.assertEqual(payload["deletedProviderId"], connection_id)
         self.assertIsNone(self.repositories.providers.get_bundle_by_id(connection_id))
+
+    def test_providers_create_persists_builtin_provider_models_and_secret(self) -> None:
+        code, stdout, _stderr = _run_cli(
+            [
+                "--ns-bot-home",
+                self.temp_dir,
+                "providers",
+                "create",
+                "--id",
+                "nutstore",
+                "--api-key",
+                "sk-nutstore",
+            ]
+        )
+
+        self.assertEqual(code, 0)
+        payload = json.loads(stdout)
+        self.assertEqual(payload["id"], "nutstore")
+        self.assertEqual(payload["catalogProviderId"], "nutstore")
+        self.assertEqual(payload["runtimeProvider"], "openai")
+        self.assertEqual(payload["baseUrl"], NUTSTORE_BASE_URL)
+        self.assertEqual(
+            [item["modelId"] for item in payload["models"]],
+            [item["modelId"] for item in payload["customModels"]],
+        )
+
+        bundle = self.repositories.providers.get_bundle_by_id("nutstore")
+        self.assertIsNotNone(bundle)
+        assert bundle is not None
+        catalog_models = next(
+            item for item in list_providers() if str(item.get("id")) == "nutstore"
+        )["models"]
+        self.assertEqual(
+            sorted(model.model_id for model in bundle.models),
+            sorted(str(item.get("id")) for item in catalog_models),
+        )
+
+        secret_store = LocalSecretStore(self.temp_dir)
+        secret_payload = secret_store.load_provider_secret(bundle.provider.secret_ref)
+        self.assertIsNotNone(secret_payload)
+        assert secret_payload is not None
+        self.assertEqual(secret_payload.api_key, "sk-nutstore")
+
+    def test_providers_create_upserts_existing_builtin_provider(self) -> None:
+        first_code, first_stdout, _first_stderr = _run_cli(
+            [
+                "--ns-bot-home",
+                self.temp_dir,
+                "providers",
+                "create",
+                "--id",
+                "nutstore",
+                "--api-key",
+                "sk-first",
+            ]
+        )
+        self.assertEqual(first_code, 0)
+        first_payload = json.loads(first_stdout)
+
+        second_code, second_stdout, _second_stderr = _run_cli(
+            [
+                "--ns-bot-home",
+                self.temp_dir,
+                "providers",
+                "create",
+                "--id",
+                "nutstore",
+                "--api-key",
+                "sk-second",
+            ]
+        )
+        self.assertEqual(second_code, 0)
+        second_payload = json.loads(second_stdout)
+        self.assertEqual(second_payload["id"], first_payload["id"])
+
+        bundles = self.repositories.providers.list_bundles()
+        self.assertEqual([bundle.provider.id for bundle in bundles], ["nutstore"])
+
+        secret_store = LocalSecretStore(self.temp_dir)
+        secret_payload = secret_store.load_provider_secret("sec_nutstore")
+        self.assertIsNotNone(secret_payload)
+        assert secret_payload is not None
+        self.assertEqual(secret_payload.api_key, "sk-second")
+
+    def test_providers_get_returns_persisted_models(self) -> None:
+        create_code, _create_stdout, _create_stderr = _run_cli(
+            [
+                "--ns-bot-home",
+                self.temp_dir,
+                "providers",
+                "create",
+                "--id",
+                "nutstore",
+                "--api-key",
+                "sk-nutstore",
+            ]
+        )
+        self.assertEqual(create_code, 0)
+
+        code, stdout, _stderr = _run_cli(
+            [
+                "--ns-bot-home",
+                self.temp_dir,
+                "providers",
+                "get",
+                "--id",
+                "nutstore",
+            ]
+        )
+
+        self.assertEqual(code, 0)
+        payload = json.loads(stdout)
+        self.assertEqual(payload["id"], "nutstore")
+        self.assertGreater(len(payload["models"]), 0)
+        self.assertIn(
+            "moonshotai/kimi-k2.6",
+            [item["modelId"] for item in payload["models"]],
+        )
+
+    def test_providers_create_rejects_unknown_builtin_provider(self) -> None:
+        code, stdout, stderr = _run_cli(
+            [
+                "--ns-bot-home",
+                self.temp_dir,
+                "providers",
+                "create",
+                "--id",
+                "missing-provider",
+                "--api-key",
+                "sk-test",
+            ]
+        )
+        self.assertNotEqual(code, 0)
+        self.assertEqual(stdout, "")
+        self.assertIn("Unknown builtin provider: missing-provider", stderr)
+
+    def test_providers_get_rejects_missing_provider(self) -> None:
+        code, stdout, stderr = _run_cli(
+            [
+                "--ns-bot-home",
+                self.temp_dir,
+                "providers",
+                "get",
+                "--id",
+                "nutstore",
+            ]
+        )
+        self.assertNotEqual(code, 0)
+        self.assertEqual(stdout, "")
+        self.assertIn("Provider not found: nutstore", stderr)
 
     def test_models_create_persists_custom_provider(self) -> None:
         code, stdout, _stderr = _run_cli(
@@ -192,7 +343,33 @@ class CliProviderModelTests(unittest.TestCase):
         self.assertEqual(payload["catalogProviderId"], "deepseek")
         self.assertEqual(payload["preferredModelId"], "deepseek/deepseek-chat")
 
-    def test_models_create_treats_openai_prefixed_model_id_as_custom(self) -> None:
+    def test_models_create_infers_nutstore_builtin_provider_from_unique_catalog_model(self) -> None:
+        code, stdout, _stderr = _run_cli(
+            [
+                "--ns-bot-home",
+                self.temp_dir,
+                "models",
+                "create",
+                "--name",
+                "Nutstore Override",
+                "--base-url",
+                "https://ignored.example/v1",
+                "--model-id",
+                "qwen/qwen3.6-plus",
+                "--api-key",
+                "sk-test",
+            ]
+        )
+        self.assertEqual(code, 0)
+        payload = json.loads(stdout)
+        self.assertEqual(payload["kind"], "builtin")
+        self.assertEqual(payload["id"], "nutstore")
+        self.assertEqual(payload["identity"], "nutstore:qwen/qwen3.6-plus")
+        self.assertEqual(payload["catalogProviderId"], "nutstore")
+        self.assertEqual(payload["preferredModelId"], "qwen/qwen3.6-plus")
+        self.assertEqual(payload["baseUrl"], NUTSTORE_BASE_URL)
+
+    def test_models_create_uses_nutstore_for_openai_prefixed_catalog_model_id(self) -> None:
         code, stdout, _stderr = _run_cli(
             [
                 "--ns-bot-home",
@@ -211,12 +388,13 @@ class CliProviderModelTests(unittest.TestCase):
         )
         self.assertEqual(code, 0)
         payload = json.loads(stdout)
-        self.assertEqual(payload["kind"], "custom")
-        self.assertEqual(payload["id"], "openai/gpt-5.4")
-        self.assertEqual(payload["identity"], "openai/gpt-5.4:openai/gpt-5.4")
-        self.assertEqual(payload["customSlug"], "openai/gpt-5.4")
+        self.assertEqual(payload["kind"], "builtin")
+        self.assertEqual(payload["id"], "nutstore")
+        self.assertEqual(payload["identity"], "nutstore:openai/gpt-5.4")
+        self.assertEqual(payload["catalogProviderId"], "nutstore")
+        self.assertEqual(payload["baseUrl"], NUTSTORE_BASE_URL)
         self.assertEqual(payload["preferredModelId"], "openai/gpt-5.4")
-        self.assertEqual(payload["customModels"][0]["modelId"], "openai/gpt-5.4")
+        self.assertEqual(payload["customModels"], [])
 
     def test_models_get_returns_provider_model_tuple(self) -> None:
         bundle = self.repositories.providers.save_bundle(

@@ -21,10 +21,10 @@ Provider/model persistence no longer uses the old single denormalized `models`
   - `preferred_model_id`: provider-local fallback/default model
   - `created_at`, `updated_at`
 - `models`
-  - `id`: row id for a persisted custom model
+  - `id`: row id for a persisted provider model
   - `provider_id`: owning provider id
   - `model_id`: runtime model identifier
-  - `display_name`: user-visible label for custom models
+  - `display_name`: user-visible label for persisted provider models
   - `created_at`, `updated_at`
 - `default_model_selection`
   - single-row table with `id = 1`
@@ -35,8 +35,8 @@ Important invariants:
 
 - There is exactly one global default model selection at most.
 - `providers.preferred_model_id` is provider-local fallback state, not the global default.
-- Builtin provider catalog models are not persisted row-by-row in `models`; they are read from `provider_catalog` at runtime.
-- `models` is used for custom provider models only.
+- Builtin provider catalog models still exist in `provider_catalog`, but `providers create` may materialize the chosen builtin provider's catalog models into `models` for that configured provider.
+- `models` stores custom provider models and any builtin provider models materialized by CLI provider creation.
 - `providers` and `models` intentionally do not use a database foreign key.
 - Secrets are not stored in the SQLite provider/model tables; only `secret_ref` is persisted.
 
@@ -57,12 +57,25 @@ The following old assumptions are no longer valid and should not be reintroduced
 
 - Returns the provider catalog and configured providers.
 - Configured providers are loaded from `providers`.
-- For builtin providers, available models come from the runtime catalog, not the `models` table.
+- For configured builtin providers, persisted model rows may exist if they were created through `providers create`.
+
+#### `providers create --id <id> --api-key <key>`
+
+- Creates or updates a builtin provider from `provider_catalog`.
+- Persists the provider row in `providers`.
+- Materializes that builtin provider's catalog-backed model ids into `models` for the configured provider.
+- Persists the API key through the secret store referenced by `secret_ref`.
+
+#### `providers get --id <id>`
+
+- Returns the configured provider row together with its persisted model rows.
+- Fails if the provider has not been configured.
 
 #### `providers delete --provider-id <id>`
 
 - Deletes the provider row from `providers`.
 - Deletes matching custom model rows from `models`.
+- Deletes any materialized builtin model rows for that provider from `models`.
 - Deletes the provider secret referenced by `secret_ref`.
 - Clears `default_model_selection` if it points at the deleted provider.
 

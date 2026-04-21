@@ -7,6 +7,16 @@ from smolagents.models import LiteLLMModel, Model, OpenAIModel
 from nsbot.providers.provider_catalog import LITELLM_PROVIDERS, supports_reasoning
 
 
+_THINKING_TYPE_MODELS = frozenset(
+    {
+        "moonshotai/kimi-k2.6",
+        "z-ai/glm-5.1",
+        "xiaomi/mimo-v2-pro",
+    }
+)
+_ENABLE_THINKING_MODELS = frozenset({"qwen/qwen3.6-plus"})
+
+
 class DirectModelError(RuntimeError):
     def __init__(self, code: str, message: str):
         super().__init__(message)
@@ -22,6 +32,34 @@ class DirectModelConfig:
     model_id: str
     timeout_seconds: float = 60.0
     reasoning_effort: str | None = None
+
+
+def _apply_openai_compatible_reasoning_selection(
+    *, model_id: str, reasoning_effort: str | None, kwargs: dict[str, object]
+) -> str | None:
+    if reasoning_effort is None:
+        return None
+
+    normalized_model_id = model_id.strip().lower()
+    normalized_effort = reasoning_effort.strip().lower()
+
+    if normalized_model_id in _THINKING_TYPE_MODELS and normalized_effort in {
+        "enabled",
+        "disabled",
+    }:
+        kwargs["extra_body"] = {"thinking": {"type": normalized_effort}}
+        return None
+
+    if normalized_model_id in _ENABLE_THINKING_MODELS and normalized_effort in {
+        "enabled",
+        "disabled",
+    }:
+        kwargs["extra_body"] = {
+            "enable_thinking": normalized_effort == "enabled"
+        }
+        return None
+
+    return reasoning_effort
 
 
 def DirectModel(config: DirectModelConfig) -> Model:
@@ -61,6 +99,11 @@ def DirectModel(config: DirectModelConfig) -> Model:
             kwargs["api_base"] = base_url
 
         reasoning_effort = config.reasoning_effort
+        reasoning_effort = _apply_openai_compatible_reasoning_selection(
+            model_id=config.model_id,
+            reasoning_effort=reasoning_effort,
+            kwargs=kwargs,
+        )
         if reasoning_effort is None and supports_reasoning(
             config.model_id, custom_llm_provider=provider
         ):

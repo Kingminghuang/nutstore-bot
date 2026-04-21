@@ -16,6 +16,7 @@ import anyio
 from nsbot.api.acp_app import AcpAppConfig, create_acp_app
 from nsbot.api.acp_session import AcpJsonRpcSession
 from nsbot.infrastructure.secret_store import ProviderSecretPayload
+from nsbot.providers.provider_catalog import NUTSTORE_BASE_URL
 from nsbot.runtime.types import (
     RuntimeCancelledError,
     RuntimeEventStream,
@@ -208,6 +209,7 @@ class AcpSessionTests(unittest.TestCase):
         self.assertIn("USE_ANTHROPIC", method_ids)
         self.assertIn("USE_GEMINI", method_ids)
         self.assertIn("USE_DEEPSEEK", method_ids)
+        self.assertIn("USE_NUTSTORE", method_ids)
         self.assertIn("GATEWAY", method_ids)
 
     def test_authenticate_with_meta_api_key_updates_provider_secret(self) -> None:
@@ -257,6 +259,34 @@ class AcpSessionTests(unittest.TestCase):
             result["_meta"]["auth"]["effectiveProviderId"], self.provider.provider.id
         )
         self.assertEqual(result["_meta"]["auth"]["keySource"], "default_provider_secret")
+
+    def test_authenticate_with_meta_api_key_creates_nutstore_builtin_provider(self) -> None:
+        transport = _InMemoryTransport(
+            [
+                {
+                    "jsonrpc": "2.0",
+                    "id": 11,
+                    "method": "authenticate",
+                    "params": {
+                        "methodId": "USE_NUTSTORE",
+                        "_meta": {"api-key": "sk-meta-nutstore"},
+                    },
+                }
+            ]
+        )
+        asyncio.run(AcpJsonRpcSession(transport, self.app_state).run())
+        result = _response_for(transport.outgoing, 11)["result"]
+        self.assertEqual(result["_meta"]["auth"]["keySource"], "meta")
+        self.assertEqual(result["_meta"]["auth"]["targetProviderId"], "nutstore")
+
+        bundle = self.app_state.repositories.providers.get_bundle_by_id_or_raise("nutstore")
+        self.assertEqual(bundle.provider.runtime_provider, "openai")
+        self.assertEqual(bundle.provider.catalog_provider_id, "nutstore")
+        self.assertEqual(bundle.provider.base_url, NUTSTORE_BASE_URL)
+
+        secret = self.app_state.secret_store.load_provider_secret(bundle.provider.secret_ref)
+        self.assertIsNotNone(secret)
+        self.assertEqual(secret.api_key, "sk-meta-nutstore")
 
     def test_authenticate_rejects_unknown_method(self) -> None:
         transport = _InMemoryTransport(
@@ -958,6 +988,26 @@ class AcpSessionTests(unittest.TestCase):
         response = _response_for(transport.outgoing, 21)
         self.assertIn("result", response)
         self.assertIn("providers", response["result"])
+
+    def test_provider_catalog_includes_nutstore_builtin_entry(self) -> None:
+        transport = _InMemoryTransport(
+            [
+                {
+                    "jsonrpc": "2.0",
+                    "id": 22,
+                    "method": "_nsbot/provider/catalog",
+                    "params": {},
+                }
+            ]
+        )
+        asyncio.run(AcpJsonRpcSession(transport, self.app_state).run())
+        response = _response_for(transport.outgoing, 22)
+        providers = response["result"]["providers"]
+        nutstore = next(provider for provider in providers if provider["id"] == "nutstore")
+        self.assertEqual(nutstore["kind"], "builtin")
+        self.assertEqual(nutstore["runtimeProvider"], "openai")
+        self.assertEqual(nutstore["baseUrlPolicy"], "hidden")
+        self.assertEqual(nutstore["baseUrl"], NUTSTORE_BASE_URL)
 
     def test_unprefixed_extension_method_is_rejected(self) -> None:
         transport = _InMemoryTransport(

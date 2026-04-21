@@ -5,13 +5,38 @@ import sys
 from hashlib import sha256
 from typing import Any
 
+NUTSTORE_PROVIDER_ID = "nutstore"
+NUTSTORE_BASE_URL = "https://ai-assistant.jianguoyun.net.cn/openid/openrouter"
+NUTSTORE_MODELS = [
+    "moonshotai/kimi-k2.6",
+    "z-ai/glm-5.1",
+    "qwen/qwen3.6-plus",
+    "xiaomi/mimo-v2-pro",
+    "minimax/minimax-m2.7",
+    "openai/gpt-5.4",
+    "google/gemini-3.1-pro-preview-customtools",
+    "anthropic/claude-sonnet-4.6",
+]
+NUTSTORE_REASONING_EFFORTS = {
+    "moonshotai/kimi-k2.6": ["enabled", "disabled"],
+    "z-ai/glm-5.1": ["enabled", "disabled"],
+    "qwen/qwen3.6-plus": ["enabled", "disabled"],
+    "xiaomi/mimo-v2-pro": ["enabled", "disabled"],
+}
+NUTSTORE_UPSTREAM_PROVIDER_BY_PREFIX = {
+    "openai/": "openai",
+    "google/": "gemini",
+    "anthropic/": "anthropic",
+}
+
 LITELLM_PROVIDERS = ("anthropic", "deepseek", "gemini")
+HIDDEN_BASE_URL_PROVIDERS = LITELLM_PROVIDERS + (NUTSTORE_PROVIDER_ID,)
 OPENAI_PROVIDERS = ("openai",)
-BUILTIN_PROVIDERS = LITELLM_PROVIDERS + OPENAI_PROVIDERS
+BUILTIN_PROVIDERS = HIDDEN_BASE_URL_PROVIDERS + OPENAI_PROVIDERS
 
 
 def base_url_policy(provider_id: str) -> str:
-    if provider_id in LITELLM_PROVIDERS:
+    if provider_id in HIDDEN_BASE_URL_PROVIDERS:
         return "hidden"
     if provider_id in OPENAI_PROVIDERS:
         return "optional"
@@ -88,27 +113,69 @@ def list_providers() -> list[dict[str, Any]]:
             return ["none", "low", "medium", "high"]
         return None
 
+    def get_provider_reasoning_effort(
+        model: str, provider_id: str
+    ) -> list[str] | None:
+        if provider_id == "openai":
+            return get_openai_reasoning_effort(model)
+        if provider_id == "anthropic":
+            return get_anthropic_reasoning_effort(model)
+        if provider_id == "gemini":
+            return get_gemini_reasoning_effort(model)
+        if provider_id == "deepseek":
+            return get_deepseek_reasoning_effort(model)
+        return None
+
+    def get_nutstore_reasoning_metadata(model: str) -> tuple[bool, list[str] | None]:
+        effort = NUTSTORE_REASONING_EFFORTS.get(model)
+        if effort is not None:
+            return True, list(effort)
+
+        if model == "minimax/minimax-m2.7":
+            return True, None
+
+        for prefix, upstream_provider in NUTSTORE_UPSTREAM_PROVIDER_BY_PREFIX.items():
+            if not model.startswith(prefix):
+                continue
+            upstream_model = model[len(prefix) :]
+            upstream_effort = get_provider_reasoning_effort(
+                upstream_model, upstream_provider
+            )
+            supports_reasoning_tokens = (
+                upstream_effort is not None
+                or supports_reasoning(
+                    upstream_model, custom_llm_provider=upstream_provider
+                )
+            )
+            return supports_reasoning_tokens, upstream_effort
+
+        return supports_reasoning(model, custom_llm_provider="openai"), None
+
+    def get_reasoning_metadata(
+        model: str, fallback_provider: str
+    ) -> tuple[bool, list[str] | None]:
+        if fallback_provider == NUTSTORE_PROVIDER_ID:
+            return get_nutstore_reasoning_metadata(model)
+
+        effort = get_provider_reasoning_effort(model, fallback_provider)
+        supports_reasoning_tokens = (
+            effort is not None
+            or supports_reasoning(model, custom_llm_provider=fallback_provider)
+        )
+        return supports_reasoning_tokens, effort
+
     def build_models(
         models_list: list[str], fallback_provider: str
     ) -> list[dict[str, Any]]:
         result = []
         for m in models_list:
+            supports_reasoning_tokens, effort = get_reasoning_metadata(
+                m, fallback_provider
+            )
             model_info = {
                 "id": m,
-                "supportsReasoningTokens": supports_reasoning(
-                    m, custom_llm_provider=fallback_provider
-                ),
+                "supportsReasoningTokens": supports_reasoning_tokens,
             }
-
-            effort = None
-            if fallback_provider == "openai":
-                effort = get_openai_reasoning_effort(m)
-            elif fallback_provider == "anthropic":
-                effort = get_anthropic_reasoning_effort(m)
-            elif fallback_provider == "gemini":
-                effort = get_gemini_reasoning_effort(m)
-            elif fallback_provider == "deepseek":
-                effort = get_deepseek_reasoning_effort(m)
 
             if effort is not None:
                 model_info["reasoningEffortValues"] = effort
@@ -175,7 +242,7 @@ def list_providers() -> list[dict[str, Any]]:
         },
         {
             "id": "openai",
-            "label": "OpenAI / Compatible",
+            "label": "OpenAI",
             "kind": "builtin",
             "runtimeProvider": "openai",
             "baseUrlPolicy": base_url_policy("openai"),
@@ -191,6 +258,18 @@ def list_providers() -> list[dict[str, Any]]:
                     "gpt-5.4-pro",
                 ],
                 fallback_provider="openai",
+            ),
+        },
+        {
+            "id": NUTSTORE_PROVIDER_ID,
+            "label": "Nutstore",
+            "kind": "builtin",
+            "runtimeProvider": "openai",
+            "baseUrlPolicy": base_url_policy(NUTSTORE_PROVIDER_ID),
+            "baseUrl": NUTSTORE_BASE_URL,
+            "models": build_models(
+                NUTSTORE_MODELS,
+                fallback_provider=NUTSTORE_PROVIDER_ID,
             ),
         },
     ]
