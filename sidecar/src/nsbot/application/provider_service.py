@@ -22,6 +22,13 @@ LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
+class InferredProviderTarget:
+    kind: str
+    provider_id: str
+    catalog_provider_id: str | None = None
+
+
+@dataclass(frozen=True)
 class ProviderService:
     repositories: ProvidersRepository
     default_model_selection: DefaultModelSelectionRepository
@@ -84,23 +91,40 @@ class ProviderService:
             self.default_model_selection.clear()
         self.secret_store.delete_provider_secret(bundle.provider.secret_ref)
 
-    def add_custom_model(
+    def add_model(
         self,
         *,
-        provider_id: str,
         base_url: str,
         api_key: str,
         model_id: str,
         provider_display_name: str | None = None,
         model_display_name: str | None = None,
     ) -> dict[str, Any]:
-        existing = self.repositories.get_bundle_by_id(provider_id)
+        inferred = infer_provider_target(model_id)
+        existing = self.repositories.get_bundle_by_id(inferred.provider_id)
+
+        if inferred.kind == "builtin":
+            bundle = self._upsert_provider(
+                {
+                    "id": inferred.provider_id,
+                    "kind": "builtin",
+                    "catalogProviderId": inferred.catalog_provider_id,
+                    "displayName": provider_display_name,
+                    "baseUrl": base_url,
+                    "apiKey": api_key,
+                    "preferredModelId": model_id,
+                },
+                existing=existing,
+            )
+            return serialize_bundle(bundle)
+
+        provider_id = inferred.provider_id
         if existing is None:
             bundle = self._upsert_provider(
                 {
                     "kind": "custom",
                     "customSlug": provider_id,
-                    "displayName": provider_display_name or provider_id,
+                    "displayName": provider_id,
                     "baseUrl": base_url,
                     "apiKey": api_key,
                     "customModels": [
@@ -145,7 +169,7 @@ class ProviderService:
                 "id": existing.provider.id,
                 "kind": "custom",
                 "customSlug": existing.provider.id,
-                "displayName": provider_display_name or existing.provider.display_name,
+                "displayName": existing.provider.display_name,
                 "baseUrl": base_url,
                 "apiKey": api_key,
                 "customModels": next_models,
@@ -368,6 +392,31 @@ def custom_provider_template() -> dict[str, Any]:
         "baseUrlPolicy": "required",
         "models": [],
     }
+
+
+def infer_provider_target(model_id: str) -> InferredProviderTarget:
+    normalized_model_id = _normalize_optional_string(model_id)
+    if normalized_model_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Model id is required",
+        )
+
+    for provider in list_providers():
+        provider_id = str(provider.get("id") or "").strip().lower()
+        if provider_id == "":
+            continue
+        models = provider.get("models")
+        if not isinstance(models, list):
+            continue
+        if any(str(model.get("id") or "") == normalized_model_id for model in models):
+            return InferredProviderTarget(
+                kind="builtin",
+                provider_id=provider_id,
+                catalog_provider_id=provider_id,
+            )
+
+    return InferredProviderTarget(kind="custom", provider_id=normalized_model_id)
 
 
 def normalize_provider_payload(

@@ -110,8 +110,113 @@ class CliProviderModelTests(unittest.TestCase):
         self.assertEqual(code, 0)
         payload = json.loads(stdout)
         self.assertEqual(payload["kind"], "custom")
-        self.assertEqual(payload["customSlug"], "my-gateway")
+        self.assertEqual(payload["id"], "model-a")
+        self.assertEqual(payload["identity"], "model-a:model-a")
+        self.assertEqual(payload["customSlug"], "model-a")
+        self.assertEqual(payload["displayName"], "model-a")
         self.assertEqual(payload["preferredModelId"], "model-a")
+        self.assertEqual(payload["customModels"][0]["displayName"], "my-gateway")
+
+    def test_models_create_uses_model_id_as_display_name_when_name_missing(self) -> None:
+        code, stdout, _stderr = _run_cli(
+            [
+                "--ns-bot-home",
+                self.temp_dir,
+                "models",
+                "create",
+                "--base-url",
+                "https://llm.example.com/v1",
+                "--model-id",
+                "model-a",
+                "--api-key",
+                "sk-test",
+            ]
+        )
+        self.assertEqual(code, 0)
+        payload = json.loads(stdout)
+        self.assertEqual(payload["kind"], "custom")
+        self.assertEqual(payload["id"], "model-a")
+        self.assertEqual(payload["identity"], "model-a:model-a")
+        self.assertEqual(payload["displayName"], "model-a")
+        self.assertEqual(payload["customModels"][0]["displayName"], "model-a")
+
+    def test_models_create_infers_builtin_provider_from_catalog_model(self) -> None:
+        code, stdout, _stderr = _run_cli(
+            [
+                "--ns-bot-home",
+                self.temp_dir,
+                "models",
+                "create",
+                "--name",
+                "OpenAI Override",
+                "--base-url",
+                "https://api.openai.com/v1",
+                "--model-id",
+                "gpt-5.4",
+                "--api-key",
+                "sk-test",
+            ]
+        )
+        self.assertEqual(code, 0)
+        payload = json.loads(stdout)
+        self.assertEqual(payload["kind"], "builtin")
+        self.assertEqual(payload["id"], "openai")
+        self.assertEqual(payload["identity"], "openai:gpt-5.4")
+        self.assertEqual(payload["catalogProviderId"], "openai")
+        self.assertEqual(payload["displayName"], "OpenAI Override")
+        self.assertEqual(payload["preferredModelId"], "gpt-5.4")
+        self.assertEqual(payload["customModels"], [])
+
+    def test_models_create_infers_builtin_provider_from_exact_catalog_model_id(self) -> None:
+        code, stdout, _stderr = _run_cli(
+            [
+                "--ns-bot-home",
+                self.temp_dir,
+                "models",
+                "create",
+                "--name",
+                "Deepseek Override",
+                "--base-url",
+                "https://api.deepseek.com",
+                "--model-id",
+                "deepseek/deepseek-chat",
+                "--api-key",
+                "sk-test",
+            ]
+        )
+        self.assertEqual(code, 0)
+        payload = json.loads(stdout)
+        self.assertEqual(payload["kind"], "builtin")
+        self.assertEqual(payload["id"], "deepseek")
+        self.assertEqual(payload["identity"], "deepseek:deepseek/deepseek-chat")
+        self.assertEqual(payload["catalogProviderId"], "deepseek")
+        self.assertEqual(payload["preferredModelId"], "deepseek/deepseek-chat")
+
+    def test_models_create_treats_openai_prefixed_model_id_as_custom(self) -> None:
+        code, stdout, _stderr = _run_cli(
+            [
+                "--ns-bot-home",
+                self.temp_dir,
+                "models",
+                "create",
+                "--name",
+                "OpenAI Compat",
+                "--base-url",
+                "https://api.openai.com/v1",
+                "--model-id",
+                "openai/gpt-5.4",
+                "--api-key",
+                "sk-test",
+            ]
+        )
+        self.assertEqual(code, 0)
+        payload = json.loads(stdout)
+        self.assertEqual(payload["kind"], "custom")
+        self.assertEqual(payload["id"], "openai/gpt-5.4")
+        self.assertEqual(payload["identity"], "openai/gpt-5.4:openai/gpt-5.4")
+        self.assertEqual(payload["customSlug"], "openai/gpt-5.4")
+        self.assertEqual(payload["preferredModelId"], "openai/gpt-5.4")
+        self.assertEqual(payload["customModels"][0]["modelId"], "openai/gpt-5.4")
 
     def test_models_get_returns_provider_model_tuple(self) -> None:
         bundle = self.repositories.providers.save_bundle(
@@ -175,6 +280,24 @@ class CliProviderModelTests(unittest.TestCase):
         self.assertEqual(selection.provider_id, connection_id)
         self.assertEqual(selection.model_id, model_ids[0])
 
+    def test_models_create_help_mentions_returned_identity_usage(self) -> None:
+        code, stdout, _stderr = _run_cli(
+            [
+                "--ns-bot-home",
+                self.temp_dir,
+                "models",
+                "create",
+                "--help",
+            ]
+        )
+
+        self.assertEqual(code, 0)
+        self.assertIn("The JSON result includes 'identity'", stdout)
+        self.assertIn("<providerId>:<modelId>", stdout)
+        self.assertIn("models get", stdout)
+        self.assertIn("set-default", stdout)
+        self.assertIn("models remove", stdout)
+
     def test_models_list_works_without_provider_filter(self) -> None:
         self._create_builtin_openai()
 
@@ -236,7 +359,7 @@ class CliProviderModelTests(unittest.TestCase):
         self.assertEqual(stdout, "")
         self.assertIn("No such command 'status'", stderr)
 
-    def test_models_remove_can_infer_provider_id_when_unique(self) -> None:
+    def test_models_remove_accepts_bare_model_identity_when_unique(self) -> None:
         bundle = self.repositories.providers.save_bundle(
             provider_data={
                 "runtime_provider": "custom",
@@ -265,7 +388,6 @@ class CliProviderModelTests(unittest.TestCase):
                 self.temp_dir,
                 "models",
                 "remove",
-                "--model",
                 "demo-model-alpha",
             ]
         )
@@ -274,6 +396,93 @@ class CliProviderModelTests(unittest.TestCase):
         payload = json.loads(stdout)
         self.assertEqual(payload["providerId"], bundle.provider.id)
         self.assertEqual(payload["modelId"], "demo-model-alpha")
+
+    def test_models_remove_accepts_provider_model_identity(self) -> None:
+        bundle = self.repositories.providers.save_bundle(
+            provider_data={
+                "runtime_provider": "custom",
+                "catalog_provider_id": None,
+                "id": "demo-gateway",
+                "display_name": "Demo Gateway",
+                "base_url": "https://llm.example.com/v1",
+                "secret_ref": "sec_test_custom",
+                "preferred_model_id": "demo-model-beta",
+            },
+            models=[
+                {
+                    "model_id": "demo-model-alpha",
+                    "display_name": "Demo Model Alpha",
+                },
+                {
+                    "model_id": "demo-model-beta",
+                    "display_name": "Demo Model Beta",
+                },
+            ],
+        )
+
+        code, stdout, _stderr = _run_cli(
+            [
+                "--ns-bot-home",
+                self.temp_dir,
+                "models",
+                "remove",
+                f"{bundle.provider.id}:demo-model-beta",
+            ]
+        )
+
+        self.assertEqual(code, 0)
+        payload = json.loads(stdout)
+        self.assertEqual(payload["providerId"], bundle.provider.id)
+        self.assertEqual(payload["modelId"], "demo-model-beta")
+
+    def test_models_remove_help_uses_identity_argument(self) -> None:
+        code, stdout, _stderr = _run_cli(
+            [
+                "--ns-bot-home",
+                self.temp_dir,
+                "models",
+                "remove",
+                "--help",
+            ]
+        )
+
+        self.assertEqual(code, 0)
+        self.assertIn("identity", stdout)
+        self.assertIn("<providerId>:<modelId>", stdout)
+        self.assertIn("--json", stdout)
+        self.assertIn("--db-path", stdout)
+        self.assertNotIn("--provider-id", stdout)
+        self.assertNotIn("--model", stdout)
+
+    def test_models_get_help_describes_identity_format(self) -> None:
+        code, stdout, _stderr = _run_cli(
+            [
+                "--ns-bot-home",
+                self.temp_dir,
+                "models",
+                "get",
+                "--help",
+            ]
+        )
+
+        self.assertEqual(code, 0)
+        self.assertIn("identity", stdout)
+        self.assertIn("<providerId>:<modelId>", stdout)
+
+    def test_models_set_default_help_describes_identity_format(self) -> None:
+        code, stdout, _stderr = _run_cli(
+            [
+                "--ns-bot-home",
+                self.temp_dir,
+                "models",
+                "set-default",
+                "--help",
+            ]
+        )
+
+        self.assertEqual(code, 0)
+        self.assertIn("identity", stdout)
+        self.assertIn("<providerId>:<modelId>", stdout)
 
     def test_sessions_group_is_removed(self) -> None:
         code, stdout, stderr = _run_cli(

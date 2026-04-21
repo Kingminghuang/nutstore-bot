@@ -5,7 +5,6 @@ from types import SimpleNamespace
 from ._support import (
     _build_services,
     _find_provider_and_model_from_identity,
-    _find_provider_id_by_model_id,
     _normalize_provider_ref,
     _print_json,
 )
@@ -22,8 +21,6 @@ def handle_models_command(args: SimpleNamespace) -> int:
             base_url = str(args.base_url or "").strip()
             model_id = str(args.model_id or "").strip()
             api_key = str(args.api_key or "").strip()
-            if name == "":
-                raise ValueError("Model provider name is required")
             if base_url == "":
                 raise ValueError("Base URL is required")
             if model_id == "":
@@ -31,14 +28,16 @@ def handle_models_command(args: SimpleNamespace) -> int:
             if api_key == "":
                 raise ValueError("API key is required")
 
-            payload = provider_service.add_custom_model(
-                provider_id=name,
+            display_name = name or model_id
+
+            payload = provider_service.add_model(
                 base_url=base_url,
                 api_key=api_key,
                 model_id=model_id,
-                provider_display_name=name,
-                model_display_name=model_id,
+                provider_display_name=display_name,
+                model_display_name=display_name,
             )
+            payload["identity"] = f"{payload['id']}:{model_id}"
             _print_json(payload)
             return 0
 
@@ -117,15 +116,17 @@ def handle_models_command(args: SimpleNamespace) -> int:
             )
             return 0
 
-        model_id = str(args.model or "").strip()
-        provider_id = str(args.provider_id or "").strip()
-        if args.models_command == "remove" and provider_id == "":
-            if model_id == "":
-                raise ValueError("Model id is required")
+        model_id = str(getattr(args, "model", "") or "").strip()
+        provider_id = str(getattr(args, "provider_id", "") or "").strip()
+
+        if args.models_command == "remove":
+            identity = str(args.identity or "").strip()
+            if identity == "":
+                raise ValueError("Model identity is required")
             model_options = provider_service.model_options_payload()
-            provider_id = _find_provider_id_by_model_id(
+            provider_id, model_id = _find_provider_and_model_from_identity(
                 model_options,
-                model_id=model_id,
+                identity=identity,
             )
 
         if provider_id == "":

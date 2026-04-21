@@ -221,6 +221,9 @@ def _resolve_run_target(
             },
             provider_id,
             model_id,
+                _build_acp_app_config,
+                _build_runtime_target_resolution,
+                _build_runtime_worker_config,
         )
     finally:
         database.close()
@@ -466,6 +469,11 @@ def _handle_workspaces_command(args: SimpleNamespace) -> int:
     return _handle_workspaces_command_impl(args)
 
 
+MODEL_IDENTITY_HELP = (
+    "Model identity. Use '<providerId>:<modelId>' or a bare '<modelId>' when it is unique."
+)
+
+
 app = typer.Typer(
     help="nsbot CLI",
     context_settings=HELP_OPTION_NAMES,
@@ -568,10 +576,17 @@ def models_list(
     )
 
 
-@models_app.command("create")
+@models_app.command(
+    "create",
+    help=(
+        "Create a provider/model entry. The JSON result includes 'identity' in "
+        "'<providerId>:<modelId>' format, which can be passed to 'models get', "
+        "'models set-default', and 'models remove'."
+    ),
+)
 def models_create(
     ctx: typer.Context,
-    name: str = typer.Option(..., "--name"),
+    name: str = typer.Option("", "--name"),
     base_url: str = typer.Option(..., "--base-url"),
     model_id: str = typer.Option(..., "--model-id"),
     api_key: str = typer.Option(..., "--api-key"),
@@ -590,14 +605,14 @@ def models_create(
                 api_key=api_key,
                 json=json_mode,
             )
+            )
         )
-    )
 
 
 @models_app.command("get")
 def models_get(
     ctx: typer.Context,
-    identity: str = typer.Argument(...),
+    identity: str = typer.Argument(..., help=MODEL_IDENTITY_HELP),
     json_mode: bool = typer.Option(False, "--json"),
     db_path: str = typer.Option("", "--db-path"),
 ) -> None:
@@ -617,7 +632,7 @@ def models_get(
 @models_app.command("set-default")
 def models_set_default(
     ctx: typer.Context,
-    identity: str = typer.Argument(...),
+    identity: str = typer.Argument(..., help=MODEL_IDENTITY_HELP),
     json_mode: bool = typer.Option(False, "--json"),
     db_path: str = typer.Option("", "--db-path"),
 ) -> None:
@@ -637,17 +652,18 @@ def models_set_default(
 @models_app.command("remove")
 def models_remove(
     ctx: typer.Context,
-    provider_id: str = typer.Option("", "--provider-id"),
-    model: str = typer.Option(..., "--model"),
+    identity: str = typer.Argument(..., help=MODEL_IDENTITY_HELP),
+    json_mode: bool = typer.Option(False, "--json"),
+    db_path: str = typer.Option("", "--db-path"),
 ) -> None:
     _run_with_error_handling(
         lambda: _handle_models_command(
             SimpleNamespace(
                 ns_bot_home=_ns_bot_home_from_ctx(ctx),
-                db_path=_db_path_from_ctx(ctx),
+                db_path=str(db_path or "").strip() or _db_path_from_ctx(ctx),
                 models_command="remove",
-                provider_id=provider_id,
-                model=model,
+                identity=identity,
+                json=json_mode,
             )
         )
     )

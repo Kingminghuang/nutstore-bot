@@ -26,6 +26,94 @@ class ProviderServiceModelOptionsTests(unittest.TestCase):
         self.connection.close()
         shutil.rmtree(self.temp_dir, ignore_errors=True)
 
+    def test_add_model_creates_builtin_provider_from_catalog_match(self) -> None:
+        bundle = self.service.add_model(
+            base_url="https://api.openai.com/v1",
+            api_key="sk-test",
+            model_id="gpt-5.4",
+            provider_display_name="OpenAI Override",
+            model_display_name="Ignored for builtin",
+        )
+
+        self.assertEqual(bundle["kind"], "builtin")
+        self.assertEqual(bundle["id"], "openai")
+        self.assertEqual(bundle["catalogProviderId"], "openai")
+        self.assertEqual(bundle["displayName"], "OpenAI Override")
+        self.assertEqual(bundle["preferredModelId"], "gpt-5.4")
+        self.assertEqual(bundle["customModels"], [])
+
+    def test_add_model_creates_builtin_provider_from_exact_catalog_model_id(self) -> None:
+        bundle = self.service.add_model(
+            base_url="https://api.deepseek.com",
+            api_key="sk-test",
+            model_id="deepseek/deepseek-chat",
+            provider_display_name="Deepseek Override",
+            model_display_name="Ignored for builtin",
+        )
+
+        self.assertEqual(bundle["kind"], "builtin")
+        self.assertEqual(bundle["id"], "deepseek")
+        self.assertEqual(bundle["catalogProviderId"], "deepseek")
+        self.assertEqual(bundle["preferredModelId"], "deepseek/deepseek-chat")
+
+    def test_add_model_falls_back_to_custom_for_openai_prefixed_model_id(self) -> None:
+        bundle = self.service.add_model(
+            base_url="https://api.openai.com/v1",
+            api_key="sk-test",
+            model_id="openai/gpt-5.4",
+            provider_display_name="OpenAI Compat",
+            model_display_name="OpenAI Compat",
+        )
+
+        self.assertEqual(bundle["kind"], "custom")
+        self.assertEqual(bundle["id"], "openai/gpt-5.4")
+        self.assertEqual(bundle["customSlug"], "openai/gpt-5.4")
+        self.assertEqual(bundle["preferredModelId"], "openai/gpt-5.4")
+        self.assertEqual(bundle["customModels"][0]["modelId"], "openai/gpt-5.4")
+
+    def test_add_model_falls_back_to_custom_provider_id_from_model(self) -> None:
+        bundle = self.service.add_model(
+            base_url="https://llm.example.com/v1",
+            api_key="sk-test",
+            model_id="model-a",
+            provider_display_name="Display Only",
+            model_display_name="Custom Model A",
+        )
+
+        self.assertEqual(bundle["kind"], "custom")
+        self.assertEqual(bundle["id"], "model-a")
+        self.assertEqual(bundle["customSlug"], "model-a")
+        self.assertEqual(bundle["displayName"], "model-a")
+        self.assertEqual(bundle["preferredModelId"], "model-a")
+        self.assertEqual(bundle["customModels"][0]["displayName"], "Custom Model A")
+
+    def test_add_model_updates_existing_builtin_provider(self) -> None:
+        self.repositories.providers.save_bundle(
+            provider_data={
+                "id": "openai",
+                "runtime_provider": "openai",
+                "catalog_provider_id": "openai",
+                "display_name": "OpenAI",
+                "base_url": None,
+                "secret_ref": "sec_openai",
+                "preferred_model_id": "gpt-5.2",
+            },
+            models=[],
+        )
+
+        bundle = self.service.add_model(
+            base_url="https://api.openai.com/v1",
+            api_key="sk-test-updated",
+            model_id="gpt-5.4",
+            provider_display_name="OpenAI Updated",
+            model_display_name="Ignored for builtin",
+        )
+
+        self.assertEqual(bundle["kind"], "builtin")
+        self.assertEqual(bundle["id"], "openai")
+        self.assertEqual(bundle["preferredModelId"], "gpt-5.4")
+        self.assertEqual(bundle["displayName"], "OpenAI Updated")
+
     def test_model_options_include_saved_provider_without_connected_health(self) -> None:
         openai_model_id = str(
             next(
