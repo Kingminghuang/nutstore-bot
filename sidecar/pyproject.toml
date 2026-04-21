@@ -32,7 +32,7 @@ dev = [
 package = true
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/nsbot_sidecar"]
+packages = ["src/nsbot"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

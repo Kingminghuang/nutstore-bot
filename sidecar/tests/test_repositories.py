@@ -5,8 +5,8 @@ import shutil
 import tempfile
 import unittest
 
-from nsbot_sidecar.infrastructure.repositories import create_repositories
-from nsbot_sidecar.infrastructure.storage import connect_database
+from nsbot.infrastructure.repositories import create_repositories
+from nsbot.infrastructure.storage import connect_database
 
 
 class RepositoriesTests(unittest.TestCase):

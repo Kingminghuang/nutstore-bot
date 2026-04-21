@@ -1,8 +1,8 @@
-from nsbot_sidecar.runtime.engine import (
+from nsbot.runtime.engine import (
     SmolagentsRuntimeEngine,
     create_runtime_engine,
 )
-from nsbot_sidecar.runtime.types import (
+from nsbot.runtime.types import (
     RunMetadata,
     RuntimeCancelledError,
     RuntimeEngine,

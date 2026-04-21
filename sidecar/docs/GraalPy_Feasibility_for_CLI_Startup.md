@@ -18,12 +18,12 @@
 - ../../src-tauri/src/bin/nsbot.rs — Rust launcher 入口；关键在 resolve_payload_path 和对 onedir payload 布局的假设。
 - ../../src-tauri/src/runtime/launcher.rs — runtime 初始化逻辑；确认 templates/search tools 拷贝和环境变量注入是否进入启动关键路径。
 - ../../src-tauri/src/main.rs — 桌面端 ACP stdio 连接点；适合放置 handshake 前后的阶段计时。
-- ../src/nsbot_sidecar/cli/__main__.py — Python CLI 模块入口；适合区分命令解析、模板准备、ACP 模式入口和普通 CLI 命令入口的启动成本。
-- ../src/nsbot_sidecar/cli/__init__.py — CLI package 主实现；适合分析主命令注册与运行时装配的启动成本。
-- ../src/nsbot_sidecar/api/acp_stdio.py — ACP stdio 主入口；确认 create_acp_app 与 initialize 前后的时间边界。
-- ../src/nsbot_sidecar/api/acp_app.py — ACP app 创建点；这里串起数据库、repositories、ProviderService、SessionService 和 WorkspaceSidecarIndexer。
-- ../src/nsbot_sidecar/application/provider_service.py — catalog_payload 触发 list_providers 的入口，适合排查 provider catalog 是否在启动或首个请求时产生显著成本。
-- ../src/nsbot_sidecar/providers/provider_catalog.py — provider catalog 与 litellm 相关导入点；若要优化冷启动，这是优先怀疑对象之一。
+- ../src/nsbot/cli/__main__.py — Python CLI 模块入口；适合区分命令解析、模板准备、ACP 模式入口和普通 CLI 命令入口的启动成本。
+- ../src/nsbot/cli/__init__.py — CLI package 主实现；适合分析主命令注册与运行时装配的启动成本。
+- ../src/nsbot/api/acp_stdio.py — ACP stdio 主入口；确认 create_acp_app 与 initialize 前后的时间边界。
+- ../src/nsbot/api/acp_app.py — ACP app 创建点；这里串起数据库、repositories、ProviderService、SessionService 和 WorkspaceSidecarIndexer。
+- ../src/nsbot/application/provider_service.py — catalog_payload 触发 list_providers 的入口，适合排查 provider catalog 是否在启动或首个请求时产生显著成本。
+- ../src/nsbot/providers/provider_catalog.py — provider catalog 与 litellm 相关导入点；若要优化冷启动，这是优先怀疑对象之一。
 - ../pyproject.toml — GraalPy feasibility 所需的关键依赖清单，用于兼容性分级与 spike 验证范围。
 - ../tests/e2e_packaged_cli.sh — 现有 packaged CLI 端到端验证入口；若做 GraalPy spike，至少要有同等级 smoke 验证。
 - ../tests/e2e_agent_cli.sh — CLI agent 路径验证入口；可用于判断迁移是否影响真实运行路径。
@@ -31,7 +31,7 @@
 **Verification**
 1. 在现有 PyInstaller 方案下，对 dist/nsbot 的最小命令做冷/热启动基线，例如 --help、providers list，以及桌面端 ACP initialize 完成时间，并保留分层计时日志。
 2. 运行现有 sidecar 测试中的最小相关集合，至少覆盖 ../tests/test_acp_stdio.py、../tests/test_runtime_engine.py、../tests/test_worker.py、../tests/test_tools.py，确保任何启动优化没有破坏 runtime/ACP 契约。
-3. 若进入 GraalPy spike，先验证在 GraalPy 解释器下直接运行 `python -m nsbot_sidecar.cli` 的最小命令，再验证打包分发形态，最后才验证与 Rust launcher 的集成。
+3. 若进入 GraalPy spike，先验证在 GraalPy 解释器下直接运行 `python -m nsbot.cli` 的最小命令，再验证打包分发形态，最后才验证与 Rust launcher 的集成。
 4. 对 GraalPy spike 记录三类结果：启动时间变化、产物布局差异、依赖兼容异常。没有这三类结果，不做迁移决策。
 5. 最终输出必须是一个明确结论：保留 PyInstaller 并优化初始化，或继续 GraalPy 迁移；不能停留在“可能更快”的模糊状态。
 
@@ -55,7 +55,7 @@
 2. 在现有链路上补最小侵入式计时点，拆出 launcher 初始化、payload 拉起、ACP initialize 完成、首个业务命令可用这几个阶段。没有这层数据，就无法判断 GraalPy 的收益上限。
 3. 先看应用初始化热点，再谈换打包器。重点核查 launcher.rs 的 templates 和 search-tools 准备、acp_app.py 的建库和服务装配、以及 provider_catalog.py 顶层导入是否把 litellm 成本提前到了启动阶段。
 4. 明确迁移约束：现有 launcher 依赖 nsbot.rs 约定的 onedir payload 布局和 build_packaged_cli.sh 产出的 runtime 目录。GraalPy 方案如果不能保持这个契约，就不是“替换打包器”，而是连 launcher 一起改。
-5. 只在前面数据表明“打包器/解释器启动”占比明显时，才做 GraalPy spike。这个 spike 先验证三件事：能否跑通 `nsbot_sidecar.cli` 的最小命令、能否支持 ACP 初始化路径、能否产出与现有 launcher 兼容的分发形态。
+5. 只在前面数据表明“打包器/解释器启动”占比明显时，才做 GraalPy spike。这个 spike 先验证三件事：能否跑通 `nsbot.cli` 的最小命令、能否支持 ACP 初始化路径、能否产出与现有 launcher 兼容的分发形态。
 6. 给出明确决策门槛：如果 GraalPy 只带来有限收益，却显著增加跨平台构建、依赖兼容和 CI 维护成本，就保留 PyInstaller，把优化重点放回应用初始化。
 
 **Relevant files**
@@ -64,7 +64,7 @@
 - nsbot.rs 定义 launcher 如何查找 payload
 - launcher.rs 负责 runtime 初始化和环境变量注入
 - main.rs 包含桌面端 ACP stdio 拉起与 initialize 握手
-- `nsbot_sidecar.cli` package 是 Python CLI 入口，`cli/__main__.py` 是模块执行入口
+- `nsbot.cli` package 是 Python CLI 入口，`cli/__main__.py` 是模块执行入口
 - acp_stdio.py 是 ACP stdio 主入口
 - acp_app.py 串起数据库、仓储和服务初始化
 - provider_service.py 和 provider_catalog.py 是 provider catalog 成本的关键入口
@@ -74,7 +74,7 @@
 **Verification**
 1. 先对现有 PyInstaller 方案测 dist/nsbot 的最小命令和桌面 ACP initialize 完成时间，分别记录冷启动和热启动。
 2. 跑最小相关测试集，至少覆盖 test_acp_stdio.py、test_runtime_engine.py、test_worker.py 和 test_tools.py。
-3. 如果进入 GraalPy spike，先用 GraalPy 解释器直接跑 `python -m nsbot_sidecar.cli` 的最小命令，再验证打包和 launcher 集成，不要一上来就改主构建链路。
+3. 如果进入 GraalPy spike，先用 GraalPy 解释器直接跑 `python -m nsbot.cli` 的最小命令，再验证打包和 launcher 集成，不要一上来就改主构建链路。
 4. 最终输出必须是二选一：继续沿 PyInstaller 优化初始化，或进入 GraalPy 正式迁移设计。
 
 补充判断：官方 GraalPy 文档确实强调了单二进制分发和较大的包兼容矩阵，但它并不是现有依赖栈的零风险替换。对这个仓库来说，GraalPy 更像“需要单独证明收益和兼容性”的候选方案，而不是一个可以预设更快的直接替代物。计划已经写入 session plan，后续如果你要，我可以继续把这份计划收缩成一个更短的执行清单，或者展开成一份明确的 benchmark 设计。

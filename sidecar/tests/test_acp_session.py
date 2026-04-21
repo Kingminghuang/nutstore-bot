@@ -13,10 +13,10 @@ from unittest.mock import patch
 import subprocess
 
 import anyio
-from nsbot_sidecar.api.acp_app import AcpAppConfig, create_acp_app
-from nsbot_sidecar.api.acp_session import AcpJsonRpcSession
-from nsbot_sidecar.infrastructure.secret_store import ProviderSecretPayload
-from nsbot_sidecar.runtime.types import (
+from nsbot.api.acp_app import AcpAppConfig, create_acp_app
+from nsbot.api.acp_session import AcpJsonRpcSession
+from nsbot.infrastructure.secret_store import ProviderSecretPayload
+from nsbot.runtime.types import (
     RuntimeCancelledError,
     RuntimeEventStream,
     RuntimeProcessError,
@@ -1088,8 +1088,8 @@ class AcpSessionTests(unittest.TestCase):
             ]
         )
 
-        with patch("nsbot_sidecar.api.acp_session.shutil.which", return_value="/usr/bin/fd"), patch(
-            "nsbot_sidecar.api.acp_session.subprocess.run",
+        with patch("nsbot.api.acp_session.shutil.which", return_value="/usr/bin/fd"), patch(
+            "nsbot.api.acp_session.subprocess.run",
             return_value=subprocess.CompletedProcess(
                 args=["/usr/bin/fd"],
                 returncode=0,
@@ -1156,7 +1156,7 @@ class AcpSessionTests(unittest.TestCase):
             active_model_id="gpt-5.4",
         )
         transport = _InMemoryTransport([])
-        with patch("nsbot_sidecar.api.acp_session.create_runtime_engine", return_value=_FakeEngine()):
+        with patch("nsbot.api.acp_session.create_runtime_engine", return_value=_FakeEngine()):
             async def _invoke_prompt() -> None:
                 session_runner = AcpJsonRpcSession(transport, self.app_state)
                 await session_runner._handle_prompt_request(
@@ -1191,7 +1191,7 @@ class AcpSessionTests(unittest.TestCase):
         )
         transport = _InMemoryTransport([])
         with patch(
-            "nsbot_sidecar.api.acp_session.create_runtime_engine",
+            "nsbot.api.acp_session.create_runtime_engine",
             return_value=_FakeStreamEngine(),
         ):
             async def _invoke_prompt() -> None:
@@ -1228,7 +1228,7 @@ class AcpSessionTests(unittest.TestCase):
         )
         transport = _InMemoryTransport([])
         with patch(
-            "nsbot_sidecar.api.acp_session.create_runtime_engine",
+            "nsbot.api.acp_session.create_runtime_engine",
             return_value=_FinalOnlyEngine(),
         ):
             async def _invoke_prompt() -> None:
@@ -1267,7 +1267,7 @@ class AcpSessionTests(unittest.TestCase):
         engine = _BlockingCancellableEngine()
 
         with patch(
-            "nsbot_sidecar.api.acp_session.create_runtime_engine",
+            "nsbot.api.acp_session.create_runtime_engine",
             return_value=engine,
         ):
 
@@ -1313,7 +1313,7 @@ class AcpSessionTests(unittest.TestCase):
         )
         transport = _InMemoryTransport([])
         with patch(
-            "nsbot_sidecar.api.acp_session.create_runtime_engine",
+            "nsbot.api.acp_session.create_runtime_engine",
             return_value=_ErrorEngine("max_tokens", "token budget exceeded"),
         ):
             async def _invoke_prompt() -> None:
@@ -1338,7 +1338,7 @@ class AcpSessionTests(unittest.TestCase):
         )
         transport = _InMemoryTransport([])
         with patch(
-            "nsbot_sidecar.api.acp_session.create_runtime_engine",
+            "nsbot.api.acp_session.create_runtime_engine",
             return_value=_ErrorEngine("unauthorized", "Provider is missing an API key"),
         ):
             async def _invoke_prompt() -> None:
@@ -1466,7 +1466,7 @@ class AcpSessionTests(unittest.TestCase):
         )
 
         transport = _InMemoryTransport([])
-        with patch("nsbot_sidecar.api.acp_session.create_runtime_engine", return_value=_FakeEngine()):
+        with patch("nsbot.api.acp_session.create_runtime_engine", return_value=_FakeEngine()):
             async def _invoke() -> None:
                 session_runner = AcpJsonRpcSession(transport, self.app_state)
                 await session_runner._handle_edit_and_prompt_request(
@@ -1510,7 +1510,7 @@ class AcpSessionTests(unittest.TestCase):
         )
 
         transport = _InMemoryTransport([])
-        with patch("nsbot_sidecar.api.acp_session.create_runtime_engine", return_value=_FakeEngine()):
+        with patch("nsbot.api.acp_session.create_runtime_engine", return_value=_FakeEngine()):
             async def _invoke() -> None:
                 session_runner = AcpJsonRpcSession(transport, self.app_state)
                 await session_runner._handle_edit_and_prompt_request(

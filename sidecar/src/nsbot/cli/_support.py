@@ -13,16 +13,16 @@ import click
 from fastapi import HTTPException
 import typer
 
-from nsbot_sidecar.api.acp_app import AcpAppConfig
-from nsbot_sidecar.application.provider_service import ProviderService
-from nsbot_sidecar.application.session_service import SessionService
-from nsbot_sidecar.application.timeline_service import TimelineService
-from nsbot_sidecar.infrastructure.local_paths import nsbot_home
-from nsbot_sidecar.infrastructure.repositories import create_repositories
-from nsbot_sidecar.infrastructure.secret_store import LocalSecretStore
-from nsbot_sidecar.infrastructure.storage import connect_database
-from nsbot_sidecar.runtime.types import RuntimeWorkerConfig
-from nsbot_sidecar.runtime.workspace_indexer import WorkspaceIndexer
+from nsbot.api.acp_app import AcpAppConfig
+from nsbot.application.provider_service import ProviderService
+from nsbot.application.session_service import SessionService
+from nsbot.application.timeline_service import TimelineService
+from nsbot.infrastructure.local_paths import nsbot_home
+from nsbot.infrastructure.repositories import create_repositories
+from nsbot.infrastructure.secret_store import LocalSecretStore
+from nsbot.infrastructure.storage import connect_database
+from nsbot.runtime.types import RuntimeWorkerConfig
+from nsbot.runtime.workspace_indexer import WorkspaceIndexer
 
 
 HELP_OPTION_NAMES = {"help_option_names": ["-h", "--help"]}
@@ -291,7 +291,7 @@ def _build_runtime_target_resolution(
 
 
 def _resolve_catalog_model_ids(bundle) -> list[str]:
-    from nsbot_sidecar.providers.provider_catalog import list_providers
+    from nsbot.providers.provider_catalog import list_providers
 
     provider_id = bundle.provider.catalog_provider_id or ""
     for provider in list_providers():
@@ -324,7 +324,7 @@ def _build_acp_app_config(ns_bot_home_value: str) -> AcpAppConfig:
 
 
 def _run_acp_mode(ns_bot_home_value: str) -> int:
-    from nsbot_sidecar.api import acp_stdio
+    from nsbot.api import acp_stdio
 
     return acp_stdio.main(config=_build_acp_app_config(ns_bot_home_value))
 

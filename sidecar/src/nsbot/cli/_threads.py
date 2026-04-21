@@ -8,7 +8,7 @@ from typing import Any, Callable
 from fastapi import HTTPException
 
 from ._support import _http_detail
-from nsbot_sidecar.application.session_service import SessionService
+from nsbot.application.session_service import SessionService
 
 
 def history_event_to_thread_event_row(

@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
-from nsbot_sidecar.runtime.worker import main, parse_request
+from nsbot.runtime.worker import main, parse_request
 
 
 class WorkerRequestParsingTests(unittest.TestCase):
@@ -133,10 +133,10 @@ class WorkerRequestParsingTests(unittest.TestCase):
             "final_answer": "ok",
         }
 
-        with patch("nsbot_sidecar.runtime.worker.sys.stdin", stdin):
-            with patch("nsbot_sidecar.runtime.worker.sys.stdout", stdout):
+        with patch("nsbot.runtime.worker.sys.stdin", stdin):
+            with patch("nsbot.runtime.worker.sys.stdout", stdout):
                 with patch(
-                    "nsbot_sidecar.runtime.worker.create_runtime_engine"
+                    "nsbot.runtime.worker.create_runtime_engine"
                 ) as engine_factory:
                     engine_factory.return_value.process_async = AsyncMock(
                         return_value=fake_result

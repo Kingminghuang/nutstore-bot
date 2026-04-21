@@ -16,19 +16,19 @@ from urllib.parse import unquote, urlparse
 
 import anyio
 
-from nsbot_sidecar.infrastructure.local_paths import nsbot_home
-from nsbot_sidecar.infrastructure.repositories import create_id
-from nsbot_sidecar.infrastructure.storage import transaction
-from nsbot_sidecar.providers.provider_catalog import list_providers
-from nsbot_sidecar.runtime.engine import create_runtime_engine
-from nsbot_sidecar.runtime.sandbox import MODE_POLICIES, SessionModeId
-from nsbot_sidecar.runtime.types import (
+from nsbot.infrastructure.local_paths import nsbot_home
+from nsbot.infrastructure.repositories import create_id
+from nsbot.infrastructure.storage import transaction
+from nsbot.providers.provider_catalog import list_providers
+from nsbot.runtime.engine import create_runtime_engine
+from nsbot.runtime.sandbox import MODE_POLICIES, SessionModeId
+from nsbot.runtime.types import (
     RunMetadata,
     RuntimeCancelledError,
     RuntimeProcessError,
     RuntimeWorkerConfig,
 )
-from nsbot_sidecar.application.timeline_service import serialize_session_summary
+from nsbot.application.timeline_service import serialize_session_summary
 
 
 _SUPPORTED_IMAGE_MIME_TYPES = {

@@ -7,14 +7,14 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
-from nsbot_sidecar.api.redaction import install_log_redaction_filter, redact_sensitive
-from nsbot_sidecar.application.provider_service import ProviderService
-from nsbot_sidecar.application.session_service import SessionService
-from nsbot_sidecar.application.timeline_service import TimelineService
-from nsbot_sidecar.infrastructure.repositories import create_repositories
-from nsbot_sidecar.infrastructure.secret_store import LocalSecretStore
-from nsbot_sidecar.infrastructure.storage import connect_database
-from nsbot_sidecar.runtime.workspace_indexer import WorkspaceIndexer
+from nsbot.api.redaction import install_log_redaction_filter, redact_sensitive
+from nsbot.application.provider_service import ProviderService
+from nsbot.application.session_service import SessionService
+from nsbot.application.timeline_service import TimelineService
+from nsbot.infrastructure.repositories import create_repositories
+from nsbot.infrastructure.secret_store import LocalSecretStore
+from nsbot.infrastructure.storage import connect_database
+from nsbot.runtime.workspace_indexer import WorkspaceIndexer
 
 
 @dataclass(frozen=True)

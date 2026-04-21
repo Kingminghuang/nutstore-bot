@@ -86,7 +86,7 @@ class AcpStdioIntegrationTests(unittest.TestCase):
                 client,
                 sys.executable,
                 "-m",
-                "nsbot_sidecar.api.acp_stdio",
+                "nsbot.api.acp_stdio",
                 env=env,
                 cwd=str(workspace),
             ) as (conn, _proc):
@@ -152,7 +152,7 @@ class AcpStdioIntegrationTests(unittest.TestCase):
                 client,
                 sys.executable,
                 "-m",
-                "nsbot_sidecar.cli",
+                "nsbot.cli",
                 "--acp",
                 env=env,
                 cwd=str(workspace),
@@ -212,7 +212,7 @@ class AcpStdioIntegrationTests(unittest.TestCase):
             proc = await asyncio.create_subprocess_exec(
                 sys.executable,
                 "-m",
-                "nsbot_sidecar.api.acp_stdio",
+                "nsbot.api.acp_stdio",
                 cwd=str(workspace),
                 env=env,
                 stdin=asyncio.subprocess.PIPE,

@@ -6,7 +6,7 @@ from typing import Any
 
 from smolagents.local_python_executor import CodeOutput, LocalPythonExecutor
 
-from nsbot_sidecar.runtime.sandbox import EmptySandbox
+from nsbot.runtime.sandbox import EmptySandbox
 
 
 @dataclass

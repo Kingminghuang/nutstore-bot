@@ -236,10 +236,10 @@ from __future__ import annotations
 import json
 import sys
 
-from nsbot_sidecar.infrastructure.repositories import create_repositories
-from nsbot_sidecar.infrastructure.secret_store import LocalSecretStore, ProviderSecretPayload
-from nsbot_sidecar.infrastructure.storage import connect_database
-from nsbot_sidecar.providers.provider_catalog import list_providers
+from nsbot.infrastructure.repositories import create_repositories
+from nsbot.infrastructure.secret_store import LocalSecretStore, ProviderSecretPayload
+from nsbot.infrastructure.storage import connect_database
+from nsbot.providers.provider_catalog import list_providers
 
 ns_bot_home = sys.argv[1]
 database = connect_database(ns_bot_home)
@@ -492,7 +492,7 @@ build_python_cli_payload() {
     --distpath "${DIST_ROOT}"
     --workpath "${BUILD_ROOT}"
     --specpath "${SPEC_ROOT}"
-    "${SIDECAR_ROOT}/src/nsbot_sidecar/cli/__main__.py"
+    "${SIDECAR_ROOT}/src/nsbot/cli/__main__.py"
   )
 
   case "$(uname -s)/$(uname -m)" in

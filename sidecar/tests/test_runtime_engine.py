@@ -17,21 +17,21 @@ from smolagents.models import (
 )
 from smolagents.monitoring import TokenUsage
 
-from nsbot_sidecar.runtime.memory import MemoryConsolidator
-from nsbot_sidecar.providers.direct_model import DirectModelConfig
-from nsbot_sidecar.runtime.native_code_agent import NativeCodeAgent
-from nsbot_sidecar.providers.direct_model import DirectModelError
-from nsbot_sidecar.runtime.engine import (
+from nsbot.runtime.memory import MemoryConsolidator
+from nsbot.providers.direct_model import DirectModelConfig
+from nsbot.runtime.native_code_agent import NativeCodeAgent
+from nsbot.providers.direct_model import DirectModelError
+from nsbot.runtime.engine import (
     SmolagentsRuntimeEngine,
     _collect_tool_results_by_call_id,
 )
-from nsbot_sidecar.runtime.types import (
+from nsbot.runtime.types import (
     RunMetadata,
     RuntimeEventStream,
     RuntimeProcessError,
     RuntimeWorkerConfig,
 )
-from nsbot_sidecar.application.turn_service import execute_runtime_turn
+from nsbot.application.turn_service import execute_runtime_turn
 
 
 class FakeStreamingModel(Model):
@@ -390,10 +390,10 @@ class RuntimeEngineTests(unittest.TestCase):
                 return iter(())
 
         with patch(
-            "nsbot_sidecar.runtime.engine.NativeCodeAgent",
+            "nsbot.runtime.engine.NativeCodeAgent",
             FakeCodeAgent,
         ), patch(
-            "nsbot_sidecar.runtime.engine.NativeToolCallingAgent",
+            "nsbot.runtime.engine.NativeToolCallingAgent",
             FakeToolCallingAgent,
         ):
             service = SmolagentsRuntimeEngine(
@@ -453,10 +453,10 @@ class RuntimeEngineTests(unittest.TestCase):
                 return iter(())
 
         with patch(
-            "nsbot_sidecar.runtime.engine.NativeCodeAgent",
+            "nsbot.runtime.engine.NativeCodeAgent",
             FakeCodeAgent,
         ), patch(
-            "nsbot_sidecar.runtime.engine.NativeToolCallingAgent",
+            "nsbot.runtime.engine.NativeToolCallingAgent",
             FakeToolCallingAgent,
         ):
             service = SmolagentsRuntimeEngine(
@@ -503,10 +503,10 @@ class RuntimeEngineTests(unittest.TestCase):
                 return iter(())
 
         with patch(
-            "nsbot_sidecar.runtime.engine.NativeCodeAgent",
+            "nsbot.runtime.engine.NativeCodeAgent",
             FakeCodeAgent,
         ), patch(
-            "nsbot_sidecar.runtime.engine.NativeToolCallingAgent",
+            "nsbot.runtime.engine.NativeToolCallingAgent",
             FakeToolCallingAgent,
         ):
             service = SmolagentsRuntimeEngine(
@@ -585,7 +585,7 @@ class RuntimeEngineTests(unittest.TestCase):
         is_cancelled = lambda: False
 
         with patch(
-            "nsbot_sidecar.application.turn_service.create_runtime_engine"
+            "nsbot.application.turn_service.create_runtime_engine"
         ) as engine_factory:
             runtime_engine = engine_factory.return_value
             runtime_engine.process_async = AsyncMock(

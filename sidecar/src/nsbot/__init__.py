@@ -9,7 +9,7 @@ def __getattr__(name: str):
     if name not in __all__:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
-    from nsbot_sidecar.runtime.types import RuntimeCancelledError, RuntimeProcessError
+    from nsbot.runtime.types import RuntimeCancelledError, RuntimeProcessError
 
     exports = {
         "RuntimeCancelledError": RuntimeCancelledError,

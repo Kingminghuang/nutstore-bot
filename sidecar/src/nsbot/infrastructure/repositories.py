@@ -7,7 +7,7 @@ import json
 from typing import Any
 from uuid import uuid4
 
-from nsbot_sidecar.infrastructure.storage import transaction
+from nsbot.infrastructure.storage import transaction
 
 
 def now_iso_timestamp() -> str:

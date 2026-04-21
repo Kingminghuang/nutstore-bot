@@ -15,30 +15,30 @@ from smolagents.memory import ActionStep, FinalAnswerStep, PlanningStep
 from smolagents.models import ChatMessageStreamDelta
 from smolagents.monitoring import AgentLogger, LogLevel
 
-from nsbot_sidecar.domain.agent_memory_projection import (
+from nsbot.domain.agent_memory_projection import (
     extract_action_thought,
     project_agent_memory_to_session_messages,
     project_final_answer_to_session_message,
 )
-from nsbot_sidecar.providers.direct_model import DirectModel, DirectModelConfig, DirectModelError
-from nsbot_sidecar.providers.provider_catalog import BUILTIN_PROVIDERS
-from nsbot_sidecar.runtime.context_builder import (
+from nsbot.providers.direct_model import DirectModel, DirectModelConfig, DirectModelError
+from nsbot.providers.provider_catalog import BUILTIN_PROVIDERS
+from nsbot.runtime.context_builder import (
     SECTION_SEPARATOR,
     ContextBuildError,
     ContextBuilder,
     ContextBuilderConfig,
     RuntimeInfo,
 )
-from nsbot_sidecar.runtime.local_code_executor import LocalCodeExecutor
-from nsbot_sidecar.runtime.memory import MemoryConsolidator, MemoryStore
-from nsbot_sidecar.runtime.native_code_agent import (
+from nsbot.runtime.local_code_executor import LocalCodeExecutor
+from nsbot.runtime.memory import MemoryConsolidator, MemoryStore
+from nsbot.runtime.native_code_agent import (
     NativeCodeAgent,
     NativeToolCallingAgent,
 )
-from nsbot_sidecar.runtime.sandbox import EmptySandbox
-from nsbot_sidecar.runtime.session_manager import SessionManager
-from nsbot_sidecar.runtime.tools import build_workspace_tools, path_identity, resolve_path_arg
-from nsbot_sidecar.runtime.types import (
+from nsbot.runtime.sandbox import EmptySandbox
+from nsbot.runtime.session_manager import SessionManager
+from nsbot.runtime.tools import build_workspace_tools, path_identity, resolve_path_arg
+from nsbot.runtime.types import (
     RunMetadata,
     RuntimeCancelledError,
     RuntimeEngine,

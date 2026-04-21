@@ -8,8 +8,8 @@ from typing import Any
 
 from fastapi.testclient import TestClient
 
-from nsbot_sidecar.api.acp_app import AcpAppConfig, create_acp_app
-from nsbot_sidecar.api.acp_session import AcpJsonRpcSession
+from nsbot.api.acp_app import AcpAppConfig, create_acp_app
+from nsbot.api.acp_session import AcpJsonRpcSession
 
 
 class _InMemoryTransport:

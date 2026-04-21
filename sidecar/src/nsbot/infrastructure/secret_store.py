@@ -4,7 +4,7 @@ import json
 import re
 from dataclasses import dataclass
 
-from nsbot_sidecar.infrastructure.local_paths import ensure_secret_dir, secrets_dir_path
+from nsbot.infrastructure.local_paths import ensure_secret_dir, secrets_dir_path
 
 
 @dataclass(frozen=True)

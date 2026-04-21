@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from nsbot_sidecar.runtime.session_manager import Session, SessionManager, safe_session_key
+from nsbot.runtime.session_manager import Session, SessionManager, safe_session_key
 
 
 class SessionManagerTests(unittest.TestCase):

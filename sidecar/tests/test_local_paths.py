@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from nsbot_sidecar.infrastructure.local_paths import (
+from nsbot.infrastructure.local_paths import (
     database_file_path,
     master_key_path,
     nsbot_home,

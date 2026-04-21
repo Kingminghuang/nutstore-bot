@@ -4,7 +4,7 @@
 
 This section is the current source of truth for sidecar provider/model persistence.
 If implementation and older notes disagree, follow this document and the current
-code in `storage.py`, `provider_service.py`, and the `nsbot_sidecar.cli` package.
+code in `storage.py`, `provider_service.py`, and the `nsbot.cli` package.
 
 ### Storage model
 
@@ -113,7 +113,7 @@ The following old assumptions are no longer valid and should not be reintroduced
 Use the root-level `--acp` flag when the CLI should run as an ACP stdio server:
 
 ```bash
-uv run python -m nsbot_sidecar.cli --acp
+uv run python -m nsbot.cli --acp
 ```
 
 Notes:
@@ -125,42 +125,42 @@ Notes:
 
 ```bash
 # List workspaces
-uv run python -m nsbot_sidecar.cli workspaces list
+uv run python -m nsbot.cli workspaces list
 
 # Create workspace
-uv run python -m nsbot_sidecar.cli workspaces create \
+uv run python -m nsbot.cli workspaces create \
   --name demo \
   --real-path /absolute/path/to/workspace
 
 # Update workspace metadata
-uv run python -m nsbot_sidecar.cli workspaces update \
+uv run python -m nsbot.cli workspaces update \
   --workspace-id ws_xxx \
   --name "new name" \
   --path-label "/visible/path"
 
 # Check workspace index status
-uv run python -m nsbot_sidecar.cli workspaces index status --workspace-id ws_xxx
+uv run python -m nsbot.cli workspaces index status --workspace-id ws_xxx
 
 # Delete workspace
-uv run python -m nsbot_sidecar.cli workspaces delete --workspace-id ws_xxx
+uv run python -m nsbot.cli workspaces delete --workspace-id ws_xxx
 ```
 
 ### Thread commands
 
 ```bash
 # List recent threads
-uv run python -m nsbot_sidecar.cli threads list
+uv run python -m nsbot.cli threads list
 
 # Read thread details
-uv run python -m nsbot_sidecar.cli threads get --thread-id thread_xxx
+uv run python -m nsbot.cli threads get --thread-id thread_xxx
 
 # Rename thread
-uv run python -m nsbot_sidecar.cli threads update \
+uv run python -m nsbot.cli threads update \
   --thread-id thread_xxx \
   --title "new title"
 
 # Delete thread
-uv run python -m nsbot_sidecar.cli threads delete --thread-id thread_xxx
+uv run python -m nsbot.cli threads delete --thread-id thread_xxx
 ```
 
 ### Run with persisted thread
@@ -169,5 +169,5 @@ When `--thread-id` is provided, agent run resolves thread session metadata and w
 path from DB, then executes runtime in that existing thread context.
 
 ```bash
-uv run python -m nsbot_sidecar.cli agent run --prompt "your prompt" --thread-id thread_xxx
+uv run python -m nsbot.cli agent run --prompt "your prompt" --thread-id thread_xxx
 ```

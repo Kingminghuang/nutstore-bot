@@ -8,8 +8,8 @@ from typing import Any
 from acp import RequestError, run_agent
 from acp.interfaces import Client
 
-from nsbot_sidecar.api.acp_app import AcpAppConfig, create_acp_app
-from nsbot_sidecar.api.acp_session import AcpJsonRpcSession
+from nsbot.api.acp_app import AcpAppConfig, create_acp_app
+from nsbot.api.acp_session import AcpJsonRpcSession
 
 
 def _acp_debug_enabled() -> bool:

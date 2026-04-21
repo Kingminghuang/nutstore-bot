@@ -62,18 +62,18 @@ npm run tauri dev
 在 `sidecar` 目录可直接通过 CLI 管理工作区和会话：
 
 ```bash
-uv run python -m nsbot_sidecar.cli workspaces list
-uv run python -m nsbot_sidecar.cli workspaces create --name demo --real-path /path/to/project
-uv run python -m nsbot_sidecar.cli sessions list --workspace-id <workspace_id>
-uv run python -m nsbot_sidecar.cli sessions create --workspace-id <workspace_id>
-uv run python -m nsbot_sidecar.cli sessions update --session-id <session_id> --title "重命名会话"
-uv run python -m nsbot_sidecar.cli sessions delete --session-id <session_id>
+uv run python -m nsbot.cli workspaces list
+uv run python -m nsbot.cli workspaces create --name demo --real-path /path/to/project
+uv run python -m nsbot.cli sessions list --workspace-id <workspace_id>
+uv run python -m nsbot.cli sessions create --workspace-id <workspace_id>
+uv run python -m nsbot.cli sessions update --session-id <session_id> --title "重命名会话"
+uv run python -m nsbot.cli sessions delete --session-id <session_id>
 ```
 
 如需把 CLI 作为 ACP stdio 入口启动，使用根级 `--acp`：
 
 ```bash
-uv run python -m nsbot_sidecar.cli --acp
+uv run python -m nsbot.cli --acp
 ```
 
 说明：
@@ -84,7 +84,7 @@ uv run python -m nsbot_sidecar.cli --acp
 运行任务时，可直接绑定数据库里的 session：
 
 ```bash
-uv run python -m nsbot_sidecar.cli run "帮我总结这个仓库" --session-id <session_id> --diagnose
+uv run python -m nsbot.cli run "帮我总结这个仓库" --session-id <session_id> --diagnose
 ```
 
 ## Build

@@ -2,7 +2,7 @@
 
 ## Project Structure & Module Organization
 - `frontend/`: Vite + React + TypeScript UI. Main app code is under `frontend/src/` with feature slices in `features/`, shared utilities in `shared/`, and app entry in `app/page.tsx`.
-- `sidecar/`: Python 3.11+ ACP stdio sidecar (`src/nsbot_sidecar/`) with layered modules: `api/`, `application/`, `domain/`, `infrastructure/`, and `runtime/`.
+- `sidecar/`: Python 3.11+ ACP stdio sidecar (`src/nsbot/`) with layered modules: `api/`, `application/`, `domain/`, `infrastructure/`, and `runtime/`.
 - `src-tauri/`: Rust desktop shell for packaging and runtime orchestration.
 - `scripts/`: macOS desktop build/smoke scripts. `templates/` contains runtime template resources.
 
@@ -14,7 +14,7 @@
 - Frontend tests: `cd frontend && npm test`
 - Frontend lint: `cd frontend && npm run lint`
 - Sidecar setup: `cd sidecar && uv sync`
-- Sidecar ACP stdio locally: `cd sidecar && uv run python -m nsbot_sidecar.api.acp_stdio`
+- Sidecar ACP stdio locally: `cd sidecar && uv run python -m nsbot.api.acp_stdio`
 - Sidecar tests: `cd sidecar && uv run pytest`
 - macOS desktop build: `bash ./scripts/build-desktop-macos.sh` (add `--dmg` or `--debug` as needed)
 
@@ -62,7 +62,7 @@
 - Do not design or implement database migrations, compatibility layers, backward-compatibility shims, or transitional fallback paths unless the user explicitly overrides this rule for a specific task.
 
 ## Runtime Architecture Guardrails
-- Runtime call sites (`sidecar/src/nsbot_sidecar/api/acp_session.py`, `sidecar/src/nsbot_sidecar/cli/__init__.py`, and `sidecar/src/nsbot_sidecar/runtime/worker.py`) must use the `nsbot_sidecar.runtime.engine` interface.
+- Runtime call sites (`sidecar/src/nsbot/api/acp_session.py`, `sidecar/src/nsbot/cli/__init__.py`, and `sidecar/src/nsbot/runtime/worker.py`) must use the `nsbot.runtime.engine` interface.
 - Keep `execute_runtime_turn` as the thin application entry point to RuntimeEngine.
 - Runtime interaction is ACP-only over stdio (desktop path: Frontend IPC -> Tauri bridge -> sidecar stdio JSON-RPC). Do not add or restore `/runs*` endpoints, `run.*` event streams, HTTP `edit-and-run` style paths, or frontend-facing ACP websocket routes.
 - `sidecar` has no standalone HTTP server surface. Any new business capability must go through ACP methods, not REST.
@@ -95,7 +95,7 @@
 - Managed `CodeAgent` is a fallback path for tasks that cannot be completed efficiently or reliably with standard workspace tools (`read/grep/find/ls`), including but not limited to computation, data transformation, and script-style workflows.
 - For runtime/tooling changes, run at minimum:
   - `cd sidecar && uv run pytest tests/test_runtime_engine.py tests/test_worker.py tests/test_acp_stdio.py tests/test_tools.py`
-- In `sidecar/src/nsbot_sidecar/runtime/tools.py`, keep tool metadata unambiguous:
+- In `sidecar/src/nsbot/runtime/tools.py`, keep tool metadata unambiguous:
   - no duplicate keys in `inputs`;
   - include practical default/range semantics in parameter descriptions where relevant.
 

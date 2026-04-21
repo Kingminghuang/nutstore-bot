@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from nsbot_sidecar.runtime.tools import (
+from nsbot.runtime.tools import (
     ToolCall,
     ToolLayer,
     build_workspace_tools,

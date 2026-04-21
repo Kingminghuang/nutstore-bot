@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from nsbot_sidecar.runtime.workspace_indexer import WorkspaceIndexer
+from nsbot.runtime.workspace_indexer import WorkspaceIndexer
 
 
 def _thread_pid_file(ns_bot_home_value: str, thread_id: str) -> Path:

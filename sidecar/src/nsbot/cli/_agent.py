@@ -11,8 +11,8 @@ import uuid
 
 from ._events import _TIMELINE_DEPRECATION_NOTICE, _build_codex_thread_events
 from ._state import _now_iso
-from nsbot_sidecar.application.session_service import SessionService
-from nsbot_sidecar.runtime.types import RunMetadata, RuntimeWorkerConfig
+from nsbot.application.session_service import SessionService
+from nsbot.runtime.types import RunMetadata, RuntimeWorkerConfig
 
 
 def handle_run_command(

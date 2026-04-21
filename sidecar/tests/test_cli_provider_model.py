@@ -10,11 +10,11 @@ import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from unittest import mock
 
-from nsbot_sidecar import cli as cli_module
-from nsbot_sidecar.cli import main as cli_main
-from nsbot_sidecar.providers.provider_catalog import list_providers
-from nsbot_sidecar.infrastructure.repositories import create_repositories
-from nsbot_sidecar.infrastructure.storage import connect_database
+from nsbot import cli as cli_module
+from nsbot.cli import main as cli_main
+from nsbot.providers.provider_catalog import list_providers
+from nsbot.infrastructure.repositories import create_repositories
+from nsbot.infrastructure.storage import connect_database
 
 
 def _run_cli(argv: list[str]) -> tuple[int, str, str]:
@@ -1243,7 +1243,7 @@ class CliProviderModelTests(unittest.TestCase):
         self.assertEqual(payload[0]["event_type"], "turn.started")
 
     def test_root_acp_mode_routes_to_acp_stdio_bootstrap(self) -> None:
-        with mock.patch("nsbot_sidecar.api.acp_stdio.main", return_value=17) as acp_main:
+        with mock.patch("nsbot.api.acp_stdio.main", return_value=17) as acp_main:
             code, stdout, stderr = _run_cli([
                 "--ns-bot-home",
                 self.temp_dir,
@@ -1272,7 +1272,7 @@ class CliProviderModelTests(unittest.TestCase):
         self.assertEqual(stderr, "")
 
     def test_root_acp_mode_rejects_subcommands(self) -> None:
-        with mock.patch("nsbot_sidecar.api.acp_stdio.main") as acp_main:
+        with mock.patch("nsbot.api.acp_stdio.main") as acp_main:
             code, stdout, stderr = _run_cli([
                 "--ns-bot-home",
                 self.temp_dir,
@@ -1289,7 +1289,7 @@ class CliProviderModelTests(unittest.TestCase):
         acp_main.assert_not_called()
 
     def test_agent_run_help_does_not_route_to_acp_stdio_bootstrap(self) -> None:
-        with mock.patch("nsbot_sidecar.api.acp_stdio.main") as acp_main:
+        with mock.patch("nsbot.api.acp_stdio.main") as acp_main:
             code, stdout, _stderr = _run_cli(
                 [
                     "--ns-bot-home",

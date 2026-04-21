@@ -74,8 +74,8 @@ from __future__ import annotations
 
 import sys
 
-from nsbot_sidecar.infrastructure.repositories import create_repositories
-from nsbot_sidecar.infrastructure.storage import connect_database
+from nsbot.infrastructure.repositories import create_repositories
+from nsbot.infrastructure.storage import connect_database
 
 ns_bot_home = sys.argv[1]
 database = connect_database(ns_bot_home)

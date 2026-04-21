@@ -22,7 +22,7 @@ from typing import Any, Literal
 
 from smolagents import Tool
 
-from nsbot_sidecar.runtime.sandbox import EmptySandbox
+from nsbot.runtime.sandbox import EmptySandbox
 
 
 DEFAULT_TEXT_MAX_LINES = 2000

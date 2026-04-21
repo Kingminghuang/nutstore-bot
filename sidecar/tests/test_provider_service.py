@@ -4,11 +4,11 @@ import shutil
 import tempfile
 import unittest
 
-from nsbot_sidecar.application.provider_service import ProviderService
-from nsbot_sidecar.infrastructure.repositories import create_repositories
-from nsbot_sidecar.infrastructure.secret_store import LocalSecretStore
-from nsbot_sidecar.infrastructure.storage import connect_database
-from nsbot_sidecar.providers.provider_catalog import list_providers
+from nsbot.application.provider_service import ProviderService
+from nsbot.infrastructure.repositories import create_repositories
+from nsbot.infrastructure.secret_store import LocalSecretStore
+from nsbot.infrastructure.storage import connect_database
+from nsbot.providers.provider_catalog import list_providers
 
 
 class ProviderServiceModelOptionsTests(unittest.TestCase):

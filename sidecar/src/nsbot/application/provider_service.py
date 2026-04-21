@@ -6,16 +6,16 @@ from typing import Any
 
 from fastapi import HTTPException, status
 
-from nsbot_sidecar.api.redaction import redact_sensitive
-from nsbot_sidecar.domain.sensitive_write_guard import detect_sensitive_write_issues
-from nsbot_sidecar.infrastructure.repositories import (
+from nsbot.api.redaction import redact_sensitive
+from nsbot.domain.sensitive_write_guard import detect_sensitive_write_issues
+from nsbot.infrastructure.repositories import (
     DefaultModelSelectionRepository,
     ProviderBundle,
     ProviderModelRecord,
     ProvidersRepository,
 )
-from nsbot_sidecar.infrastructure.secret_store import LocalSecretStore, ProviderSecretPayload
-from nsbot_sidecar.providers.provider_catalog import BUILTIN_PROVIDERS, catalog_version, list_providers
+from nsbot.infrastructure.secret_store import LocalSecretStore, ProviderSecretPayload
+from nsbot.providers.provider_catalog import BUILTIN_PROVIDERS, catalog_version, list_providers
 
 
 LOGGER = logging.getLogger(__name__)

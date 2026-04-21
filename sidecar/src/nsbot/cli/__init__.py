@@ -82,11 +82,11 @@ from ._support import (
     _run_acp_mode,
     _run_with_error_handling,
 )
-from nsbot_sidecar.infrastructure.local_paths import nsbot_home
-from nsbot_sidecar.application.session_service import SessionService
-from nsbot_sidecar.runtime.engine import create_runtime_engine
-from nsbot_sidecar.runtime.types import RunMetadata, RuntimeWorkerConfig
-from nsbot_sidecar.runtime.workspace_indexer import WorkspaceIndexer
+from nsbot.infrastructure.local_paths import nsbot_home
+from nsbot.application.session_service import SessionService
+from nsbot.runtime.engine import create_runtime_engine
+from nsbot.runtime.types import RunMetadata, RuntimeWorkerConfig
+from nsbot.runtime.workspace_indexer import WorkspaceIndexer
 
 
 class _CliTurnExecutionError(RuntimeError):
