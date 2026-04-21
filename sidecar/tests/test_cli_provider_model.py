@@ -174,6 +174,30 @@ class CliProviderModelTests(unittest.TestCase):
         assert secret_payload is not None
         self.assertEqual(secret_payload.api_key, "sk-second")
 
+    def test_providers_create_accepts_optional_base_url_override(self) -> None:
+        code, stdout, _stderr = _run_cli(
+            [
+                "--ns-bot-home",
+                self.temp_dir,
+                "providers",
+                "create",
+                "--id",
+                "nutstore",
+                "--api-key",
+                "sk-nutstore",
+                "--base-url",
+                "https://proxy.example.com/v1",
+            ]
+        )
+        self.assertEqual(code, 0)
+        payload = json.loads(stdout)
+        self.assertEqual(payload["baseUrl"], "https://proxy.example.com/v1")
+
+        bundle = self.repositories.providers.get_bundle_by_id("nutstore")
+        self.assertIsNotNone(bundle)
+        assert bundle is not None
+        self.assertEqual(bundle.provider.base_url, "https://proxy.example.com/v1")
+
     def test_providers_get_returns_persisted_models(self) -> None:
         create_code, _create_stdout, _create_stderr = _run_cli(
             [

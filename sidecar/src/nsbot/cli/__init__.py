@@ -545,6 +545,7 @@ def providers_create(
     ctx: typer.Context,
     id: str = typer.Option(..., "--id", help="Builtin provider id"),
     api_key: str = typer.Option(..., "--api-key", help="Provider API key"),
+    base_url: str | None = typer.Option(None, "--base-url", help="Override provider base URL"),
 ) -> None:
     _run_with_error_handling(
         lambda: _handle_providers_command(
@@ -554,6 +555,7 @@ def providers_create(
                 providers_command="create",
                 id=id,
                 api_key=api_key,
+                base_url=base_url,
             )
         )
     )

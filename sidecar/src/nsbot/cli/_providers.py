@@ -81,6 +81,12 @@ def handle_providers_command(args: SimpleNamespace) -> int:
 
         if args.providers_command == "create":
             catalog_provider = _get_builtin_provider(args.id)
+            override_base_url = getattr(args, "base_url", None)
+            resolved_base_url = (
+                str(override_base_url).strip() or catalog_provider.get("baseUrl")
+                if override_base_url is not None
+                else catalog_provider.get("baseUrl")
+            )
             bundle = repositories.providers.save_bundle(
                 provider_data={
                     "id": str(catalog_provider.get("id") or "").strip(),
@@ -95,7 +101,7 @@ def handle_providers_command(args: SimpleNamespace) -> int:
                         or catalog_provider.get("id")
                         or ""
                     ).strip(),
-                    "base_url": catalog_provider.get("baseUrl"),
+                    "base_url": resolved_base_url,
                     "preferred_model_id": None,
                 },
                 models=_catalog_models_payload(catalog_provider),
